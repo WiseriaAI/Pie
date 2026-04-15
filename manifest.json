@@ -1,0 +1,23 @@
+{
+  "manifest_version": 3,
+  "name": "Chrome AI Agent",
+  "version": "0.1.0",
+  "description": "BYOK browser AI — bring your own API key for page understanding, agent automation, and smart tab management.",
+  "permissions": ["activeTab", "sidePanel", "storage", "tabs", "scripting"],
+  "host_permissions": ["http://localhost/*"],
+  "background": {
+    "service_worker": "src/background/index.ts",
+    "type": "module"
+  },
+  "side_panel": {
+    "default_path": "src/sidepanel/index.html"
+  },
+  "action": {
+    "default_title": "Open Chrome AI Agent"
+  },
+  "icons": {
+    "16": "public/icons/icon-16.svg",
+    "48": "public/icons/icon-48.svg",
+    "128": "public/icons/icon-128.svg"
+  }
+}
