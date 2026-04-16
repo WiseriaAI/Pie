@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Chrome AI Agent",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "BYOK browser AI — bring your own API key for page understanding, agent automation, and smart tab management.",
   "permissions": ["activeTab", "sidePanel", "storage", "tabs", "scripting"],
   "host_permissions": [

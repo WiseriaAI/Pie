@@ -1,7 +1,7 @@
 ---
 title: "feat: Phase 2 — Agent 能力（Tool-Use ReAct + DOM 操作 + Skill 框架）"
 type: feat
-status: active
+status: completed
 date: 2026-04-17
 deepened: 2026-04-17
 origin: docs/brainstorms/2026-04-16-phase2-agent-capabilities-requirements.md
