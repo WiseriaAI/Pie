@@ -1,4 +1,6 @@
 import { useState, useEffect, useRef } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import type { ChatMessage } from "@/lib/model-router";
 import type { PortMessageToPanel, ResolvedElement } from "@/types";
 import { getActiveProvider, getProviderConfig } from "@/lib/storage";
@@ -453,9 +455,9 @@ function MessageBubble({
   return (
     <div className={`flex ${isUser ? "justify-end" : "justify-start"}`}>
       <div
-        className={`max-w-[85%] rounded-lg px-3 py-2 text-sm whitespace-pre-wrap ${
+        className={`max-w-[85%] rounded-lg px-3 py-2 text-sm ${
           isUser
-            ? "bg-blue-600 text-white"
+            ? "whitespace-pre-wrap bg-blue-600 text-white"
             : "bg-neutral-800 text-neutral-100"
         }`}
       >
@@ -469,71 +471,106 @@ function MessageBubble({
   );
 }
 
-function MarkdownContent({ content }: { content: string }) {
-  // Basic markdown: code blocks, inline code, bold
-  const parts: React.ReactNode[] = [];
-  let remaining = content;
-  let key = 0;
-
-  while (remaining.length > 0) {
-    // Code blocks
-    const codeBlockMatch = remaining.match(/^```(\w*)\n([\s\S]*?)```/);
-    if (codeBlockMatch) {
-      parts.push(
-        <pre
-          key={key++}
-          className="my-2 overflow-x-auto rounded bg-neutral-900 p-2 text-xs"
-        >
-          <code>{codeBlockMatch[2]}</code>
-        </pre>,
-      );
-      remaining = remaining.slice(codeBlockMatch[0].length);
-      continue;
-    }
-
-    // Inline code
-    const inlineCodeMatch = remaining.match(/^`([^`]+)`/);
-    if (inlineCodeMatch) {
-      parts.push(
-        <code
-          key={key++}
-          className="rounded bg-neutral-900 px-1 py-0.5 text-xs"
-        >
-          {inlineCodeMatch[1]}
-        </code>,
-      );
-      remaining = remaining.slice(inlineCodeMatch[0].length);
-      continue;
-    }
-
-    // Bold
-    const boldMatch = remaining.match(/^\*\*(.+?)\*\*/);
-    if (boldMatch) {
-      parts.push(
-        <strong key={key++} className="font-semibold">
-          {boldMatch[1]}
-        </strong>,
-      );
-      remaining = remaining.slice(boldMatch[0].length);
-      continue;
-    }
-
-    // Regular text — take up to next special character
-    const nextSpecial = remaining.search(/[`*]/);
-    if (nextSpecial === -1) {
-      parts.push(<span key={key++}>{remaining}</span>);
-      break;
-    } else if (nextSpecial === 0) {
-      // Special char didn't match patterns above, consume it
-      parts.push(<span key={key++}>{remaining[0]}</span>);
-      remaining = remaining.slice(1);
-    } else {
-      parts.push(<span key={key++}>{remaining.slice(0, nextSpecial)}</span>);
-      remaining = remaining.slice(nextSpecial);
-    }
-  }
-
-  return <>{parts}</>;
+export function MarkdownContent({ content }: { content: string }) {
+  return (
+    <div className="markdown-body">
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        components={{
+          h1: ({ children }) => (
+            <h1 className="mt-3 mb-2 text-base font-bold first:mt-0">
+              {children}
+            </h1>
+          ),
+          h2: ({ children }) => (
+            <h2 className="mt-3 mb-2 text-sm font-bold first:mt-0">
+              {children}
+            </h2>
+          ),
+          h3: ({ children }) => (
+            <h3 className="mt-2 mb-1.5 text-sm font-semibold first:mt-0">
+              {children}
+            </h3>
+          ),
+          p: ({ children }) => (
+            <p className="mb-2 leading-relaxed last:mb-0">{children}</p>
+          ),
+          ul: ({ children }) => (
+            <ul className="my-2 ml-5 list-disc space-y-0.5">{children}</ul>
+          ),
+          ol: ({ children }) => (
+            <ol className="my-2 ml-5 list-decimal space-y-0.5">{children}</ol>
+          ),
+          li: ({ children }) => <li className="leading-relaxed">{children}</li>,
+          a: ({ href, children }) => (
+            <a
+              href={href}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-blue-400 underline decoration-blue-400/50 hover:text-blue-300 hover:decoration-blue-300"
+            >
+              {children}
+            </a>
+          ),
+          code: ({ className, children, ...props }) => {
+            // Block code has `language-*` className, inline code does not
+            const isInline = !className;
+            if (isInline) {
+              return (
+                <code
+                  className="rounded bg-neutral-900 px-1 py-0.5 text-xs"
+                  {...props}
+                >
+                  {children}
+                </code>
+              );
+            }
+            return (
+              <code className={className} {...props}>
+                {children}
+              </code>
+            );
+          },
+          pre: ({ children }) => (
+            <pre className="my-2 overflow-x-auto rounded bg-neutral-900 p-2 text-xs">
+              {children}
+            </pre>
+          ),
+          blockquote: ({ children }) => (
+            <blockquote className="my-2 border-l-2 border-neutral-600 pl-3 text-neutral-400 italic">
+              {children}
+            </blockquote>
+          ),
+          table: ({ children }) => (
+            <div className="my-2 overflow-x-auto">
+              <table className="min-w-full text-xs">{children}</table>
+            </div>
+          ),
+          thead: ({ children }) => (
+            <thead className="border-b border-neutral-700 text-left font-semibold">
+              {children}
+            </thead>
+          ),
+          th: ({ children }) => <th className="px-2 py-1">{children}</th>,
+          td: ({ children }) => (
+            <td className="border-b border-neutral-800/60 px-2 py-1">
+              {children}
+            </td>
+          ),
+          strong: ({ children }) => (
+            <strong className="font-semibold">{children}</strong>
+          ),
+          em: ({ children }) => <em className="italic">{children}</em>,
+          hr: () => <hr className="my-3 border-neutral-700" />,
+          del: ({ children }) => (
+            <del className="text-neutral-500 line-through">{children}</del>
+          ),
+        }}
+      >
+        {content}
+      </ReactMarkdown>
+    </div>
+  );
 }
 
 function TypingIndicator() {
