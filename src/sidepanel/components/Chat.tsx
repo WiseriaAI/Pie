@@ -133,17 +133,22 @@ export default function Chat({ onGoToSettings, prefillInput, onPrefillConsumed }
         setStreamingText(accumulated);
       } else if (message.type === "chat-done") {
         finished = true;
-        setMessages((prev) => [
-          ...prev,
-          { role: "assistant", content: accumulated },
-        ]);
+        // Only push assistant message if there's actual (non-whitespace) content.
+        // LLMs sometimes emit a stray "\n" or " " before a tool_call; without
+        // this guard, chat-done (or agent-step flush below) creates an empty bubble.
+        if (accumulated.trim()) {
+          setMessages((prev) => [
+            ...prev,
+            { role: "assistant", content: accumulated },
+          ]);
+        }
         setStreamingText("");
         setStreaming(false);
         portRef.current = null;
       } else if (message.type === "chat-error") {
         finished = true;
         setError(message.error);
-        if (accumulated) {
+        if (accumulated.trim()) {
           setMessages((prev) => [
             ...prev,
             { role: "assistant", content: accumulated },
@@ -153,15 +158,20 @@ export default function Chat({ onGoToSettings, prefillInput, onPrefillConsumed }
         setStreaming(false);
         portRef.current = null;
       } else if (message.type === "agent-step") {
-        // Flush any pending streaming text as an assistant message
-        if (accumulated) {
+        // Flush any pending streaming text as an assistant message.
+        // Require non-whitespace content — a lone "\n" emitted before a tool_call
+        // would otherwise render as an empty MarkdownContent bubble.
+        if (accumulated.trim()) {
           setMessages((prev) => [
             ...prev,
             { role: "assistant", content: accumulated },
           ]);
-          accumulated = "";
           setStreamingText("");
         }
+        // Always reset accumulated and streamingText — even if content was just
+        // whitespace we don't want it re-rendered as a partial streaming bubble.
+        accumulated = "";
+        setStreamingText("");
         const { stepIndex, tool, args, resolvedElement, status, observation } =
           message;
         setMessages((prev) => {
@@ -231,7 +241,7 @@ export default function Chat({ onGoToSettings, prefillInput, onPrefillConsumed }
 
     port.onDisconnect.addListener(() => {
       if (!finished) {
-        if (accumulated) {
+        if (accumulated.trim()) {
           setMessages((prev) => [
             ...prev,
             { role: "assistant", content: accumulated },
