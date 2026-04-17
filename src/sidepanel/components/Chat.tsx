@@ -1,18 +1,47 @@
 import { useState, useEffect, useRef } from "react";
 import type { ChatMessage } from "@/lib/model-router";
-import type { PortMessageToPanel } from "@/types";
+import type { PortMessageToPanel, ResolvedElement } from "@/types";
 import { getActiveProvider, getProviderConfig } from "@/lib/storage";
+import AgentStepBubble from "./AgentStepBubble";
+import AgentConfirmCard from "./AgentConfirmCard";
+import AgentSummary from "./AgentSummary";
 
-interface DisplayMessage {
-  role: "user" | "assistant";
-  content: string;
-}
+type DisplayMessage =
+  | { role: "user"; content: string }
+  | { role: "assistant"; content: string }
+  | {
+      role: "agent-step";
+      stepIndex: number;
+      tool: string;
+      args: unknown;
+      resolvedElement?: ResolvedElement;
+      status: "pending" | "ok" | "error";
+      observation?: string;
+    }
+  | {
+      role: "agent-confirm";
+      confirmationId: string;
+      tool: string;
+      args: unknown;
+      resolvedElement: ResolvedElement;
+      riskReason: string;
+      resolved?: "approved" | "rejected";
+    }
+  | {
+      role: "agent-summary";
+      success: boolean;
+      summary: string;
+      stepCount: number;
+    };
 
 interface ChatProps {
   onGoToSettings: () => void;
+  /** When set, pre-fills the input field; cleared after consumption. */
+  prefillInput?: string;
+  onPrefillConsumed?: () => void;
 }
 
-export default function Chat({ onGoToSettings }: ChatProps) {
+export default function Chat({ onGoToSettings, prefillInput, onPrefillConsumed }: ChatProps) {
   const [messages, setMessages] = useState<DisplayMessage[]>([]);
   const [input, setInput] = useState("");
   const [streaming, setStreaming] = useState(false);
@@ -30,6 +59,15 @@ export default function Chat({ onGoToSettings }: ChatProps) {
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, streamingText]);
+
+  // Consume prefillInput: set it into the input field without clobbering user
+  // input during streaming (guard on truthy to skip undefined/empty updates).
+  useEffect(() => {
+    if (prefillInput) {
+      setInput(prefillInput);
+      onPrefillConsumed?.();
+    }
+  }, [prefillInput]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Detect URL changes on active tab
   useEffect(() => {
@@ -73,11 +111,13 @@ export default function Chat({ onGoToSettings }: ChatProps) {
     setStreaming(true);
     setStreamingText("");
 
-    // Build chat messages for the API (include history)
-    const chatMessages: ChatMessage[] = updatedMessages.map((m) => ({
-      role: m.role,
-      content: m.content,
-    }));
+    // Build chat messages for the API — only user/assistant text, skip agent-* display messages
+    const chatMessages: ChatMessage[] = updatedMessages
+      .filter(
+        (m): m is { role: "user" | "assistant"; content: string } =>
+          m.role === "user" || m.role === "assistant",
+      )
+      .map((m) => ({ role: m.role, content: m.content }));
 
     // Establish port connection
     const port = chrome.runtime.connect({ name: "chat-stream" });
@@ -108,6 +148,80 @@ export default function Chat({ onGoToSettings }: ChatProps) {
             { role: "assistant", content: accumulated },
           ]);
         }
+        setStreamingText("");
+        setStreaming(false);
+        portRef.current = null;
+      } else if (message.type === "agent-step") {
+        // Flush any pending streaming text as an assistant message
+        if (accumulated) {
+          setMessages((prev) => [
+            ...prev,
+            { role: "assistant", content: accumulated },
+          ]);
+          accumulated = "";
+          setStreamingText("");
+        }
+        const { stepIndex, tool, args, resolvedElement, status, observation } =
+          message;
+        setMessages((prev) => {
+          // Search in reverse for an existing agent-step with same stepIndex+tool to update in-place
+          for (let i = prev.length - 1; i >= 0; i--) {
+            const m = prev[i];
+            if (m.role !== "agent-step" && m.role !== "agent-confirm") break;
+            if (
+              m.role === "agent-step" &&
+              m.stepIndex === stepIndex &&
+              m.tool === tool
+            ) {
+              const updated = [...prev];
+              updated[i] = {
+                role: "agent-step",
+                stepIndex,
+                tool,
+                args,
+                resolvedElement,
+                status,
+                observation,
+              };
+              return updated;
+            }
+          }
+          // No existing entry — push new
+          return [
+            ...prev,
+            {
+              role: "agent-step",
+              stepIndex,
+              tool,
+              args,
+              resolvedElement,
+              status,
+              observation,
+            },
+          ];
+        });
+      } else if (message.type === "agent-confirm-request") {
+        const { confirmationId, tool, args, resolvedElement, riskReason } =
+          message;
+        setMessages((prev) => [
+          ...prev,
+          {
+            role: "agent-confirm",
+            confirmationId,
+            tool,
+            args,
+            resolvedElement,
+            riskReason,
+            resolved: undefined,
+          },
+        ]);
+      } else if (message.type === "agent-done-task") {
+        finished = true;
+        const { success, summary, stepCount } = message;
+        setMessages((prev) => [
+          ...prev,
+          { role: "agent-summary", success, summary, stepCount },
+        ]);
         setStreamingText("");
         setStreaming(false);
         portRef.current = null;
@@ -186,9 +300,79 @@ export default function Chat({ onGoToSettings }: ChatProps) {
           <EmptyState onSend={sendMessage} />
         )}
 
-        {messages.map((msg, i) => (
-          <MessageBubble key={i} message={msg} />
-        ))}
+        {messages.map((msg, i) => {
+          if (msg.role === "user" || msg.role === "assistant") {
+            return <MessageBubble key={i} message={msg} />;
+          }
+          if (msg.role === "agent-step") {
+            return (
+              <AgentStepBubble
+                key={i}
+                stepIndex={msg.stepIndex}
+                tool={msg.tool}
+                args={msg.args}
+                resolvedElement={msg.resolvedElement}
+                status={msg.status}
+                observation={msg.observation}
+              />
+            );
+          }
+          if (msg.role === "agent-confirm") {
+            return (
+              <AgentConfirmCard
+                key={i}
+                tool={msg.tool}
+                args={msg.args}
+                resolvedElement={msg.resolvedElement}
+                riskReason={msg.riskReason}
+                resolved={msg.resolved}
+                onApprove={() => {
+                  const port = portRef.current;
+                  if (!port) return;
+                  port.postMessage({
+                    type: "agent-confirm-response",
+                    confirmationId: msg.confirmationId,
+                    approved: true,
+                  });
+                  setMessages((prev) =>
+                    prev.map((m, idx) =>
+                      idx === i && m.role === "agent-confirm"
+                        ? { ...m, resolved: "approved" as const }
+                        : m,
+                    ),
+                  );
+                }}
+                onReject={() => {
+                  const port = portRef.current;
+                  if (!port) return;
+                  port.postMessage({
+                    type: "agent-confirm-response",
+                    confirmationId: msg.confirmationId,
+                    approved: false,
+                  });
+                  setMessages((prev) =>
+                    prev.map((m, idx) =>
+                      idx === i && m.role === "agent-confirm"
+                        ? { ...m, resolved: "rejected" as const }
+                        : m,
+                    ),
+                  );
+                }}
+              />
+            );
+          }
+          if (msg.role === "agent-summary") {
+            return (
+              <AgentSummary
+                key={i}
+                success={msg.success}
+                summary={msg.summary}
+                stepCount={msg.stepCount}
+              />
+            );
+          }
+          return null;
+        })}
 
         {streaming && streamingText && (
           <MessageBubble
@@ -196,7 +380,9 @@ export default function Chat({ onGoToSettings }: ChatProps) {
           />
         )}
 
-        {streaming && !streamingText && <TypingIndicator />}
+        {streaming && !streamingText && messages.at(-1)?.role !== "agent-step" && (
+          <TypingIndicator />
+        )}
 
         {error && (
           <div className="rounded-lg border border-red-800 bg-red-950/50 px-4 py-3 text-sm text-red-400">
@@ -257,7 +443,11 @@ function EmptyState({ onSend }: { onSend: (text: string) => void }) {
   );
 }
 
-function MessageBubble({ message }: { message: DisplayMessage }) {
+function MessageBubble({
+  message,
+}: {
+  message: { role: "user" | "assistant"; content: string };
+}) {
   const isUser = message.role === "user";
 
   return (

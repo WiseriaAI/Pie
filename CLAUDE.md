@@ -12,16 +12,19 @@ BYOK (Bring Your Own Key) Chrome Extension — 用户插入自己的 API key 获
 
 ## Project Structure
 
-- `src/background/` — Service Worker: message routing, port streaming, page extraction, keep-alive
-- `src/content/` — Content Script: placeholder for Phase 2 agent operations
-- `src/sidepanel/` — Sidebar UI (React): Chat, Settings, tab navigation
-- `src/sidepanel/components/` — Chat.tsx (streaming chat), Settings.tsx (provider config)
-- `src/lib/model-router/` — Unified LLM interface with pluggable provider registry
-- `src/lib/model-router/providers/` — Anthropic (native), OpenAI-compatible (shared by 5 providers)
-- `src/lib/model-router/providers/registry.ts` — Provider metadata registry (add new providers here)
+- `src/background/` — Service Worker: message routing, port streaming, agent loop dispatch, keep-alive
+- `src/content/` — Content Script: placeholder (DOM ops use executeScript injection instead)
+- `src/sidepanel/` — Sidebar UI (React): Chat (with Agent UI), Settings (with Skills), tab navigation
+- `src/sidepanel/components/` — Chat.tsx, Settings.tsx, AgentStepBubble/AgentConfirmCard/AgentSummary, SkillsList
+- `src/lib/model-router/` — Unified LLM interface with tool calling support (AgentMessage IR)
+- `src/lib/model-router/providers/` — Anthropic (native tool_use), OpenAI-compatible (function_calling)
+- `src/lib/model-router/providers/registry.ts` — Provider metadata registry (supportsTools field)
+- `src/lib/dom-actions/` — Self-contained DOM action functions injected via executeScript
+- `src/lib/agent/` — ReAct loop, tool registry, risk classifier, prompt builder, sliding window
+- `src/lib/skills/` — Skill framework: types, storage, builtin, resolveSkillToTools
 - `src/lib/crypto.ts` — AES-GCM encryption for API key storage
 - `src/lib/storage.ts` — Provider config CRUD (encrypted keys in chrome.storage.local)
-- `src/types/` — Shared type definitions and message types
+- `src/types/` — Shared type definitions and message types (chat + agent protocols)
 
 ## Supported Providers
 
@@ -44,16 +47,20 @@ All OpenAI-compatible providers share one streaming implementation via registry.
 ## Architecture Notes
 
 - API keys encrypted with Web Crypto API (AES-GCM) in chrome.storage.local, encryption key also in chrome.storage.local
-- Content Script uses `activeTab` + dynamic injection via `chrome.scripting.executeScript` (no `<all_urls>`)
+- DOM access via `<all_urls>` host_permission + `chrome.scripting.executeScript` (activeTab insufficient for Side Panel常驻场景)
 - Streaming via `chrome.runtime.connect()` port, not sendMessage (supports continuous push)
 - Keep-alive pattern: `chrome.runtime.getPlatformInfo()` every 25s during active port connections
 - SSE parser handles both `\n` and `\r\n` line endings
-- Provider registry pattern: new providers only need a registry entry + host_permission
-- `extractPageContent()` must be self-contained (no closures) for `executeScript` serialization
+- Provider registry pattern: new providers only need a registry entry + host_permission + supportsTools flag
+- All injected functions (extractPageContent, snapshotInteractiveElements, click/type/scroll/select) must be self-contained (no closures, args via executeScript)
+- ChatMessage stays string-only (Phase 1 wire); AgentMessage IR (string | ContentBlock[]) is SW-internal only
+- Agent Loop: tabId+origin pinning at task start, every-round origin check (security)
+- Risk classifier: default low + structural escalation (submit buttons, sensitive fields, keyword regex)
+- Prompt injection defense: page snapshots in user role wrapped in <untrusted_page_content>, never in system role
 
 ## Progress
 
 - **Phase 1 (基础对话) — COMPLETED**: Chat with page context, streaming, API key management, 6 providers
-- **Phase 0 (元素定位验证) — NOT STARTED**: Spike needed before Phase 2
-- **Phase 2 (Agent 能力) — NOT STARTED**: Task planning, multi-step execution, DOM operations
+- **Phase 0 (元素定位验证) — COMPLETED**: DOM traversal validated, region filtering works, `<all_urls>` permission needed
+- **Phase 2 (Agent 能力) — COMPLETED**: ReAct Agent Loop with tool calling, DOM operations, risk-based confirmation, basic Skill framework
 - **Phase 3 (标签管理) — NOT STARTED**: Tab analysis, grouping, cleanup
