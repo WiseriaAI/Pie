@@ -1,12 +1,10 @@
 import { useState, useEffect } from "react";
 import Chat from "@/sidepanel/components/Chat";
 import Settings from "@/sidepanel/components/Settings";
-// PHASE-2.5-SPIKE: remove after spike concludes
-import SpikeHarness from "@/sidepanel/components/SpikeHarness";
 import { getActiveProvider, getProviderConfig } from "@/lib/storage";
 import { getProviderMeta } from "@/lib/model-router";
 
-type Tab = "chat" | "spike" | "tabs" | "settings";
+type Tab = "chat" | "agent" | "tabs" | "settings";
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<Tab>("chat");
@@ -80,8 +78,7 @@ export default function App() {
             onPrefillConsumed={() => setChatPrefill(undefined)}
           />
         )}
-        {/* PHASE-2.5-SPIKE: replace with Placeholder("Agent") after spike concludes */}
-        {activeTab === "spike" && <SpikeHarness />}
+        {activeTab === "agent" && <Placeholder label="Agent" />}
         {activeTab === "tabs" && <Placeholder label="Tabs" />}
         {activeTab === "settings" && (
           <Settings onRunSkill={handleRunSkill} />
@@ -90,8 +87,7 @@ export default function App() {
 
       {/* Bottom Nav */}
       <nav className="flex border-t border-neutral-800">
-        {/* PHASE-2.5-SPIKE: revert "spike" → "agent" after spike concludes */}
-        {(["chat", "spike", "tabs", "settings"] as Tab[]).map((tab) => (
+        {(["chat", "agent", "tabs", "settings"] as Tab[]).map((tab) => (
           <button
             key={tab}
             onClick={() => setActiveTab(tab)}

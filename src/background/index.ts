@@ -10,8 +10,6 @@ import type { ChatMessage, ModelConfig } from "@/lib/model-router";
 import { getActiveProvider, getProviderConfig } from "@/lib/storage";
 import { runAgentLoop } from "@/lib/agent/loop";
 import { getEnabledSkills, resolveSkillToTools } from "@/lib/skills";
-// PHASE-2.5-SPIKE: remove after spike concludes
-import { handleSpike, type SpikeCommand } from "./spike";
 
 // Open side panel when extension icon is clicked
 chrome.action.onClicked.addListener(async (tab) => {
@@ -150,11 +148,6 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message.type === "extract-page") {
     handleExtractPage().then(sendResponse);
     return true; // async response
-  }
-  // PHASE-2.5-SPIKE: remove after spike concludes
-  if (message?.type === "spike-run") {
-    handleSpike(message as SpikeCommand).then(sendResponse);
-    return true;
   }
 });
 
