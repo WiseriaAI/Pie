@@ -59,6 +59,21 @@ export function classifyRisk(
   args: { elementIndex?: number; value?: string },
   snapshot: PageSnapshot,
 ): RiskAssessment {
+  // Phase 2.5 keyboard simulation tools — ALWAYS high risk. CDP keyboard
+  // events bypass all DOM safety checks (visibility, readonly, disabled);
+  // any call could trigger arbitrary keyboard-bound logic in the page.
+  //
+  // INVARIANT: keyboard tools must opt out of any future "approve all in
+  // task" / "remember decision" shortcut in the confirm UI. Each call
+  // must remain its own independent user decision point. If such a
+  // shortcut ever lands, exclude these tool names by reference.
+  if (toolName === "dispatch_keyboard_input" || toolName === "press_key") {
+    return {
+      level: "high",
+      reason: "Keyboard simulation via CDP bypasses DOM safety checks",
+    };
+  }
+
   // Terminal / always-low tools
   if (
     toolName === "done" ||

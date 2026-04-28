@@ -21,13 +21,25 @@ Output formatting (for text responses):
 
 On each turn you will receive a snapshot of the page's interactive elements wrapped in <untrusted_page_content>. Use these observations to plan your next tool call, or to answer questions about the page.`.trim();
 
+const KEYBOARD_SIM_GUIDANCE = `
+
+Keyboard simulation tools (dispatch_keyboard_input, press_key) are also available. These send isTrusted keyboard events via Chrome DevTools Protocol and work in canvas-rendered editors (Feishu Docs, Google Docs, Notion) where the regular \`type\` tool fails. Use them ONLY when \`type\` returns an observation containing "hidden IME / keyboard capture buffer" — for normal forms, prefer \`type\`. Each call activates Chrome's debugger and requires user approval.`;
+
 /**
  * Builds the full agent system prompt for a specific task.
  * Injects the user task under a clearly labeled tag so the LLM
  * knows this is the authoritative instruction source.
+ *
+ * @param hasKeyboardTools When true, appends guidance about CDP keyboard
+ *   tools. Read at task start from chrome.storage; the prompt does not
+ *   re-evaluate this mid-task even if the user toggles the setting.
  */
-export function buildAgentSystemPrompt(task: string): string {
-  return `${STATIC_AGENT_SYSTEM_PROMPT}\n\n<user_task>${task}</user_task>`;
+export function buildAgentSystemPrompt(
+  task: string,
+  hasKeyboardTools = false,
+): string {
+  const keyboardGuidance = hasKeyboardTools ? KEYBOARD_SIM_GUIDANCE : "";
+  return `${STATIC_AGENT_SYSTEM_PROMPT}${keyboardGuidance}\n\n<user_task>${task}</user_task>`;
 }
 
 /**
