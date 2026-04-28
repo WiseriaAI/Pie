@@ -46,6 +46,32 @@ const KEY_MAP: Record<
   End: { code: "End", windowsVirtualKeyCode: 35 },
 };
 
+// Helper: send a paired keyDown/keyUp via CDP. Used internally when
+// expanding \n inside dispatch_keyboard_input — canvas editors (Feishu
+// Docs / Google Docs / Notion) bind paragraph breaks to keydown(Enter),
+// not to the literal \n character, so we MUST translate.
+async function sendKeyPress(
+  session: CdpSession,
+  keyName: string,
+): Promise<void> {
+  const mapping = KEY_MAP[keyName];
+  if (!mapping) throw new Error(`No mapping for key '${keyName}'`);
+  const baseParams = {
+    key: keyName,
+    code: mapping.code,
+    windowsVirtualKeyCode: mapping.windowsVirtualKeyCode,
+    nativeVirtualKeyCode: mapping.windowsVirtualKeyCode,
+  };
+  await session.send("Input.dispatchKeyEvent", {
+    type: "keyDown",
+    ...baseParams,
+  });
+  await session.send("Input.dispatchKeyEvent", {
+    type: "keyUp",
+    ...baseParams,
+  });
+}
+
 // Bidi formatting controls — banned to prevent phishing via right-to-left
 // override and isolate marks. Other Cf characters (e.g. U+200D ZWJ used
 // in legitimate emoji sequences) are allowed.
@@ -150,13 +176,13 @@ export function buildKeyboardTools(deps: KeyboardToolDeps): Tool[] {
     {
       name: "dispatch_keyboard_input",
       description:
-        "Send text input via simulated real keyboard (Chrome DevTools Protocol). Use ONLY for canvas-rendered editors (Feishu Docs, Google Docs, Notion) where the regular `type` tool returns 'hidden IME / keyboard capture buffer'. Activates Chrome's debugger (yellow bar appears). Each call requires user approval.",
+        "Send text input via simulated real keyboard (Chrome DevTools Protocol). Pass the FULL multi-line content in one call — newlines (\\n) in `text` are automatically converted to Enter key presses, so paragraphs/lists/code blocks are inserted correctly. Avoid breaking content into many small calls; each call requires the user to approve. Use ONLY for canvas-rendered editors (Feishu Docs, Google Docs, Notion) where the regular `type` tool returns 'hidden IME / keyboard capture buffer'. Activates Chrome's debugger (yellow bar appears).",
       parameters: {
         type: "object",
         properties: {
           text: {
             type: "string",
-            description: `Text to insert. Max ${MAX_TEXT_LENGTH} characters. Must not contain control characters (other than newline / tab) or bidi formatting controls.`,
+            description: `Text to insert. Max ${MAX_TEXT_LENGTH} characters. Newlines (\\n) become Enter key presses. Must not contain other control characters or bidi formatting controls.`,
           },
           after_element_index: {
             type: "number",
@@ -236,23 +262,49 @@ export function buildKeyboardTools(deps: KeyboardToolDeps): Tool[] {
           };
         }
 
+        // Split on \n: each segment becomes an Input.insertText, with
+        // sendKeyPress(Enter) between segments. This lets one tool call
+        // submit multi-line content end-to-end without needing the LLM
+        // to interleave press_key("Enter") calls (each of which would
+        // otherwise need its own user approval).
+        //
+        // Edge cases:
+        //   "a\nb"     → ["a", "b"]              insert a, Enter, insert b
+        //   "a\n"      → ["a", ""]               insert a, Enter
+        //   "\nb"      → ["", "b"]               Enter, insert b
+        //   "\n\n"     → ["", "", ""]            Enter, Enter
+        //   no \n      → [text]                  insert text
+        const segments = a.text.split("\n");
+        const enterCount = segments.length - 1;
         try {
-          await session.send("Input.insertText", { text: a.text });
+          for (let i = 0; i < segments.length; i++) {
+            if (i > 0) {
+              await sendKeyPress(session, "Enter");
+            }
+            if (segments[i].length > 0) {
+              await session.send("Input.insertText", { text: segments[i] });
+            }
+          }
         } catch (e) {
           return {
             success: false,
             error:
               e instanceof Error
-                ? `Input.insertText failed: ${e.message}`
-                : "Input.insertText failed",
+                ? `Keyboard input failed: ${e.message}`
+                : "Keyboard input failed",
           };
         }
 
-        // Observation NEVER includes the actual text content. Length
-        // is surfaced for LLM context (it knows what it sent).
+        // Observation NEVER includes the actual text content. Surface
+        // length + Enter count so the LLM knows what shape it sent.
+        const lengthDesc = `${a.text.length} character${a.text.length === 1 ? "" : "s"}`;
+        const enterDesc =
+          enterCount > 0
+            ? ` (${enterCount} Enter break${enterCount === 1 ? "" : "s"})`
+            : "";
         return {
           success: true,
-          observation: `Typed ${a.text.length} character${a.text.length === 1 ? "" : "s"} via keyboard simulation (value redacted)`,
+          observation: `Typed ${lengthDesc}${enterDesc} via keyboard simulation (value redacted)`,
         };
       },
     },
@@ -302,26 +354,12 @@ export function buildKeyboardTools(deps: KeyboardToolDeps): Tool[] {
           };
         }
 
-        const baseParams = {
-          key: a.key,
-          code: mapping.code,
-          windowsVirtualKeyCode: mapping.windowsVirtualKeyCode,
-          nativeVirtualKeyCode: mapping.windowsVirtualKeyCode,
-        };
-
         try {
-          // keyDown + keyUp share a single origin re-check (the two
-          // events fire <1ms apart; origin can't realistically change
-          // between them, and re-checking would double the chrome.tabs.get
-          // round-trip per press).
-          await session.send("Input.dispatchKeyEvent", {
-            type: "keyDown",
-            ...baseParams,
-          });
-          await session.send("Input.dispatchKeyEvent", {
-            type: "keyUp",
-            ...baseParams,
-          });
+          // keyDown + keyUp pair shares a single origin re-check (the
+          // two events fire <1ms apart; origin can't realistically
+          // change between them, and re-checking would double the
+          // chrome.tabs.get round-trip per press).
+          await sendKeyPress(session, a.key);
         } catch (e) {
           return {
             success: false,
