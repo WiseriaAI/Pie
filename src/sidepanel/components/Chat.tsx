@@ -263,6 +263,17 @@ export default function Chat({ onGoToSettings, prefillInput, onPrefillConsumed }
     }
   }
 
+  function handleStop() {
+    const port = portRef.current;
+    if (!port) return;
+    try {
+      port.postMessage({ type: "chat-abort" });
+    } catch {
+      // port may be in the process of closing; that's fine — SW-side
+      // onDisconnect will fire its own abort path.
+    }
+  }
+
   // No config — guide user to settings
   if (hasConfig === false) {
     return (
@@ -416,13 +427,23 @@ export default function Chat({ onGoToSettings, prefillInput, onPrefillConsumed }
             disabled={streaming}
             className="flex-1 resize-none rounded border border-neutral-700 bg-neutral-800 px-3 py-2 text-sm text-neutral-100 placeholder-neutral-500 focus:border-blue-600 focus:outline-none disabled:opacity-50"
           />
-          <button
-            onClick={() => sendMessage()}
-            disabled={streaming || !input.trim()}
-            className="rounded bg-blue-600 px-4 py-2 text-sm text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            Send
-          </button>
+          {streaming ? (
+            <button
+              onClick={handleStop}
+              className="rounded bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700"
+              title="Cancel the running task"
+            >
+              Stop
+            </button>
+          ) : (
+            <button
+              onClick={() => sendMessage()}
+              disabled={!input.trim()}
+              className="rounded bg-blue-600 px-4 py-2 text-sm text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Send
+            </button>
+          )}
         </div>
       </div>
     </div>
