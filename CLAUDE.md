@@ -21,9 +21,12 @@ BYOK (Bring Your Own Key) Chrome Extension — 用户插入自己的 API key 获
 - `src/lib/model-router/providers/registry.ts` — Provider metadata registry (supportsTools field)
 - `src/lib/dom-actions/` — Self-contained DOM action functions injected via executeScript
 - `src/lib/agent/` — ReAct loop, tool registry, risk classifier, prompt builder, sliding window
+- `src/lib/agent/tools/keyboard.ts` — Phase 2.5 CDP keyboard tools (dispatch_keyboard_input, press_key)
 - `src/lib/skills/` — Skill framework: types, storage, builtin, resolveSkillToTools
 - `src/lib/crypto.ts` — AES-GCM encryption for API key storage
 - `src/lib/storage.ts` — Provider config CRUD (encrypted keys in chrome.storage.local)
+- `src/lib/keyboard-simulation.ts` — Phase 2.5 toggle storage helper
+- `src/background/cdp-session.ts` — Phase 2.5 CDP lifecycle manager (attach/detach, owner-token guard, generationId)
 - `src/types/` — Shared type definitions and message types (chat + agent protocols)
 
 ## Supported Providers
@@ -55,13 +58,14 @@ All OpenAI-compatible providers share one streaming implementation via registry.
 - All injected functions (extractPageContent, snapshotInteractiveElements, click/type/scroll/select) must be self-contained (no closures, args via executeScript)
 - ChatMessage stays string-only (Phase 1 wire); AgentMessage IR (string | ContentBlock[]) is SW-internal only
 - Agent Loop: tabId+origin pinning at task start, every-round origin check (security)
-- Risk classifier: default low + structural escalation (submit buttons, sensitive fields, keyword regex)
+- Risk classifier: default low + structural escalation (submit buttons, sensitive fields, keyword regex); CDP keyboard tools always high
 - Prompt injection defense: page snapshots in user role wrapped in <untrusted_page_content>, never in system role
+- Phase 2.5 CDP path: per-task lazy attach via cdp-session.ts; per-CDP-call origin & active-tab re-check; owner-token guard prevents multi-Side-Panel collateral detach; idempotent detach across 5 paths (explicit, abort signal, onDetach, kill-switch, finally); args.text redacted in agent-step but raw in confirm-request (informed approval requires content visibility)
 
 ## Progress
 
 - **Phase 1 (基础对话) — COMPLETED**: Chat with page context, streaming, API key management, 6 providers
 - **Phase 0 (元素定位验证) — COMPLETED**: DOM traversal validated, region filtering works, `<all_urls>` permission needed
 - **Phase 2 (Agent 能力) — COMPLETED**: ReAct Agent Loop with tool calling, DOM operations, risk-based confirmation, basic Skill framework
-- **Phase 2.5 (CDP 键盘模拟) — PLANNED**: 通过 `chrome.debugger` + `Input.insertText` 支持 canvas 编辑器（飞书 Docs / Google Docs / Notion）。见 `docs/brainstorms/2026-04-17-phase2.5-cdp-keyboard-simulation-requirements.md`
+- **Phase 2.5 (CDP 键盘模拟) — COMPLETED**: `chrome.debugger` + `Input.insertText` / `Input.dispatchKeyEvent` 支持飞书 Docs 等 canvas 编辑器；二态 Settings 开关，5 路径汇聚的 idempotent detach，per-CDP-call origin re-check，owner-token + generationId 防多 Side Panel 串味，redaction 二分通道（confirm 显示原文 / agent-step redact）
 - **Phase 3 (标签管理) — NOT STARTED**: Tab analysis, grouping, cleanup
