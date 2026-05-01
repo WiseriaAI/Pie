@@ -11,6 +11,71 @@ function skillStorageKey(id: string): string {
 //   - Once setSkillEnabled is called, the id is explicitly tracked in this array.
 const ENABLED_SKILLS_KEY = "enabled_skills";
 
+// --- Schema upgrade helpers (Phase 2.6) ---
+
+/**
+ * Apply default values to optional fields that may be absent on skills stored
+ * before the Phase 2.6 schema upgrade. Idempotent.
+ *
+ * Defaults:
+ *   author = 'user'              (treat unknown-origin as user-authored, matching pre-2.6 storage)
+ *   createdAt = 0                (sorts to the bottom of SkillsList)
+ *   allowedTools = null          (no scope restriction; legacy behavior — meta tool
+ *                                 write path enforces non-null at write time, P1-F)
+ *   firstRunConfirmedAt          (kept undefined; R10 gate skips because
+ *                                 default author='user' won't trigger anyway)
+ */
+export function withSkillDefaults(skill: SkillDefinition): SkillDefinition {
+  return {
+    ...skill,
+    author: skill.author ?? "user",
+    createdAt: skill.createdAt ?? 0,
+    allowedTools: skill.allowedTools === undefined ? null : skill.allowedTools,
+  };
+}
+
+/**
+ * Generate a fresh skill id with the `skill_agent_` prefix. The prefix prevents
+ * accidental collision with BUILT_IN_TOOLS names (click / type / scroll / etc.)
+ * even if an agent attempts id spoofing (P1-E defense layer 2; layer 1 is the
+ * meta tool JSON Schema in tools.ts which forbids passing `id`).
+ */
+export function generateSkillId(): string {
+  return `skill_agent_${crypto.randomUUID()}`;
+}
+
+/** User-authored skill id — separate prefix for visual distinction in storage
+ *  inspection, with the same anti-collision property. */
+export function generateUserSkillId(): string {
+  return `skill_user_${crypto.randomUUID()}`;
+}
+
+/**
+ * Compute total bytes used by `skill_*` keys in chrome.storage.local. Used by
+ * the meta tool quota gate (P1-H, default 1 MB budget). Approximates by
+ * JSON-serialized length, matching how chrome.storage.local accounts quota.
+ */
+export async function getSkillStorageBytes(): Promise<number> {
+  const all = await chrome.storage.local.get(null);
+  let total = 0;
+  for (const [key, value] of Object.entries(all)) {
+    if (key.startsWith("skill_")) {
+      total += JSON.stringify(value).length + key.length;
+    }
+  }
+  return total;
+}
+
+/**
+ * Mark a skill's first-run-confirm timestamp. Used by R10 first-run gate after
+ * the user approves the first execution of an agent-authored skill.
+ */
+export async function markSkillFirstRun(id: string, ts: number): Promise<void> {
+  const skill = await getSkill(id);
+  if (!skill) return;
+  await saveSkill({ ...skill, firstRunConfirmedAt: ts });
+}
+
 // --- User-defined skill CRUD ---
 
 export async function listUserSkills(): Promise<SkillDefinition[]> {
@@ -19,7 +84,7 @@ export async function listUserSkills(): Promise<SkillDefinition[]> {
   const skills: SkillDefinition[] = [];
   for (const [key, value] of Object.entries(all)) {
     if (key.startsWith("skill_")) {
-      skills.push(value as SkillDefinition);
+      skills.push(withSkillDefaults(value as SkillDefinition));
     }
   }
   return skills;
@@ -27,7 +92,8 @@ export async function listUserSkills(): Promise<SkillDefinition[]> {
 
 export async function getSkill(id: string): Promise<SkillDefinition | null> {
   const result = await chrome.storage.local.get(skillStorageKey(id));
-  return (result[skillStorageKey(id)] as SkillDefinition) ?? null;
+  const raw = result[skillStorageKey(id)] as SkillDefinition | undefined;
+  return raw ? withSkillDefaults(raw) : null;
 }
 
 export async function saveSkill(skill: SkillDefinition): Promise<void> {
@@ -60,9 +126,6 @@ export async function setSkillEnabled(
 ): Promise<void> {
   const current = await getEnabledSkillIds();
   const withoutId = current.filter((eid) => eid !== id);
-  // We track enabled ids (whitelist); disabled ids are simply absent.
-  // To track the disabled state explicitly we use a separate convention:
-  // prefix with "!" to mark explicitly disabled, plain id = explicitly enabled.
   const withoutMarked = withoutId.filter((eid) => eid !== `!${id}`);
   const updated = enabled
     ? [...withoutMarked, id]

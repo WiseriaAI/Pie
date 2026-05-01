@@ -26,5 +26,8 @@ export const BUILT_IN_SKILLS: SkillDefinition[] = [
       "Extract the following fields from the page: {{fields}}. Use the page snapshot and call extractData / done tools as needed. Output format: {{format}}.",
     enabled: true,
     builtIn: true,
+    author: "user",
+    createdAt: 0,
+    allowedTools: null,
   },
 ];

@@ -1,4 +1,4 @@
-export type { SkillDefinition, SkillId } from "./types";
+export type { SkillDefinition, SkillId, SkillAuthor } from "./types";
 export {
   listUserSkills,
   getSkill,
@@ -6,6 +6,11 @@ export {
   deleteSkill,
   getEnabledSkillIds,
   setSkillEnabled,
+  withSkillDefaults,
+  generateSkillId,
+  generateUserSkillId,
+  getSkillStorageBytes,
+  markSkillFirstRun,
 } from "./storage";
 export { BUILT_IN_SKILLS } from "./builtin";
 
