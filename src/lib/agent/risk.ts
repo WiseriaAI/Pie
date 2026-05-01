@@ -1,6 +1,7 @@
 import type { ElementInfo, PageSnapshot } from "../dom-actions/types";
 import type { RiskAssessment, RiskLevel } from "./types";
 import { KEYBOARD_TOOL_NAMES } from "./tools/keyboard";
+import { TAB_TOOL_NAMES } from "./tool-names";
 
 /**
  * Phase 3 — context for cross-origin args introspection. Loop dispatch
@@ -315,4 +316,51 @@ export function riskOfAllowedTools(names: string[]): RiskLevel {
     if (ALWAYS_HIGH_RISK_TOOL_NAMES.has(n)) return "high";
   }
   return "low";
+}
+
+// ── Phase 3 G-1 acceptance gate — build-time exhaustive check ──────────────
+//
+// The K-3 decision (do not upgrade SkillDefinition.allowedTools schema in v1)
+// rests on a load-bearing claim: every cross-tab write tool returns high risk
+// every time it's called. If a future PR introduces a low-risk cross-tab
+// tool (a "peek_tab_metadata", "read_tab_title", etc.) without first
+// upgrading the allowedTools schema to (name, scope) tuple, the K-3 defense
+// silently breaks — agent-authored skills could thereafter add the new
+// low-risk tool to allowedTools and R10 first-run-confirm would only fire
+// once, granting indefinite access.
+//
+// This block enforces the gate at build time: every name in TAB_TOOL_NAMES
+// must be classified as either always-high (write/read tools) or
+// args-conditional (the two existing tools whose risk depends on args).
+// A new entry that doesn't appear in either set throws at module load —
+// the PR introducing it cannot be shipped without consciously updating
+// this list, which is the prompt to revisit G-1.
+const ALWAYS_HIGH_TAB_TOOLS = new Set<string>([
+  "close_tabs",
+  "group_tabs",
+  "ungroup_tabs",
+  "move_tabs",
+  "get_tab_content",
+]);
+
+// activate_tab: high if cross-origin, low if same-origin (ADV-3).
+// list_tabs:   high if scope=allWindows, low if scope=currentWindow (P3-T).
+const ARGS_CONDITIONAL_TAB_TOOLS = new Set<string>([
+  "activate_tab",
+  "list_tabs",
+]);
+
+for (const name of TAB_TOOL_NAMES) {
+  if (
+    !ALWAYS_HIGH_TAB_TOOLS.has(name) &&
+    !ARGS_CONDITIONAL_TAB_TOOLS.has(name)
+  ) {
+    throw new Error(
+      `[Phase 3 G-1] cross-tab tool "${name}" is in TAB_TOOL_NAMES but ` +
+        `not classified in risk.ts (ALWAYS_HIGH_TAB_TOOLS or ARGS_CONDITIONAL_TAB_TOOLS). ` +
+        `If this is a new low-risk cross-tab tool, you MUST first upgrade ` +
+        `SkillDefinition.allowedTools schema from string[] to (name, scope) ` +
+        `tuple — see plan G-1 acceptance gate / K-3.`,
+    );
+  }
 }
