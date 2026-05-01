@@ -176,6 +176,52 @@ export function classifyRisk(
     return { level: "low" };
   }
 
+  // ── Phase 3 — Cross-tab write tools ──────────────────────────────────────
+  //
+  // close_tabs / group_tabs / ungroup_tabs / move_tabs are always high. The
+  // confirm card carries tabTargets (Unit 2) so the user sees every affected
+  // tab; cross-origin among the target set is folded into reason text but
+  // does NOT change the level (P3-P invariant: write-class tab tools always
+  // high, mechanically locked by the build-time check in Unit 7's G-1 gate).
+  if (
+    toolName === "close_tabs" ||
+    toolName === "group_tabs" ||
+    toolName === "ungroup_tabs" ||
+    toolName === "move_tabs"
+  ) {
+    const co = hasCrossOriginTab(args, ctx);
+    const reason = co.crossOrigin
+      ? `Cross-tab write touching ${co.offendingOrigins.length} non-pinned origin(s): ${co.offendingOrigins.join(", ")}`
+      : `Cross-tab write — review the affected tabs in the confirm card.`;
+    return { level: "high", reason };
+  }
+
+  // get_tab_content — always high, even same-origin (P3-S). Same-tab content
+  // can carry credentials the user typed via CDP keyboard into a canvas
+  // editor; the user must see the content preview before approval.
+  if (toolName === "get_tab_content") {
+    const co = hasCrossOriginTab(args, ctx);
+    const reason = co.crossOrigin
+      ? `Reading content from a tab whose origin (${co.offendingOrigins.join(", ")}) differs from the pinned tab — review the preview.`
+      : `Reading visible page content — review the preview before sending it to the LLM.`;
+    return { level: "high", reason };
+  }
+
+  // activate_tab — same-origin is a navigation aid (low risk, no confirm).
+  // Cross-origin activation could be used to set up a phishing handoff, so
+  // it is high. The pinned-tab pin is NOT changed by activate_tab regardless
+  // (P3-M).
+  if (toolName === "activate_tab") {
+    const co = hasCrossOriginTab(args, ctx);
+    if (!co.crossOrigin) {
+      return { level: "low" };
+    }
+    return {
+      level: "high",
+      reason: `Activating a tab on a different origin (${co.offendingOrigins.join(", ")}) — verify the target.`,
+    };
+  }
+
   // Phase 3 — list_tabs is the single tab tool with args-dependent risk.
   // currentWindow (default) is low; allWindows triggers high because it
   // exposes tab metadata across windows the user has not chosen as the

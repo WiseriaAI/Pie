@@ -1,6 +1,64 @@
 import type { ActionResult } from "../../dom-actions/types";
-import type { Tool } from "../types";
+import type { ConfirmedTabTarget, Tool, ToolHandlerContext } from "../types";
 import { escapeUntrustedWrappers } from "../untrusted-wrappers";
+
+/**
+ * Phase 3 — parse a chrome.tabs.Tab.url into an origin string. Returns ""
+ * for unparseable / restricted URLs so the caller can compare against the
+ * confirm-time origin without false positives. Inline (not imported from
+ * loop.ts) because tabs.ts handlers are agent-runtime code; loop.ts is the
+ * SW dispatch surface — keeping origin parsing local avoids a cycle.
+ */
+function parseTabOrigin(url: string | undefined): string {
+  if (!url) return "";
+  try {
+    const o = new URL(url).origin;
+    if (!o || o === "null") return "";
+    return o;
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * Phase 3 K-8 — confirm-time origin re-verify. Compares the LIVE tab origin
+ * (chrome.tabs.get inside the handler) against the map carried via ctx
+ * (what the user saw on the confirm card). Returns:
+ *   - { ok: true, tab } when the tab still exists AND its origin matches
+ *     what the user approved
+ *   - { ok: false, reason: "missing" | "navigated" | "no-confirm-record" }
+ *     otherwise
+ *
+ * Handlers use this BEFORE calling chrome.tabs.{remove, group, ungroup,
+ * move, update} on a target id — skip the id and report it in the
+ * partial-completion observation when ok=false.
+ */
+async function verifyConfirmedOrigin(
+  tabId: number,
+  confirmed: Map<number, ConfirmedTabTarget> | undefined,
+): Promise<
+  | { ok: true; tab: chrome.tabs.Tab; origin: string }
+  | { ok: false; reason: "missing" | "navigated" | "no-confirm-record" }
+> {
+  if (!confirmed) {
+    return { ok: false, reason: "no-confirm-record" };
+  }
+  const expected = confirmed.get(tabId);
+  if (!expected) {
+    return { ok: false, reason: "no-confirm-record" };
+  }
+  let tab: chrome.tabs.Tab;
+  try {
+    tab = await chrome.tabs.get(tabId);
+  } catch {
+    return { ok: false, reason: "missing" };
+  }
+  const live = parseTabOrigin(tab.url);
+  if (!live || live !== expected.origin) {
+    return { ok: false, reason: "navigated" };
+  }
+  return { ok: true, tab, origin: live };
+}
 
 /**
  * Phase 3 cross-tab tools. Implementation lands incrementally:
@@ -226,7 +284,192 @@ const listTabsTool: Tool = {
   },
 };
 
+// ── Unit 3 — close_tabs / activate_tab ──────────────────────────────────────
+
+const CLOSE_TABS_MAX = 50;
+
+interface CloseTabsArgs {
+  tabIds: number[];
+}
+
+interface ActivateTabArgs {
+  tabId: number;
+}
+
+interface PartialCompletionResult {
+  ok: number[];
+  skipped: Array<{ id: number; reason: string }>;
+  errors: Array<{ id: number; message: string }>;
+}
+
+function summarizePartial(
+  toolName: string,
+  result: PartialCompletionResult,
+): string {
+  const lines: string[] = [];
+  lines.push(`${toolName}: ${result.ok.length} succeeded`);
+  if (result.skipped.length > 0) {
+    lines.push(
+      `skipped (${result.skipped.length}): ${result.skipped
+        .map((s) => `[${s.id}: ${s.reason}]`)
+        .join(", ")}`,
+    );
+  }
+  if (result.errors.length > 0) {
+    lines.push(
+      `errors (${result.errors.length}): ${result.errors
+        .map((e) => `[${e.id}: ${e.message}]`)
+        .join(", ")}`,
+    );
+  }
+  return lines.join("\n");
+}
+
+const closeTabsTool: Tool = {
+  name: "close_tabs",
+  description:
+    "Close one or more tabs by id. Cannot close the agent's pinned/active tab " +
+    "(K-9) — ask the user to close the current tab manually instead. Each tab " +
+    "is re-verified against the origin shown on the confirm card; tabs that " +
+    "have navigated to a different origin since approval are skipped.",
+  parameters: {
+    type: "object",
+    properties: {
+      tabIds: {
+        type: "array",
+        items: { type: "integer" },
+        description: `Tab ids to close (max ${CLOSE_TABS_MAX} per call).`,
+      },
+    },
+    required: ["tabIds"],
+    additionalProperties: false,
+  },
+  handler: async (args: unknown, ctx: ToolHandlerContext): Promise<ActionResult> => {
+    const a = (args ?? {}) as CloseTabsArgs;
+    if (!Array.isArray(a.tabIds) || a.tabIds.length === 0) {
+      return { success: false, error: "close_tabs requires a non-empty tabIds array" };
+    }
+    if (a.tabIds.length > CLOSE_TABS_MAX) {
+      return {
+        success: false,
+        error: `close_tabs accepts at most ${CLOSE_TABS_MAX} tab ids per call (received ${a.tabIds.length}).`,
+      };
+    }
+
+    // K-9: never close the pinned tab. The handler refuses up front so the
+    // failure is visible in the observation rather than relying on the
+    // per-round origin re-check to recover from a closed pinnedTabId.
+    if (a.tabIds.includes(ctx.tabId)) {
+      return {
+        success: false,
+        error:
+          "close_tabs cannot close the agent's pinned tab. Ask the user to close it manually.",
+      };
+    }
+
+    const result: PartialCompletionResult = { ok: [], skipped: [], errors: [] };
+    const survivors: number[] = [];
+
+    // K-8: confirm-time origin re-verify per id. Skip stale; collect
+    // survivors for a single chrome.tabs.remove batch call.
+    for (const id of a.tabIds) {
+      const verify = await verifyConfirmedOrigin(id, ctx.confirmedTabTargets);
+      if (!verify.ok) {
+        result.skipped.push({ id, reason: verify.reason });
+        continue;
+      }
+      survivors.push(id);
+    }
+
+    if (survivors.length === 0) {
+      return {
+        success: false,
+        observation: `close_tabs: no valid targets (all tabs were stale or unconfirmed).\n${summarizePartial("close_tabs", result)}`,
+        error: "noValidTargets",
+      };
+    }
+
+    try {
+      await chrome.tabs.remove(survivors);
+      result.ok.push(...survivors);
+    } catch (e) {
+      // Batch failed — record on every id so the agent sees what didn't go.
+      const message = e instanceof Error ? e.message : String(e);
+      for (const id of survivors) {
+        result.errors.push({ id, message });
+      }
+    }
+
+    return {
+      success: result.ok.length > 0,
+      observation: summarizePartial("close_tabs", result),
+    };
+  },
+};
+
+const activateTabTool: Tool = {
+  name: "activate_tab",
+  description:
+    "Switch the user's view to a specific tab. The agent's pinned tab does " +
+    "NOT change — subsequent click/type tools still target the original tab. " +
+    "Use this only to bring a tab into the user's view; do not assume the " +
+    "agent will operate on the activated tab next.",
+  parameters: {
+    type: "object",
+    properties: {
+      tabId: {
+        type: "integer",
+        description: "Tab id to make active.",
+      },
+    },
+    required: ["tabId"],
+    additionalProperties: false,
+  },
+  handler: async (args: unknown, ctx: ToolHandlerContext): Promise<ActionResult> => {
+    const a = (args ?? {}) as ActivateTabArgs;
+    if (typeof a.tabId !== "number") {
+      return { success: false, error: "activate_tab requires a numeric tabId" };
+    }
+
+    // For same-origin activate_tab the call is low-risk (no confirm fired),
+    // so confirmedTabTargets is undefined — skip K-8 re-verify in that path.
+    // For cross-origin activate_tab the loop pre-built confirmedTabTargets;
+    // re-verify against it.
+    if (ctx.confirmedTabTargets) {
+      const verify = await verifyConfirmedOrigin(a.tabId, ctx.confirmedTabTargets);
+      if (!verify.ok) {
+        return {
+          success: false,
+          error: `activate_tab skipped: ${verify.reason}`,
+        };
+      }
+    } else {
+      // Same-origin path — still need to confirm tab exists before update.
+      try {
+        await chrome.tabs.get(a.tabId);
+      } catch {
+        return { success: false, error: `activate_tab: tab ${a.tabId} not found` };
+      }
+    }
+
+    try {
+      await chrome.tabs.update(a.tabId, { active: true });
+      return {
+        success: true,
+        observation: `Activated tab ${a.tabId}. Note: the agent's pinned tab is unchanged; subsequent click/type tools still target the original tab.`,
+      };
+    } catch (e) {
+      return {
+        success: false,
+        error: e instanceof Error ? e.message : "activate_tab failed",
+      };
+    }
+  },
+};
+
 export const TAB_TOOLS: Tool[] = [
   listTabsTool,
-  // Unit 3-5 will append: close_tabs, activate_tab, group_tabs, ungroup_tabs, move_tabs, get_tab_content
+  closeTabsTool,
+  activateTabTool,
+  // Unit 4-5 will append: group_tabs, ungroup_tabs, move_tabs, get_tab_content
 ];

@@ -421,6 +421,19 @@ export async function runAgentLoop(ctx: AgentLoopContext): Promise<void> {
   // skip the debugger-activation preamble (yellow bar already visible).
   let firstKeyboardConfirmShown = false;
 
+  // Phase 3 K-10 (reject-side) — per-task confirm-fatigue short-circuit.
+  // Key is tool name (close_tabs, group_tabs, etc.); value is consecutive
+  // reject count for that tool name in this task. When a tool reaches
+  // CONFIRM_REJECT_THRESHOLD rejects, the loop emits agent-done with a
+  // failure summary so the LLM can't keep re-issuing the same call and
+  // training the user to mash approve. Counter is task-scoped (cleared
+  // when runAgentLoop returns); approve does NOT reset the counter (a
+  // user oscillating reject/approve/reject is still trending toward
+  // fatigue). Cross-origin approve-side reflection was scoped out (see
+  // plan K-10 update during document review).
+  const confirmRejections = new Map<string, number>();
+  const CONFIRM_REJECT_THRESHOLD = 3;
+
   try {
     for (let stepIndex = 1; stepIndex <= MAX_STEPS; stepIndex++) {
       lastStepIndex = stepIndex;
@@ -778,6 +791,39 @@ export async function runAgentLoop(ctx: AgentLoopContext): Promise<void> {
           });
 
           if (!approved) {
+            const prevRejects = confirmRejections.get(tc.name) ?? 0;
+            const nextRejects = prevRejects + 1;
+            confirmRejections.set(tc.name, nextRejects);
+
+            // K-10 reject-side: terminate task after threshold consecutive
+            // rejects for the same tool name to break a fatigue cycle.
+            if (nextRejects >= CONFIRM_REJECT_THRESHOLD) {
+              const fatigueMsg = `User repeatedly rejected ${tc.name} (${nextRejects} times). Stopping task.`;
+              toolResultBlocks.push({
+                type: "tool_result",
+                toolUseId: tc.id,
+                content: fatigueMsg,
+                isError: true,
+              });
+              sendAgentStep(port, {
+                type: "agent-step",
+                stepIndex,
+                tool: tc.name,
+                args: redactArgsForPanel(tc.name, tc.args),
+                resolvedElement,
+                status: "error",
+                observation: fatigueMsg,
+                skillAuthor: skillAuthorForStep,
+              });
+              emitDone({
+                type: "agent-done-task",
+                success: false,
+                summary: fatigueMsg,
+                stepCount: stepIndex,
+              });
+              return;
+            }
+
             const rejectionMsg = "User rejected";
             toolResultBlocks.push({
               type: "tool_result",
@@ -860,10 +906,29 @@ export async function runAgentLoop(ctx: AgentLoopContext): Promise<void> {
           }
         }
 
+        // Phase 3 — confirm-time TabTarget snapshot for cross-tab handlers.
+        // K-8: handlers compare live tab origin against this map's origin
+        // (what the user saw on the confirm card), NOT pinnedOrigin. If a
+        // tab navigated between approval and dispatch, the handler skips it.
+        let confirmedTabTargets:
+          | Map<number, { origin: string; title: string }>
+          | undefined;
+        if (tabTargets && tabTargets.length > 0) {
+          confirmedTabTargets = new Map();
+          for (const t of tabTargets) {
+            if (t.stale) continue;
+            confirmedTabTargets.set(t.id, { origin: t.origin, title: t.title });
+          }
+        }
+
         // Execute tool
         let result;
         try {
-          result = await tool.handler(tc.args, { tabId: pinnedTabId, snapshot });
+          result = await tool.handler(tc.args, {
+            tabId: pinnedTabId,
+            snapshot,
+            confirmedTabTargets,
+          });
         } catch (e) {
           result = {
             success: false,
