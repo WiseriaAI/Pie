@@ -6,12 +6,15 @@ import {
   BUILT_IN_TOOLS,
   getKeyboardTools,
   isKeyboardToolName,
+  isSkillMetaToolName,
 } from "./tools";
+import { previewMetaSkillCall } from "./tools/skill-meta";
 import type { Tool } from "./types";
 import { classifyRisk } from "./risk";
 import { buildAgentSystemPrompt, buildObservationMessage } from "./prompt";
 import { applySlidingWindow } from "./window";
 import { isKeyboardSimulationEnabled } from "../keyboard-simulation";
+import { getEnabledSkills, markSkillFirstRun, type SkillDefinition } from "../skills";
 import {
   acquireCdpSession,
   type CdpSession,
@@ -24,6 +27,26 @@ import type {
 } from "../../types/messages";
 
 const MAX_STEPS = 30;
+
+/**
+ * Phase 2.6 — Skill scope.
+ *
+ * Active scope when the agent has invoked a skill-resolved tool. While active:
+ *   - R3 anti-nest: any further skill-resolved tool_call is rejected.
+ *   - R2 enforce: when allowedTools is non-null, any tool_call whose name is
+ *     not in the whitelist is rejected with an observation describing the
+ *     allowed set. allowedTools=null (legacy skills) keeps scope active for
+ *     R3 enforcement but does not gate other tool calls.
+ *
+ * Lifecycle: in-memory only, task-scoped. Discarded when runAgentLoop returns
+ * (done / fail / abort / max-steps). Replaced — not stacked — when a new
+ * skill tool_call succeeds; in practice unreachable because R3 already
+ * rejects nesting attempts.
+ */
+interface SkillScope {
+  skillId: string;
+  allowedTools: string[] | null;
+}
 
 export interface AgentLoopContext {
   port: chrome.runtime.Port;
@@ -152,6 +175,7 @@ export async function runAgentLoop(ctx: AgentLoopContext): Promise<void> {
   let doneEmitted = false;
   let lastStepIndex = 0;
   let normalTextReply = false; // pure-text reply uses chat-done, not agent-done-task
+  let currentSkillScope: SkillScope | null = null; // Phase 2.6 — see SkillScope JSDoc above
 
   // Idempotent done emit — every runAgentLoop exit path (success, abort,
   // error, finally) calls this; first one wins, the rest are no-ops.
@@ -234,7 +258,7 @@ export async function runAgentLoop(ctx: AgentLoopContext): Promise<void> {
   const history: AgentMessage[] = [
     {
       role: "system",
-      content: buildAgentSystemPrompt(task, keyboardSimEnabledAtStart),
+      content: buildAgentSystemPrompt(task, keyboardSimEnabledAtStart, /* hasMetaTools */ true),
     },
     { role: "user", content: task },
   ];
@@ -346,6 +370,19 @@ export async function runAgentLoop(ctx: AgentLoopContext): Promise<void> {
           })
         : [];
       const allTools = [...BUILT_IN_TOOLS, ...skillTools, ...keyboardTools];
+      // Phase 2.6 — skill-resolved tool name set, used by R3 anti-nest and
+      // by scope-transition recognition. Rebuilt each iteration because
+      // enabled skills can change mid-task (CRUD via meta tools).
+      const skillResolvedNames = new Set(skillTools.map((t) => t.name));
+      // Phase 2.6 — fetch SkillDefinition metadata for the same iteration so
+      // we can sync-lookup author / allowedTools / firstRunConfirmedAt during
+      // dispatch (R10 first-run gate, scope transition, agent-step skillAuthor).
+      // Mutable: in-step updates (e.g. firstRunConfirmedAt after gate approval)
+      // patch this map so a re-call within the same step doesn't re-gate.
+      const enabledSkillDefs = await getEnabledSkills();
+      const skillDefByName = new Map<string, SkillDefinition>(
+        enabledSkillDefs.map((s) => [s.id, s]),
+      );
       const toolDefinitions = toolsToDefinitions(allTools);
 
       // Stream from LLM
@@ -459,6 +496,54 @@ export async function runAgentLoop(ctx: AgentLoopContext): Promise<void> {
           continue;
         }
 
+        // Phase 2.6 — derive skillAuthor metadata for this step's agent-step
+        // events. Sync lookup against the per-iteration skill-def cache.
+        // undefined for non-skill tools (BUILT_IN_TOOLS, keyboard, meta tools).
+        const skillDefForStep = skillDefByName.get(tc.name);
+        const skillAuthorForStep: "user" | "agent" | "builtIn" | undefined =
+          skillDefForStep
+            ? skillDefForStep.builtIn
+              ? "builtIn"
+              : skillDefForStep.author ?? "user"
+            : undefined;
+
+        // ── Phase 2.6 — Skill scope enforcement (R2 + R3 anti-nest) ────────
+        // Inserted between tool-lookup and risk-classify so rejected calls
+        // skip risk classification, confirm card, and handler entirely.
+        if (currentSkillScope) {
+          let scopeRejection: string | null = null;
+          if (skillResolvedNames.has(tc.name)) {
+            // R3: skills cannot call other skills (would compose into deep
+            // chains the user never reviewed; also opens recursion footguns).
+            scopeRejection = `Skills cannot call other skills (currently in '${currentSkillScope.skillId}' scope; '${tc.name}' is a skill).`;
+          } else if (
+            currentSkillScope.allowedTools !== null &&
+            !currentSkillScope.allowedTools.includes(tc.name)
+          ) {
+            // R2: allowedTools whitelist is loop-enforced, not a prompt hint.
+            const allowedList = currentSkillScope.allowedTools.join(", ");
+            scopeRejection = `tool '${tc.name}' not allowed in skill '${currentSkillScope.skillId}' scope. Allowed: [${allowedList}]. Call done or fail to exit.`;
+          }
+          if (scopeRejection !== null) {
+            toolResultBlocks.push({
+              type: "tool_result",
+              toolUseId: tc.id,
+              content: scopeRejection,
+              isError: true,
+            });
+            sendAgentStep(port, {
+              type: "agent-step",
+              stepIndex,
+              tool: tc.name,
+              args: redactArgsForPanel(tc.name, tc.args),
+              status: "error",
+              observation: scopeRejection,
+              skillAuthor: skillAuthorForStep,
+            });
+            continue;
+          }
+        }
+
         // Resolve element for confirmation / display
         const resolvedElement = resolveElement(snapshot, args.elementIndex);
 
@@ -470,6 +555,7 @@ export async function runAgentLoop(ctx: AgentLoopContext): Promise<void> {
           args: redactArgsForPanel(tc.name, tc.args),
           resolvedElement,
           status: "pending",
+          skillAuthor: skillAuthorForStep,
         });
 
         // Risk classification
@@ -492,6 +578,14 @@ export async function runAgentLoop(ctx: AgentLoopContext): Promise<void> {
             firstKeyboardConfirmShown = true;
           }
 
+          // Phase 2.6 — for create_skill / update_skill, pre-compute the
+          // effective merged skill so AgentConfirmCard can render full
+          // content instead of just the patch (P0-D / adv-1 closure).
+          let metaSkillPreview: { existing: SkillDefinition | null; effective: SkillDefinition } | undefined;
+          if (tc.name === "create_skill" || tc.name === "update_skill") {
+            metaSkillPreview = (await previewMetaSkillCall(tc.name, tc.args)) ?? undefined;
+          }
+
           // confirm-request keeps RAW args.text — user must see the
           // actual content to make an informed approval. agent-step
           // (above + below) uses redactArgsForPanel.
@@ -500,6 +594,7 @@ export async function runAgentLoop(ctx: AgentLoopContext): Promise<void> {
             args: tc.args,
             resolvedElement: resolvedElement ?? { text: "", tag: "" },
             riskReason,
+            metaSkillPreview,
           });
 
           if (!approved) {
@@ -518,8 +613,70 @@ export async function runAgentLoop(ctx: AgentLoopContext): Promise<void> {
               resolvedElement,
               status: "error",
               observation: rejectionMsg,
+              skillAuthor: skillAuthorForStep,
             });
             continue;
+          }
+        }
+
+        // ── Phase 2.6 — R10 first-run confirm for agent-authored skills ────
+        // Triggers on skill-resolved tool_call when:
+        //   skill.author === 'agent' (covers create_skill output AND any
+        //     skill recently update_skill'd — author is tainted by P0-C)
+        //   skill.firstRunConfirmedAt is absent (cleared on every update)
+        // After approval we persist the timestamp; if persistence fails we
+        // fail-open (proceed with handler; next run will gate again).
+        if (skillResolvedNames.has(tc.name)) {
+          const skillDef = skillDefByName.get(tc.name);
+          if (
+            skillDef &&
+            skillDef.author === "agent" &&
+            !skillDef.firstRunConfirmedAt
+          ) {
+            const firstRunConfirmId = crypto.randomUUID();
+            const dateStr = skillDef.createdAt
+              ? new Date(skillDef.createdAt).toLocaleString()
+              : "an earlier session";
+            const firstRunReason = `This skill was authored or last modified by the agent on ${dateStr}. This is its first execution since modification — review the skill in Settings if needed, then confirm to allow it to run.`;
+            const approvedFirstRun = await sendConfirmRequest(firstRunConfirmId, {
+              tool: tc.name,
+              args: tc.args,
+              resolvedElement: resolvedElement ?? { text: skillDef.name, tag: "skill" },
+              riskReason: firstRunReason,
+            });
+            if (!approvedFirstRun) {
+              const rejectionMsg = "Skill first-run not approved";
+              toolResultBlocks.push({
+                type: "tool_result",
+                toolUseId: tc.id,
+                content: rejectionMsg,
+                isError: true,
+              });
+              sendAgentStep(port, {
+                type: "agent-step",
+                stepIndex,
+                tool: tc.name,
+                args: redactArgsForPanel(tc.name, tc.args),
+                resolvedElement,
+                status: "error",
+                observation: rejectionMsg,
+                skillAuthor: skillAuthorForStep,
+              });
+              continue;
+            }
+            const firstRunTs = Date.now();
+            try {
+              await markSkillFirstRun(tc.name, firstRunTs);
+              // Update in-memory cache so a re-call within the same step
+              // does not re-trigger the gate.
+              skillDefByName.set(tc.name, { ...skillDef, firstRunConfirmedAt: firstRunTs });
+            } catch (e) {
+              // fail-open: proceed with handler; next call will gate again.
+              console.warn(
+                `[loop] markSkillFirstRun failed for ${tc.name}; first-run gate will re-fire on next execution:`,
+                e,
+              );
+            }
           }
         }
 
@@ -565,7 +722,45 @@ export async function runAgentLoop(ctx: AgentLoopContext): Promise<void> {
           resolvedElement,
           status: result.success ? "ok" : "error",
           observation,
+          skillAuthor: skillAuthorForStep,
         });
+
+        // Phase 2.6 — Skill scope transition.
+        // Enter scope after a successful skill-resolved tool_call. Failed
+        // skill handlers do NOT enter scope (avoid half-state). The scope
+        // replaces any prior scope (R3 already rejected nested skill_calls,
+        // so reaching this branch with an existing scope is unreachable in
+        // practice; the assignment is still correct as overwrite).
+        if (skillResolvedNames.has(tc.name) && result.success) {
+          currentSkillScope = {
+            skillId: tc.name,
+            allowedTools: skillDefForStep?.allowedTools ?? null,
+          };
+        }
+
+        // Phase 2.6 — Skill cache invalidation after a successful meta-tool
+        // mutation, so a within-step sequence like [update_skill X, X] sees
+        // the post-update skill state on the second tc (R10 first-run gate
+        // and the resolveSkillToTools observation both depend on a fresh
+        // skillDefByName / skillResolvedNames). Without this, a stale cache
+        // would silently bypass R10 even though chrome.storage holds the new
+        // state — adversarial review adv-2.
+        if (isSkillMetaToolName(tc.name) && result.success) {
+          const refreshedSkills = await getEnabledSkills();
+          skillDefByName.clear();
+          for (const s of refreshedSkills) skillDefByName.set(s.id, s);
+          // skillResolvedNames is `const`-bound to this iteration's skillTools
+          // and `allTools` is also fixed for the iteration; we cannot resolve
+          // a brand-new skill into a callable Tool mid-iteration without
+          // re-running getEnabledSkillTools. That's deliberate — the agent
+          // will see the new skill in the NEXT iteration's tool list, after
+          // observation is digested. The cache invalidation here only
+          // ensures R10 / scope transition see fresh metadata for skills
+          // that already existed (i.e. the update_skill / delete_skill
+          // paths); brand-new create_skill outputs become callable next
+          // turn, which is the correct UX (one round-trip lets the user
+          // see the result).
+        }
 
         // Check for terminal tools
         if (tc.name === "done" && result.success) {

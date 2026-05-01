@@ -1,4 +1,5 @@
 import type { ChatMessage } from "@/lib/model-router";
+import type { SkillDefinition } from "@/lib/skills";
 
 // --- Page Content ---
 
@@ -69,6 +70,11 @@ export interface AgentStepMessage {
   resolvedElement?: ResolvedElement;
   status: "pending" | "ok" | "error";
   observation?: string;
+  /** Set when `tool` resolves to a skill (built-in or user-stored). Allows
+   *  Chat UI to badge agent-authored skill calls and audit logs to filter
+   *  by origin. Absent for non-skill tools (built-in BUILT_IN_TOOLS, keyboard,
+   *  meta tools). Phase 2.6 — see plan R17. */
+  skillAuthor?: "user" | "agent" | "builtIn";
 }
 
 export interface AgentConfirmRequestMessage {
@@ -78,6 +84,20 @@ export interface AgentConfirmRequestMessage {
   args: unknown;
   resolvedElement: ResolvedElement;
   riskReason: string;
+  /** Phase 2.6 — for create_skill / update_skill confirm cards, the SW
+   *  pre-computes the effective skill that will be persisted on approval
+   *  (and, for update_skill, the existing pre-update content). The confirm
+   *  card uses this to render the FULL merged content rather than only the
+   *  patch — without this, an update_skill that only patches `promptTemplate`
+   *  would hide the persistent `allowedTools` / `parameters` / etc. that
+   *  the user is implicitly re-approving (P0-D bypass closure).
+   *
+   *  `existing` is null for create_skill (no prior state) and the current
+   *  SkillDefinition for update_skill. */
+  metaSkillPreview?: {
+    existing: SkillDefinition | null;
+    effective: SkillDefinition;
+  };
 }
 
 export interface AgentDoneTaskMessage {

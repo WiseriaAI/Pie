@@ -1,5 +1,6 @@
 import type { ElementInfo, PageSnapshot } from "../dom-actions/types";
-import type { RiskAssessment } from "./types";
+import type { RiskAssessment, RiskLevel } from "./types";
+import { KEYBOARD_TOOL_NAMES } from "./tools/keyboard";
 
 /**
  * Returns true when the element is a sensitive input field
@@ -74,6 +75,28 @@ export function classifyRisk(
     };
   }
 
+  // Phase 2.6 — Skill autonomous CRUD meta tools.
+  //
+  // create_skill / update_skill grant the agent new persistent capabilities
+  // (write to chrome.storage.local; the new skill becomes a callable tool on
+  // subsequent turns). They are ALWAYS high until the user has reviewed the
+  // proposed skill content. Future降级 (e.g. low risk when allowedTools is
+  // entirely low-risk) can use riskOfAllowedTools below; the conservative
+  // default for now is unconditional high.
+  //
+  // delete_skill / list_skills are low: delete reduces capabilities (blast
+  // radius shrinks), list is a pure read.
+  if (toolName === "create_skill" || toolName === "update_skill") {
+    return {
+      level: "high",
+      reason:
+        "Persists a skill the agent can later invoke; review promptTemplate, parameters, and allowedTools before approving.",
+    };
+  }
+  if (toolName === "delete_skill" || toolName === "list_skills") {
+    return { level: "low" };
+  }
+
   // Terminal / always-low tools
   if (
     toolName === "done" ||
@@ -137,4 +160,28 @@ export function classifyRisk(
 
   // Default
   return { level: "low" };
+}
+
+/**
+ * Compute the aggregate risk of a tool whitelist by taking the max risk of any
+ * named tool. Used by the R5 inference path — currently exported for future降级
+ * of create_skill / update_skill (e.g. lowering risk when allowedTools is
+ * entirely low-risk). classifyRisk's hardcoded 'high' for those tools is the
+ * conservative default until降级 is enabled.
+ *
+ * Conservative: unknown names default to 'low' to avoid accidental escalation
+ * from typos (the meta tool handler already P1-G-rejects unknown names at
+ * write time).
+ */
+const ALWAYS_HIGH_RISK_TOOL_NAMES = new Set<string>([
+  ...KEYBOARD_TOOL_NAMES,
+  "create_skill",
+  "update_skill",
+]);
+
+export function riskOfAllowedTools(names: string[]): RiskLevel {
+  for (const n of names) {
+    if (ALWAYS_HIGH_RISK_TOOL_NAMES.has(n)) return "high";
+  }
+  return "low";
 }
