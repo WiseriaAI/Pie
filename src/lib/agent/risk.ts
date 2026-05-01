@@ -3,6 +3,61 @@ import type { RiskAssessment, RiskLevel } from "./types";
 import { KEYBOARD_TOOL_NAMES } from "./tools/keyboard";
 
 /**
+ * Phase 3 — context for cross-origin args introspection. Loop dispatch
+ * passes pinnedOrigin (task-level pin) and a cache of tab origins it has
+ * already fetched (chrome.tabs.get) so risk classifier can detect when a
+ * tab tool's args.tabIds touch tabs whose origin differs from pinnedOrigin
+ * and escalate.
+ *
+ * allTabsCache may be partial — for tabIds not in the cache, the classifier
+ * conservatively treats them as cross-origin (worst case is an extra
+ * confirm; never under-classifies).
+ */
+export interface RiskClassifyContext {
+  pinnedOrigin?: string;
+  allTabsCache?: Map<number, { origin: string }>;
+}
+
+/**
+ * Phase 3 — does any of args.tabIds (or args.tabId) touch a tab whose
+ * origin differs from pinnedOrigin? Returns true on miss-match OR on any
+ * tab whose origin we couldn't determine (conservative fail-high).
+ *
+ * Used by tab tools (close_tabs / activate_tab / group_tabs / ungroup_tabs /
+ * move_tabs / get_tab_content). Each tool's risk branch decides what to do
+ * with the result — most are always-high regardless and just fold the
+ * cross-origin signal into the reason string.
+ */
+export function hasCrossOriginTab(
+  args: { tabIds?: number[]; tabId?: number },
+  ctx: RiskClassifyContext | undefined,
+): { crossOrigin: boolean; offendingOrigins: string[] } {
+  if (!ctx?.pinnedOrigin || !ctx.allTabsCache) {
+    return { crossOrigin: false, offendingOrigins: [] };
+  }
+  const ids: number[] = [];
+  if (args.tabIds && Array.isArray(args.tabIds)) ids.push(...args.tabIds);
+  if (typeof args.tabId === "number") ids.push(args.tabId);
+  const offending = new Set<string>();
+  for (const id of ids) {
+    const entry = ctx.allTabsCache.get(id);
+    if (!entry) {
+      // Unknown — conservative fail-high. The actual tab might be same-origin
+      // but we choose the safer side; user will see one extra confirm.
+      offending.add("(unknown)");
+      continue;
+    }
+    if (entry.origin !== ctx.pinnedOrigin) {
+      offending.add(entry.origin);
+    }
+  }
+  return {
+    crossOrigin: offending.size > 0,
+    offendingOrigins: Array.from(offending),
+  };
+}
+
+/**
  * Returns true when the element is a sensitive input field
  * (password, credit card, OTP, verification code, etc.).
  *
@@ -72,6 +127,7 @@ export function classifyRisk(
     scope?: string;
   },
   snapshot: PageSnapshot,
+  ctx?: RiskClassifyContext,
 ): RiskAssessment {
   // Phase 2.5 keyboard simulation tools — ALWAYS high risk. CDP keyboard
   // events bypass all DOM safety checks (visibility, readonly, disabled);

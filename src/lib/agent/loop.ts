@@ -10,7 +10,9 @@ import {
 } from "./tools";
 import { previewMetaSkillCall } from "./tools/skill-meta";
 import type { Tool } from "./types";
-import { classifyRisk } from "./risk";
+import { classifyRisk, type RiskClassifyContext } from "./risk";
+import { TAB_TOOL_NAMES } from "./tool-names";
+import { escapeUntrustedWrappers } from "./untrusted-wrappers";
 import { buildAgentSystemPrompt, buildObservationMessage } from "./prompt";
 import { applySlidingWindow } from "./window";
 import { isKeyboardSimulationEnabled } from "../keyboard-simulation";
@@ -24,6 +26,7 @@ import type {
   AgentConfirmRequestMessage,
   AgentDoneTaskMessage,
   ResolvedElement,
+  TabTarget,
 } from "../../types/messages";
 
 const MAX_STEPS = 30;
@@ -126,6 +129,156 @@ export function safeParseOrigin(url: string): string | null {
   } catch {
     return null;
   }
+}
+
+// ── Phase 3 — Tab target pre-compute for confirm cards ─────────────────────
+
+/** Sanitize a chrome.tabs.Tab title for confirm-card display. Same pipeline
+ *  as wrapTabMetadata: strip line breaks → strip control chars → cap length
+ *  → escape wrapper-tag literals (P3-G / P3-O). Kept inline (not exported
+ *  from tabs.ts) because the panel is the consumer and we want a single
+ *  caller-controlled cap for confirm UX. */
+const TAB_TITLE_CAP = 100;
+const TAB_URL_CAP = 200;
+const CONTROL_CHARS_RE = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g;
+const LINE_BREAK_RE = /[\n\r\v\f]/g;
+
+function sanitizeTitleForConfirm(title: string | undefined): string {
+  if (!title) return "(untitled)";
+  let cleaned = title.replace(LINE_BREAK_RE, " ").replace(CONTROL_CHARS_RE, "");
+  if (cleaned.length > TAB_TITLE_CAP) {
+    cleaned = cleaned.slice(0, TAB_TITLE_CAP) + "…";
+  }
+  return escapeUntrustedWrappers(cleaned);
+}
+
+function sanitizeUrlForConfirm(url: string | undefined): string {
+  if (!url) return "";
+  // URLs are not free-form text — control chars are protocol-violating, but
+  // we still cap length and escape any wrapper-tag literal that could appear
+  // in a query string.
+  const cleaned = url.replace(CONTROL_CHARS_RE, "").slice(0, TAB_URL_CAP);
+  return escapeUntrustedWrappers(cleaned);
+}
+
+/** Phase 3 SEC-5 — only accept https:// or data:image/ favicon URLs.
+ *  Other protocols (javascript:, http:, chrome://favicon proxy, etc.) are
+ *  page-controlled vectors that AgentConfirmCard would render via <img src>.
+ *  When stripped, the panel falls back to a default icon. */
+function safeFavIconUrl(raw: string | undefined): string | undefined {
+  if (!raw) return undefined;
+  if (raw.startsWith("https://") || raw.startsWith("data:image/")) {
+    return raw;
+  }
+  return undefined;
+}
+
+/** Build a TabTarget array for a tool call. Returns undefined when the args
+ *  don't reference any specific tabs (or any tabs at all — no pre-fetch is
+ *  meaningful). The handler still receives the cached origins via ctx so the
+ *  risk classifier can do cross-origin introspection (P3-A).
+ *
+ *  Inputs:
+ *   - tabIds: number[]   — close_tabs / group_tabs / ungroup_tabs / move_tabs
+ *   - tabId: number      — activate_tab / get_tab_content
+ *   - scope: "allWindows" — list_tabs allWindows (we pre-fetch all tabs as
+ *                            informed-approval payload)
+ *
+ *  All three branches share the same chrome.tabs.get / query → TabTarget[]
+ *  pipeline. Stale tabs (chrome.tabs.get rejects) are still emitted with
+ *  stale: true so the user sees them in the card and the handler can skip
+ *  them at dispatch time (K-8 confirm-time origin re-verify).
+ */
+async function buildTabTargets(
+  toolName: string,
+  args: Record<string, unknown>,
+  pinnedOrigin: string,
+): Promise<TabTarget[] | undefined> {
+  let candidates: chrome.tabs.Tab[] = [];
+  if (toolName === "list_tabs" && args.scope === "allWindows") {
+    // SEC-3: surface all tabs across windows in the confirm card so the user
+    // can see exactly what is being exposed to the BYOK provider.
+    try {
+      const all = await chrome.tabs.query({});
+      // Cap at 50 — wrapTabMetadata will report total + truncated to the LLM
+      // post-approval; the confirm card just needs the informed-approval set.
+      candidates = all.slice(0, 50);
+    } catch {
+      return undefined;
+    }
+  } else {
+    const ids: number[] = [];
+    if (Array.isArray(args.tabIds)) {
+      for (const v of args.tabIds) {
+        if (typeof v === "number") ids.push(v);
+      }
+    }
+    if (typeof args.tabId === "number") {
+      ids.push(args.tabId);
+    }
+    if (ids.length === 0) return undefined;
+    // Parallel chrome.tabs.get; reject → stale TabTarget placeholder.
+    const settled = await Promise.allSettled(ids.map((id) => chrome.tabs.get(id)));
+    settled.forEach((r, i) => {
+      const id = ids[i];
+      if (r.status === "fulfilled") {
+        candidates.push(r.value);
+      } else {
+        // Push a synthetic stale tab entry so the card row exists with
+        // (closed) marker.
+        candidates.push({
+          id,
+          url: "",
+          title: "(closed or inaccessible)",
+          active: false,
+          pinned: false,
+          highlighted: false,
+          incognito: false,
+          windowId: -1,
+          discarded: false,
+          autoDiscardable: true,
+          groupId: -1,
+          index: -1,
+          favIconUrl: undefined,
+          // We use _stale as a marker on the chrome.tabs.Tab shape and pick it
+          // up below; chrome's type doesn't include it, so cast.
+        } as unknown as chrome.tabs.Tab);
+      }
+    });
+  }
+
+  return candidates.map((t): TabTarget => {
+    const id = typeof t.id === "number" ? t.id : -1;
+    const url = t.url ?? "";
+    const origin = safeParseOrigin(url) ?? "";
+    const stale = !url || id === -1 || t.title === "(closed or inaccessible)";
+    return {
+      id,
+      title: sanitizeTitleForConfirm(t.title),
+      url: sanitizeUrlForConfirm(url),
+      origin,
+      favIconUrl: safeFavIconUrl(t.favIconUrl),
+      crossOrigin: !stale && origin !== pinnedOrigin,
+      stale: stale || undefined,
+    };
+  });
+}
+
+/** Build a Map<tabId, {origin}> from a TabTarget array for risk classifier
+ *  ctx. Stale entries are intentionally absent so hasCrossOriginTab treats
+ *  them as conservative-fail-high (which is the right call — if we don't
+ *  know the origin we shouldn't assume same-origin). */
+function tabTargetsToOriginCache(
+  targets: TabTarget[] | undefined,
+): Map<number, { origin: string }> | undefined {
+  if (!targets || targets.length === 0) return undefined;
+  const m = new Map<number, { origin: string }>();
+  for (const t of targets) {
+    if (t.stale) continue;
+    if (!t.origin) continue;
+    m.set(t.id, { origin: t.origin });
+  }
+  return m;
 }
 
 // ── Phase 2.5 helpers ────────────────────────────────────────────────────────
@@ -558,8 +711,34 @@ export async function runAgentLoop(ctx: AgentLoopContext): Promise<void> {
           skillAuthor: skillAuthorForStep,
         });
 
+        // Phase 3 — pre-compute TabTarget[] for tab tools so the confirm card
+        // can render an informed-approval payload (P3-E) AND the risk
+        // classifier can do cross-origin args introspection (P3-A) using the
+        // already-fetched origins (no second chrome.tabs.get round-trip).
+        let tabTargets: TabTarget[] | undefined;
+        const isTabTool = (TAB_TOOL_NAMES as readonly string[]).includes(tc.name);
+        if (isTabTool) {
+          tabTargets = await buildTabTargets(tc.name, args, pinnedOrigin);
+        }
+
+        const riskCtx: RiskClassifyContext = {
+          pinnedOrigin,
+          allTabsCache: tabTargetsToOriginCache(tabTargets),
+        };
+
         // Risk classification
-        const risk = classifyRisk(tc.name, args as { elementIndex?: number; value?: string }, snapshot);
+        const risk = classifyRisk(
+          tc.name,
+          args as {
+            elementIndex?: number;
+            value?: string;
+            tabIds?: number[];
+            tabId?: number;
+            scope?: string;
+          },
+          snapshot,
+          riskCtx,
+        );
 
         if (risk.level === "high") {
           const confirmationId = crypto.randomUUID();
@@ -595,6 +774,7 @@ export async function runAgentLoop(ctx: AgentLoopContext): Promise<void> {
             resolvedElement: resolvedElement ?? { text: "", tag: "" },
             riskReason,
             metaSkillPreview,
+            tabTargets,
           });
 
           if (!approved) {
