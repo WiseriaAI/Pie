@@ -6,6 +6,7 @@ import { wait } from "../dom-actions/wait";
 import type { ActionResult } from "../dom-actions/types";
 import type { Tool, ToolHandlerContext } from "./types";
 import { buildKeyboardTools, type KeyboardToolDeps } from "./tools/keyboard";
+import { SKILL_META_TOOLS } from "./tools/skill-meta";
 
 export {
   KEYBOARD_TOOL_NAMES,
@@ -13,6 +14,12 @@ export {
   type KeyboardToolName,
   type KeyboardToolDeps,
 } from "./tools/keyboard";
+
+export {
+  SKILL_META_TOOL_NAMES,
+  isSkillMetaToolName,
+  type SkillMetaToolName,
+} from "./tools/skill-meta";
 
 /**
  * Phase 2.5 keyboard tools (dispatch_keyboard_input + press_key). Returned
@@ -205,4 +212,7 @@ export const BUILT_IN_TOOLS: Tool[] = [
       return { success: false, error: a.reason };
     },
   },
+
+  // Phase 2.6 — Skill autonomous CRUD meta tools (see tools/skill-meta.ts)
+  ...SKILL_META_TOOLS,
 ];
