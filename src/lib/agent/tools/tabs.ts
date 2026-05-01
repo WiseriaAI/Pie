@@ -467,9 +467,339 @@ const activateTabTool: Tool = {
   },
 };
 
+// ── Unit 4 — group_tabs / ungroup_tabs / move_tabs ──────────────────────────
+
+const GROUP_TABS_MAX = 50;
+const GROUP_NAME_CAP = 64;
+
+const TAB_GROUP_COLORS = [
+  "grey",
+  "blue",
+  "red",
+  "yellow",
+  "green",
+  "pink",
+  "purple",
+  "cyan",
+  "orange",
+] as const;
+type TabGroupColor = (typeof TAB_GROUP_COLORS)[number];
+
+interface GroupTabsArgs {
+  tabIds: number[];
+  groupName?: string;
+  color?: string;
+}
+
+interface UngroupTabsArgs {
+  tabIds: number[];
+}
+
+interface MoveTabsArgs {
+  tabIds: number[];
+  index: number;
+}
+
+/**
+ * SEC-1 — sanitize an LLM-supplied groupName before it flows into
+ * chrome.tabGroups.update({title}). Without this, an LLM influenced by
+ * prompt-injected tab titles could pick a groupName containing wrapper
+ * literals or control chars; that name would render in Chrome's tab strip
+ * AND echo back into the next list_tabs <untrusted_tab_metadata> block,
+ * potentially escaping the wrapper.
+ */
+function sanitizeGroupName(raw: string | undefined): string {
+  if (!raw) return "";
+  let cleaned = raw.replace(LINE_BREAK_RE, " ").replace(CONTROL_CHARS_RE, "");
+  if (cleaned.length > GROUP_NAME_CAP) {
+    cleaned = cleaned.slice(0, GROUP_NAME_CAP);
+  }
+  return escapeUntrustedWrappers(cleaned);
+}
+
+/** Filter tabIds whose tab.url is a restricted scheme — chrome:// tabs
+ *  can't be grouped (chrome.tabs.group rejects). The K-8 verify step
+ *  has already confirmed origin equality with what the user saw, so the
+ *  origin is real; we only need to reject the special schemes here. */
+function isRestrictedSchemeForGrouping(url: string): boolean {
+  return RESTRICTED_URL_PREFIXES.some((p) => url.startsWith(p));
+}
+
+const groupTabsTool: Tool = {
+  name: "group_tabs",
+  description:
+    "Move one or more tabs into a tab group. Creates a new group when no " +
+    "groupId is supplied. Optional groupName + color let you label the group. " +
+    "Tabs that have navigated since the confirm card are skipped. " +
+    "Restricted-URL tabs (chrome://, file://, etc.) are also skipped.",
+  parameters: {
+    type: "object",
+    properties: {
+      tabIds: {
+        type: "array",
+        items: { type: "integer" },
+        description: `Tab ids to move into the group (max ${GROUP_TABS_MAX} per call).`,
+      },
+      groupName: {
+        type: "string",
+        description:
+          `Optional human-readable group label (max ${GROUP_NAME_CAP} chars). ` +
+          "Sanitized: line breaks become spaces, control chars stripped, " +
+          "wrapper-tag literals escaped.",
+      },
+      color: {
+        type: "string",
+        enum: [...TAB_GROUP_COLORS],
+        description: "Optional group accent color.",
+      },
+    },
+    required: ["tabIds"],
+    additionalProperties: false,
+  },
+  handler: async (args: unknown, ctx: ToolHandlerContext): Promise<ActionResult> => {
+    const a = (args ?? {}) as GroupTabsArgs;
+    if (!Array.isArray(a.tabIds) || a.tabIds.length === 0) {
+      return { success: false, error: "group_tabs requires a non-empty tabIds array" };
+    }
+    if (a.tabIds.length > GROUP_TABS_MAX) {
+      return {
+        success: false,
+        error: `group_tabs accepts at most ${GROUP_TABS_MAX} tab ids per call.`,
+      };
+    }
+
+    if (a.color !== undefined && !TAB_GROUP_COLORS.includes(a.color as TabGroupColor)) {
+      return {
+        success: false,
+        error: `Invalid color "${a.color}". Must be one of: ${TAB_GROUP_COLORS.join(", ")}.`,
+      };
+    }
+
+    const safeName = a.groupName ? sanitizeGroupName(a.groupName) : "";
+    const result: PartialCompletionResult = { ok: [], skipped: [], errors: [] };
+    const survivors: number[] = [];
+
+    for (const id of a.tabIds) {
+      const verify = await verifyConfirmedOrigin(id, ctx.confirmedTabTargets);
+      if (!verify.ok) {
+        result.skipped.push({ id, reason: verify.reason });
+        continue;
+      }
+      // Reject restricted-scheme tabs — chrome.tabs.group would error on
+      // them and abort the whole batch.
+      if (verify.tab.url && isRestrictedSchemeForGrouping(verify.tab.url)) {
+        result.skipped.push({ id, reason: "restricted-url" });
+        continue;
+      }
+      survivors.push(id);
+    }
+
+    if (survivors.length === 0) {
+      return {
+        success: false,
+        observation: `group_tabs: no valid targets.\n${summarizePartial("group_tabs", result)}`,
+        error: "noValidTargets",
+      };
+    }
+
+    let newGroupId: number;
+    try {
+      newGroupId = await chrome.tabs.group({ tabIds: survivors });
+      result.ok.push(...survivors);
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      for (const id of survivors) {
+        result.errors.push({ id, message });
+      }
+      return {
+        success: false,
+        observation: summarizePartial("group_tabs", result),
+        error: message,
+      };
+    }
+
+    // Apply name + color via chrome.tabGroups.update if either was supplied.
+    if (safeName || a.color) {
+      try {
+        await chrome.tabGroups.update(newGroupId, {
+          title: safeName || undefined,
+          color: (a.color as TabGroupColor | undefined) ?? undefined,
+        });
+      } catch (e) {
+        // Group itself created OK — name/color failure is a warning, not a
+        // fatal failure. Surface it in observation but keep success=true.
+        const msg = e instanceof Error ? e.message : String(e);
+        return {
+          success: true,
+          observation: `${summarizePartial("group_tabs", result)}\nGroup ${newGroupId} created but title/color update failed: ${msg}`,
+        };
+      }
+    }
+
+    return {
+      success: true,
+      observation: `${summarizePartial("group_tabs", result)}\nGroup id: ${newGroupId}${safeName ? ` (name: ${safeName})` : ""}${a.color ? ` (color: ${a.color})` : ""}`,
+    };
+  },
+};
+
+const ungroupTabsTool: Tool = {
+  name: "ungroup_tabs",
+  description:
+    "Remove one or more tabs from their current tab group. The group is " +
+    "automatically deleted when the last tab leaves it. Tabs that have " +
+    "navigated since the confirm card are skipped.",
+  parameters: {
+    type: "object",
+    properties: {
+      tabIds: {
+        type: "array",
+        items: { type: "integer" },
+        description: `Tab ids to remove from their groups (max ${GROUP_TABS_MAX} per call).`,
+      },
+    },
+    required: ["tabIds"],
+    additionalProperties: false,
+  },
+  handler: async (args: unknown, ctx: ToolHandlerContext): Promise<ActionResult> => {
+    const a = (args ?? {}) as UngroupTabsArgs;
+    if (!Array.isArray(a.tabIds) || a.tabIds.length === 0) {
+      return { success: false, error: "ungroup_tabs requires a non-empty tabIds array" };
+    }
+    if (a.tabIds.length > GROUP_TABS_MAX) {
+      return {
+        success: false,
+        error: `ungroup_tabs accepts at most ${GROUP_TABS_MAX} tab ids per call.`,
+      };
+    }
+
+    const result: PartialCompletionResult = { ok: [], skipped: [], errors: [] };
+    const survivors: number[] = [];
+
+    for (const id of a.tabIds) {
+      const verify = await verifyConfirmedOrigin(id, ctx.confirmedTabTargets);
+      if (!verify.ok) {
+        result.skipped.push({ id, reason: verify.reason });
+        continue;
+      }
+      survivors.push(id);
+    }
+
+    if (survivors.length === 0) {
+      return {
+        success: false,
+        observation: `ungroup_tabs: no valid targets.\n${summarizePartial("ungroup_tabs", result)}`,
+        error: "noValidTargets",
+      };
+    }
+
+    try {
+      await chrome.tabs.ungroup(survivors);
+      result.ok.push(...survivors);
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      for (const id of survivors) {
+        result.errors.push({ id, message });
+      }
+    }
+
+    return {
+      success: result.ok.length > 0,
+      observation: summarizePartial("ungroup_tabs", result),
+    };
+  },
+};
+
+const moveTabsTool: Tool = {
+  name: "move_tabs",
+  description:
+    "Reorder one or more tabs to a target index within their current window. " +
+    "Cross-window moves are not supported in v1 — all tabIds must share a " +
+    "single windowId. Tabs that have navigated since the confirm card are " +
+    "skipped.",
+  parameters: {
+    type: "object",
+    properties: {
+      tabIds: {
+        type: "array",
+        items: { type: "integer" },
+        description: `Tab ids to move (max ${GROUP_TABS_MAX} per call).`,
+      },
+      index: {
+        type: "integer",
+        description: "Target index within the window (0-based; -1 to append).",
+      },
+    },
+    required: ["tabIds", "index"],
+    additionalProperties: false,
+  },
+  handler: async (args: unknown, ctx: ToolHandlerContext): Promise<ActionResult> => {
+    const a = (args ?? {}) as MoveTabsArgs;
+    if (!Array.isArray(a.tabIds) || a.tabIds.length === 0) {
+      return { success: false, error: "move_tabs requires a non-empty tabIds array" };
+    }
+    if (typeof a.index !== "number" || !Number.isInteger(a.index)) {
+      return { success: false, error: "move_tabs requires an integer index" };
+    }
+    if (a.tabIds.length > GROUP_TABS_MAX) {
+      return {
+        success: false,
+        error: `move_tabs accepts at most ${GROUP_TABS_MAX} tab ids per call.`,
+      };
+    }
+
+    const result: PartialCompletionResult = { ok: [], skipped: [], errors: [] };
+    const survivors: number[] = [];
+    let sharedWindowId: number | undefined;
+
+    for (const id of a.tabIds) {
+      const verify = await verifyConfirmedOrigin(id, ctx.confirmedTabTargets);
+      if (!verify.ok) {
+        result.skipped.push({ id, reason: verify.reason });
+        continue;
+      }
+      const wid = verify.tab.windowId;
+      if (sharedWindowId === undefined) {
+        sharedWindowId = wid;
+      } else if (sharedWindowId !== wid) {
+        // v1: cross-window move is acceptance-gated (G-2). Reject the id.
+        result.skipped.push({ id, reason: "cross-window-not-supported" });
+        continue;
+      }
+      survivors.push(id);
+    }
+
+    if (survivors.length === 0) {
+      return {
+        success: false,
+        observation: `move_tabs: no valid targets.\n${summarizePartial("move_tabs", result)}`,
+        error: "noValidTargets",
+      };
+    }
+
+    try {
+      await chrome.tabs.move(survivors, { index: a.index });
+      result.ok.push(...survivors);
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      for (const id of survivors) {
+        result.errors.push({ id, message });
+      }
+    }
+
+    return {
+      success: result.ok.length > 0,
+      observation: summarizePartial("move_tabs", result),
+    };
+  },
+};
+
 export const TAB_TOOLS: Tool[] = [
   listTabsTool,
   closeTabsTool,
   activateTabTool,
-  // Unit 4-5 will append: group_tabs, ungroup_tabs, move_tabs, get_tab_content
+  groupTabsTool,
+  ungroupTabsTool,
+  moveTabsTool,
+  // Unit 5 will append: get_tab_content
 ];
