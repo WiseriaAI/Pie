@@ -1,9 +1,10 @@
 ---
 title: Phase 3 — Tab Management as Agent Tools (no standalone module)
 type: feat
-status: active
+status: completed
 date: 2026-05-01
 deepened: 2026-05-01
+completed: 2026-05-02
 ---
 
 # Phase 3 — Tab Management as Agent Tools
