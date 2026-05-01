@@ -12,7 +12,7 @@ import { classifyRisk } from "./risk";
 import { buildAgentSystemPrompt, buildObservationMessage } from "./prompt";
 import { applySlidingWindow } from "./window";
 import { isKeyboardSimulationEnabled } from "../keyboard-simulation";
-import { getSkill } from "../skills";
+import { getSkill, markSkillFirstRun } from "../skills";
 import {
   acquireCdpSession,
   type CdpSession,
@@ -582,6 +582,62 @@ export async function runAgentLoop(ctx: AgentLoopContext): Promise<void> {
               observation: rejectionMsg,
             });
             continue;
+          }
+        }
+
+        // ── Phase 2.6 — R10 first-run confirm for agent-authored skills ────
+        // Triggers on skill-resolved tool_call when:
+        //   skill.author === 'agent' (covers create_skill output AND any
+        //     skill recently update_skill'd — author is tainted by P0-C)
+        //   skill.firstRunConfirmedAt is absent (cleared on every update)
+        // After approval we persist the timestamp; if persistence fails we
+        // fail-open (proceed with handler; next run will gate again).
+        if (skillResolvedNames.has(tc.name)) {
+          const skillDef = await getSkill(tc.name);
+          if (
+            skillDef &&
+            skillDef.author === "agent" &&
+            !skillDef.firstRunConfirmedAt
+          ) {
+            const firstRunConfirmId = crypto.randomUUID();
+            const dateStr = skillDef.createdAt
+              ? new Date(skillDef.createdAt).toLocaleString()
+              : "an earlier session";
+            const firstRunReason = `This skill was authored or last modified by the agent on ${dateStr}. This is its first execution since modification — review the skill in Settings if needed, then confirm to allow it to run.`;
+            const approvedFirstRun = await sendConfirmRequest(firstRunConfirmId, {
+              tool: tc.name,
+              args: tc.args,
+              resolvedElement: resolvedElement ?? { text: skillDef.name, tag: "skill" },
+              riskReason: firstRunReason,
+            });
+            if (!approvedFirstRun) {
+              const rejectionMsg = "Skill first-run not approved";
+              toolResultBlocks.push({
+                type: "tool_result",
+                toolUseId: tc.id,
+                content: rejectionMsg,
+                isError: true,
+              });
+              sendAgentStep(port, {
+                type: "agent-step",
+                stepIndex,
+                tool: tc.name,
+                args: redactArgsForPanel(tc.name, tc.args),
+                resolvedElement,
+                status: "error",
+                observation: rejectionMsg,
+              });
+              continue;
+            }
+            try {
+              await markSkillFirstRun(tc.name, Date.now());
+            } catch (e) {
+              // fail-open: proceed with handler; next call will gate again.
+              console.warn(
+                `[loop] markSkillFirstRun failed for ${tc.name}; first-run gate will re-fire on next execution:`,
+                e,
+              );
+            }
           }
         }
 
