@@ -22,7 +22,9 @@ BYOK (Bring Your Own Key) Chrome Extension — 用户插入自己的 API key 获
 - `src/lib/dom-actions/` — Self-contained DOM action functions injected via executeScript
 - `src/lib/agent/` — ReAct loop, tool registry, risk classifier, prompt builder, sliding window
 - `src/lib/agent/tools/keyboard.ts` — Phase 2.5 CDP keyboard tools (dispatch_keyboard_input, press_key)
-- `src/lib/skills/` — Skill framework: types, storage, builtin, resolveSkillToTools
+- `src/lib/agent/tools/skill-meta.ts` — Phase 2.6 skill CRUD meta tools (create_skill / update_skill / delete_skill / list_skills) + previewMetaSkillCall
+- `src/lib/agent/tool-names.ts` — Pure name registry shared by SW + sidepanel (avoids dragging agent runtime into panel bundle)
+- `src/lib/skills/` — Skill framework: types, storage (incl. generateSkillId / getSkillStorageBytes / markSkillFirstRun), builtin, resolveSkillToTools
 - `src/lib/crypto.ts` — AES-GCM encryption for API key storage
 - `src/lib/storage.ts` — Provider config CRUD (encrypted keys in chrome.storage.local)
 - `src/lib/keyboard-simulation.ts` — Phase 2.5 toggle storage helper
@@ -61,6 +63,7 @@ All OpenAI-compatible providers share one streaming implementation via registry.
 - Risk classifier: default low + structural escalation (submit buttons, sensitive fields, keyword regex); CDP keyboard tools always high
 - Prompt injection defense: page snapshots in user role wrapped in <untrusted_page_content>, never in system role
 - Phase 2.5 CDP path: per-task lazy attach via cdp-session.ts; per-CDP-call origin & active-tab re-check; owner-token guard prevents multi-Side-Panel collateral detach; idempotent detach across 5 paths (explicit, abort signal, onDetach, kill-switch, finally); args.text redacted in agent-step but raw in confirm-request (informed approval requires content visibility)
+- Phase 2.6 Skill autonomous CRUD invariants: meta tool path enforces 8 capability-grant guards — update_skill rejects builtIn=true (P0-A); parameters JSON Schema strings ≤ 2 KB total share the trust boundary with promptTemplate (P0-B); update_skill taints author='agent' + clears firstRunConfirmedAt so any modification re-triggers R10 first-run confirm regardless of original author (P0-C); promptTemplate ≤ 8 KB AND AgentConfirmCard renders the SW-pre-computed effective merged skill (no 2000-char cap, "(unchanged)" tags retained fields — closes adv-1) (P0-D); create_skill schema additionalProperties:false + handler strips args.id, ids prefixed `skill_agent_`/`skill_user_` to prevent built-in tool name collision (P1-E); allowedTools required non-null array (P1-F); allowedTools names validated against currently-registered tool set, EXCLUDING meta tool names so skills cannot orchestrate further skill CRUD (P1-G + adv residual #1); 1 MB skill_* storage budget (P1-H). R10 first-run gate uses per-iteration skillDefByName cache that is INVALIDATED after any successful meta-tool dispatch (adv-2). Loop layer enforces skill scope (R2) + R3 anti-nest. SkillsList UI is parity for manual create/edit (same caps + name validation).
 
 ## Progress
 
@@ -68,4 +71,5 @@ All OpenAI-compatible providers share one streaming implementation via registry.
 - **Phase 0 (元素定位验证) — COMPLETED**: DOM traversal validated, region filtering works, `<all_urls>` permission needed
 - **Phase 2 (Agent 能力) — COMPLETED**: ReAct Agent Loop with tool calling, DOM operations, risk-based confirmation, basic Skill framework
 - **Phase 2.5 (CDP 键盘模拟) — COMPLETED**: `chrome.debugger` + `Input.insertText` / `Input.dispatchKeyEvent` 支持飞书 Docs 等 canvas 编辑器；二态 Settings 开关，5 路径汇聚的 idempotent detach，per-CDP-call origin re-check，owner-token + generationId 防多 Side Panel 串味，redaction 二分通道（confirm 显示原文 / agent-step redact）
-- **Phase 3 (标签管理) — NOT STARTED**: Tab analysis, grouping, cleanup
+- **Phase 2.6 (Skill 自主 CRUD) — COMPLETED**: SkillDefinition 加 author/createdAt/allowedTools/firstRunConfirmedAt；4 个 meta tools (create/update/delete/list_skill) 注册到 BUILT_IN_TOOLS 并内置 8 个 capability-grant invariant；ReAct loop 强制 skill 作用域白名单 (R2) + 禁嵌套 (R3)；agent 创建/修改的 skill 首次执行二次 confirm (R10)；AgentConfirmCard 对 meta tool 跳过 2000-char cap 并渲染 SW pre-computed effective merged skill (P0-D + adv-1)；Settings SkillsList 升级为可手动 CRUD + author 视觉区分 + 1 MB 配额条
+- **Phase 3 (标签管理) — NOT STARTED**: Tab analysis, grouping, cleanup. Architecture is schema-ready: chrome.tabs.* tools can be added to BUILT_IN_TOOLS and skills can compose them. Cross-tab origin/blast-radius safety model is NOT solved by Phase 2.6 — Phase 3 must redesign before shipping.

@@ -1,7 +1,7 @@
 ---
 title: "feat: Skill 自主 CRUD 升级（Skill 作为 first-class 扩展能力）"
 type: feat
-status: active
+status: completed
 date: 2026-05-01
 deepened: 2026-05-01
 origin: docs/brainstorms/2026-05-01-skill-autonomous-crud-requirements.md
