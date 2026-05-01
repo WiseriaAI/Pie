@@ -34,6 +34,108 @@ function safeStringifyArgs(args: unknown): string {
   }
 }
 
+/** Phase 2.6 — meta tool detection (P0-D). For create_skill / update_skill the
+ *  args object IS the trust-decision artifact, so the 2000-char cap and the
+ *  generic args block must be bypassed in favor of full-content per-field
+ *  rendering. */
+function isSkillMetaTool(tool: string): boolean {
+  return tool === "create_skill" || tool === "update_skill";
+}
+
+function safeStringifyForPanel(value: unknown): string {
+  try {
+    return JSON.stringify(value, null, 2) ?? "null";
+  } catch {
+    return "(non-serializable)";
+  }
+}
+
+/**
+ * Render the full skill content under review for a create_skill / update_skill
+ * confirm card. NO 2000-char cap — the user must see everything they're
+ * approving (P0-D). Each field gets a dedicated scrollable panel with
+ * max-h to keep the card from blowing up the side panel.
+ */
+function SkillContentDetails({ tool, args }: { tool: string; args: unknown }) {
+  const a = (args && typeof args === "object" ? (args as Record<string, unknown>) : {}) as Record<string, unknown>;
+  const isUpdate = tool === "update_skill";
+  const source = isUpdate
+    ? ((a.patch && typeof a.patch === "object" ? (a.patch as Record<string, unknown>) : {}) as Record<string, unknown>)
+    : a;
+
+  const id = isUpdate && typeof a.id === "string" ? a.id : undefined;
+  const name = typeof source.name === "string" ? source.name : undefined;
+  const description = typeof source.description === "string" ? source.description : undefined;
+  const promptTemplate = typeof source.promptTemplate === "string" ? source.promptTemplate : undefined;
+  const parameters = source.parameters;
+  const allowedTools = Array.isArray(source.allowedTools)
+    ? (source.allowedTools as unknown[]).map((t) => String(t))
+    : undefined;
+
+  return (
+    <div className="space-y-2.5">
+      {isUpdate && (
+        <div className="rounded bg-amber-950/40 border border-amber-700/60 px-2 py-1 text-xs text-amber-300">
+          Updating an existing skill. After approval the skill is re-marked as agent-authored, and the user will be asked to re-confirm on its next execution.
+        </div>
+      )}
+      {id !== undefined && (
+        <div>
+          <div className="text-xs text-neutral-500">id:</div>
+          <code className="font-mono text-xs text-neutral-300 break-all">{id}</code>
+        </div>
+      )}
+      {name !== undefined && (
+        <div>
+          <div className="text-xs text-neutral-500">name:</div>
+          <div className="text-neutral-200">{name}</div>
+        </div>
+      )}
+      {description !== undefined && (
+        <div>
+          <div className="text-xs text-neutral-500">description:</div>
+          <div className="text-neutral-300 whitespace-pre-wrap break-words">{description}</div>
+        </div>
+      )}
+      {promptTemplate !== undefined && (
+        <div>
+          <div className="text-xs text-neutral-500">promptTemplate ({promptTemplate.length} chars):</div>
+          <pre className="max-h-64 overflow-auto rounded bg-neutral-950 p-2 font-mono text-xs text-neutral-300 whitespace-pre-wrap break-words">
+            {promptTemplate}
+          </pre>
+        </div>
+      )}
+      {parameters !== undefined && (
+        <div>
+          <div className="text-xs text-neutral-500">parameters (JSON Schema):</div>
+          <pre className="max-h-48 overflow-auto rounded bg-neutral-950 p-2 font-mono text-xs text-neutral-300">
+            {safeStringifyForPanel(parameters)}
+          </pre>
+        </div>
+      )}
+      {allowedTools !== undefined && (
+        <div>
+          <div className="text-xs text-neutral-500">allowedTools:</div>
+          {allowedTools.length === 0 ? (
+            <div className="text-xs italic text-neutral-500">(empty — only done / fail callable inside this skill's scope)</div>
+          ) : (
+            <div className="mt-1 flex flex-wrap gap-1">
+              {allowedTools.map((t, i) => (
+                <code
+                  key={i}
+                  className="rounded bg-neutral-800 px-1.5 py-0.5 font-mono text-xs text-neutral-300"
+                >
+                  {t}
+                </code>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function AgentConfirmCard({
   tool,
   args,
@@ -49,6 +151,8 @@ export default function AgentConfirmCard({
       e.preventDefault();
     }
   }
+
+  const isMeta = isSkillMetaTool(tool);
 
   return (
     // eslint-disable-next-line jsx-a11y/no-static-element-interactions
@@ -70,48 +174,58 @@ export default function AgentConfirmCard({
         <code className="font-mono text-neutral-200">{tool}</code>
       </div>
 
-      {/* Resolved element */}
-      <div className="mb-2 space-y-0.5 text-xs">
-        <div>
-          <span className="text-neutral-500">tag: </span>
-          <code className="font-mono text-neutral-300">
-            {"<"}
-            {resolvedElement.tag}
-            {">"}
-          </code>
+      {/* Resolved element — only for DOM-targeted tools (skip for meta tools whose
+          resolvedElement is a placeholder { text: "", tag: "" } or { text: skill.name, tag: "skill" }) */}
+      {!isMeta && (
+        <div className="mb-2 space-y-0.5 text-xs">
+          <div>
+            <span className="text-neutral-500">tag: </span>
+            <code className="font-mono text-neutral-300">
+              {"<"}
+              {resolvedElement.tag}
+              {">"}
+            </code>
+          </div>
+          {resolvedElement.text && (
+            <div>
+              <span className="text-neutral-500">text: </span>
+              <span className="text-neutral-300">{resolvedElement.text}</span>
+            </div>
+          )}
+          {resolvedElement.ariaLabel && (
+            <div>
+              <span className="text-neutral-500">aria-label: </span>
+              <span className="text-neutral-300">{resolvedElement.ariaLabel}</span>
+            </div>
+          )}
+          {resolvedElement.type && (
+            <div>
+              <span className="text-neutral-500">type: </span>
+              <span className="text-neutral-300">{resolvedElement.type}</span>
+            </div>
+          )}
+          {resolvedElement.href && (
+            <div>
+              <span className="text-neutral-500">href: </span>
+              <span className="text-neutral-300 break-all">{resolvedElement.href}</span>
+            </div>
+          )}
         </div>
-        {resolvedElement.text && (
-          <div>
-            <span className="text-neutral-500">text: </span>
-            <span className="text-neutral-300">{resolvedElement.text}</span>
-          </div>
-        )}
-        {resolvedElement.ariaLabel && (
-          <div>
-            <span className="text-neutral-500">aria-label: </span>
-            <span className="text-neutral-300">{resolvedElement.ariaLabel}</span>
-          </div>
-        )}
-        {resolvedElement.type && (
-          <div>
-            <span className="text-neutral-500">type: </span>
-            <span className="text-neutral-300">{resolvedElement.type}</span>
-          </div>
-        )}
-        {resolvedElement.href && (
-          <div>
-            <span className="text-neutral-500">href: </span>
-            <span className="text-neutral-300 break-all">{resolvedElement.href}</span>
-          </div>
-        )}
-      </div>
+      )}
 
-      {/* Args (sensitive values redacted before stringify) */}
+      {/* Args — meta tools render full skill content per-field (P0-D no cap);
+          everything else uses the generic 2000-char-capped JSON pretty-print. */}
       <div className="mb-3">
-        <div className="mb-0.5 text-xs text-neutral-500">args:</div>
-        <pre className="overflow-x-auto rounded bg-neutral-950 p-1.5 font-mono text-xs text-neutral-300">
-          {safeStringifyArgs(redactArgsForDisplay(tool, args, riskReason))}
-        </pre>
+        {isMeta ? (
+          <SkillContentDetails tool={tool} args={args} />
+        ) : (
+          <>
+            <div className="mb-0.5 text-xs text-neutral-500">args:</div>
+            <pre className="overflow-x-auto rounded bg-neutral-950 p-1.5 font-mono text-xs text-neutral-300">
+              {safeStringifyArgs(redactArgsForDisplay(tool, args, riskReason))}
+            </pre>
+          </>
+        )}
       </div>
 
       {/* Action buttons or resolved status */}

@@ -27,7 +27,7 @@ import {
   getSkillStorageBytes,
 } from "../../skills/storage";
 import { getAllSkills } from "../../skills";
-import { KEYBOARD_TOOL_NAMES } from "./keyboard";
+import { ALL_KNOWN_NON_SKILL_TOOL_NAMES } from "../tool-names";
 
 // ── Configuration / limits ───────────────────────────────────────────────────
 
@@ -35,36 +35,6 @@ const PROMPT_TEMPLATE_MAX_BYTES = 8 * 1024; // P0-D
 const SCHEMA_STRINGS_MAX_BYTES = 2 * 1024;  // P0-B
 const SKILL_STORAGE_QUOTA_BYTES = 1 * 1024 * 1024; // P1-H — 1 MB; chrome.storage.local total is 5 MB,
                                                    // leaving 4 MB for provider configs / agent state / future checkpoints.
-
-/**
- * Names of built-in tools that the agent can reference inside a skill's
- * `allowedTools` whitelist (P1-G validation).
- *
- * IMPORTANT: keep in sync with BUILT_IN_TOOLS in src/lib/agent/tools.ts —
- * adding a new built-in tool requires adding its name here so agent-authored
- * skills can reference it. Skill-resolved tool names (user/built-in skills)
- * are intentionally excluded — R3 forbids skills calling other skills.
- */
-const KNOWN_BUILT_IN_TOOL_NAMES = [
-  // Phase 2 originals
-  "click", "type", "scroll", "select", "wait", "done", "fail",
-  // Phase 2.6 meta tools (this file)
-  "create_skill", "update_skill", "delete_skill", "list_skills",
-] as const;
-
-/**
- * Returns the set of tool names that an agent-authored skill is allowed to
- * reference in its `allowedTools` whitelist. Includes built-in tools and
- * keyboard tools (the latter even when the user has keyboard simulation
- * disabled — the skill remains forward-compatible for when keyboard is
- * re-enabled).
- */
-function getKnownToolNames(): Set<string> {
-  return new Set<string>([
-    ...KNOWN_BUILT_IN_TOOL_NAMES,
-    ...KEYBOARD_TOOL_NAMES,
-  ]);
-}
 
 // ── Validation helpers ───────────────────────────────────────────────────────
 
@@ -131,10 +101,9 @@ function validateSkillContent(args: {
     return "allowedTools must be an array (use [] for done/fail-only)";
   }
   // P1-G
-  const known = getKnownToolNames();
   for (const t of args.allowedTools) {
     if (typeof t !== "string") return `allowedTools entries must be strings`;
-    if (!known.has(t)) return `unknown tool: ${t}`;
+    if (!ALL_KNOWN_NON_SKILL_TOOL_NAMES.has(t)) return `unknown tool: ${t}`;
   }
   return null;
 }
