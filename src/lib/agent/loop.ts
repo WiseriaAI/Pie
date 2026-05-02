@@ -33,6 +33,7 @@ import type {
   TabTarget,
   TabContentPreview,
 } from "../../types/messages";
+import type { SessionAgentState } from "../sessions/types";
 
 const MAX_STEPS = 30;
 
@@ -66,6 +67,50 @@ export interface AgentLoopContext {
     payload: Omit<AgentConfirmRequestMessage, "type" | "confirmationId">,
   ) => Promise<boolean>;
   getEnabledSkillTools?: () => Promise<Tool[]>;
+  /**
+   * M1-U3 — session this task is bound to. Required so step-boundary
+   * snapshots can write to `session_${id}_agent`. Decoupled from
+   * `onStepSnapshot` (sessionId remains required even if a caller
+   * doesn't wire a snapshot handler) so a missing snapshot wire does
+   * not silently degrade — bug shows up at `setSessionAgent(undefined)`
+   * rather than as a no-op.
+   */
+  sessionId: string;
+  /**
+   * M1-U3 — fired after each completed agent step (assistant + user
+   * tool_result both pushed). The loop calls it fire-and-forget
+   * (no await), so storage IO does not stall the next LLM round; the
+   * passed snapshot is `structuredClone`d so subsequent in-place
+   * mutations on `history` (the next round's observation merge at
+   * line ~587) do not contaminate the persisted copy. R28 v2: the
+   * snapshot's `agentMessages` are RAW (no redaction); panel-display
+   * redaction happens via `redactArgsForPanel` on the
+   * `sendAgentStep` / `sendConfirmRequest` paths only.
+   *
+   * Errors thrown by the handler are logged with sessionId + stepIndex
+   * and otherwise swallowed — a quota / IO failure must not abort an
+   * in-flight task. M2-U4 will introduce LRU archive on quota
+   * pressure; for now we just keep going.
+   */
+  onStepSnapshot?: (snapshot: SessionAgentState) => Promise<void>;
+  /**
+   * M1-U5 — when resuming a paused task, the prior `agentMessages`
+   * history (full LLM IR from the persisted snapshot) and the step
+   * index reached. Both must be set together (or both undefined).
+   *
+   * When set:
+   *   - `history` is initialized from `resumedAgentMessages` instead of
+   *     the fresh `[system, user(task)]` seed
+   *   - the loop counter starts at `resumedFromStep + 1`
+   *   - **first iteration skips the observation-merge** at the top of
+   *     the loop body — the prior snapshot already includes the
+   *     observation that closes that step; merging again would result
+   *     in double-observation in the user message and confuse the LLM.
+   *     This is the single most-easily-missed correctness invariant
+   *     of the resume path; see plan M1-U5 advisor note.
+   */
+  resumedAgentMessages?: AgentMessage[];
+  resumedFromStep?: number;
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -360,6 +405,65 @@ async function preFetchTabContent(
 // ── Phase 2.5 helpers ────────────────────────────────────────────────────────
 
 /**
+ * M1-U3 — build a SessionAgentState snapshot for one step boundary.
+ *
+ * Pure function (no IO, no globals). Extracted from the agent-loop body
+ * so it can be unit tested without the full loop's Chrome / model
+ * harness. Two invariants live here:
+ *
+ *   1. `structuredClone(history)` — the next loop iteration mutates
+ *      `history` in place (observation merge into the trailing user
+ *      message). Without the clone, the persisted reference would be
+ *      mutated post-write and the snapshot we hand to storage would
+ *      diverge from the step it claims to represent (D4).
+ *
+ *   2. `agentMessages` is RAW. No call to `redactArgsForPanel` here.
+ *      R28 v2 storage trust face: panel-display redaction is for shoulder-
+ *      surf protection on the visible step bubble; the LLM resume path
+ *      (M1-U5) needs the raw tool_use args to plan the next step. Two
+ *      different consumers, two different shapes.
+ *
+ * `skillExecutionScopeStack` is empty in M1 — the in-memory
+ * `currentSkillScope` carries Phase 2.6 R3 anti-nest enforcement. M2-U1
+ * will wire the stack so a paused-and-resumed task can re-enter the
+ * scope it was in.
+ */
+export function buildSessionAgentSnapshot(
+  history: AgentMessage[],
+  stepIndex: number,
+): SessionAgentState {
+  return {
+    agentMessages: structuredClone(history),
+    stepIndex,
+    skillExecutionScopeStack: [],
+  };
+}
+
+/**
+ * M1-U3 v2 — "no in-flight task" tombstone marker, written to
+ * `session_${id}_agent` when a task reaches done (success / fail /
+ * abort / max-steps).
+ *
+ * Without this, `stepIndex` from the just-completed task lingers in
+ * storage. M1-U5's cold-start detector reads `stepIndex > 0` as the
+ * signal that a task was running when the SW died — it would see
+ * stale data from a long-completed task and falsely transition the
+ * session to `paused`, presenting the user with a misleading
+ * "Resume task" button.
+ *
+ * The tombstone is just `(agentMessages=[], stepIndex=0,
+ * skillExecutionScopeStack=[])`. Idempotent — re-writing on top of
+ * an existing tombstone is a no-op for any consumer.
+ */
+export function buildSessionAgentTombstone(): SessionAgentState {
+  return {
+    agentMessages: [],
+    stepIndex: 0,
+    skillExecutionScopeStack: [],
+  };
+}
+
+/**
  * Redact `text` from keyboard tool args before emitting via agent-step
  * (event-card path). Confirm-request keeps the raw text — see plan
  * Key Technical Decisions on the redaction split.
@@ -408,10 +512,25 @@ export async function runAgentLoop(ctx: AgentLoopContext): Promise<void> {
 
   // Idempotent done emit — every runAgentLoop exit path (success, abort,
   // error, finally) calls this; first one wins, the rest are no-ops.
+  //
+  // M1-U3 v2: also writes a tombstone snapshot so M1-U5 cold-start can
+  // distinguish "task in flight at SW death" (stepIndex > 0) from "task
+  // already finished, no resume needed" (stepIndex = 0). Without this,
+  // a long-completed task's stepIndex would linger in storage and
+  // M1-U5 would falsely flag the session as paused. Fire-and-forget,
+  // matching the per-step snapshot pattern.
   const emitDone = (msg: AgentDoneTaskMessage): void => {
     if (doneEmitted) return;
     doneEmitted = true;
     sendAgentDone(port, msg);
+    if (ctx.onStepSnapshot) {
+      ctx.onStepSnapshot(buildSessionAgentTombstone()).catch((e) => {
+        console.warn(
+          `[agent] tombstone snapshot failed for session=${ctx.sessionId}:`,
+          e,
+        );
+      });
+    }
   };
 
   // 1. Anchor tab + origin at task start
@@ -484,13 +603,27 @@ export async function runAgentLoop(ctx: AgentLoopContext): Promise<void> {
   // Per turn: assistant(tool_use blocks) + user([tool_result blocks..., text(observation)])
   // The observation is MERGED into the same user message as the prior turn's tool_results
   // to avoid adjacent user messages (which Anthropic rejects with 400).
-  const history: AgentMessage[] = [
-    {
-      role: "system",
-      content: buildAgentSystemPrompt(task, keyboardSimEnabledAtStart, /* hasMetaTools */ true),
-    },
-    { role: "user", content: task },
-  ];
+  //
+  // M1-U5 — resume path: when `resumedAgentMessages` is provided, use
+  // it directly instead of seeding fresh. structuredClone defends
+  // against subsequent in-place mutations of the input (the caller
+  // owns it but we want to be defensive). See `isResumedFirstIteration`
+  // below for the related observation-merge skip.
+  const history: AgentMessage[] = ctx.resumedAgentMessages
+    ? structuredClone(ctx.resumedAgentMessages)
+    : [
+        {
+          role: "system",
+          content: buildAgentSystemPrompt(task, keyboardSimEnabledAtStart, /* hasMetaTools */ true),
+        },
+        { role: "user", content: task },
+      ];
+
+  // M1-U5 — flag that the first iteration of the loop should skip the
+  // observation merge. The prior step's snapshot already contains an
+  // observation in the trailing user message; merging again would
+  // produce a duplicate observation and confuse the LLM.
+  let isResumedFirstIteration = !!ctx.resumedAgentMessages;
 
   // First-attach disclosure — true until the first keyboard-tool confirm
   // has been shown. After that, subsequent confirms in the same task
@@ -511,7 +644,11 @@ export async function runAgentLoop(ctx: AgentLoopContext): Promise<void> {
   const CONFIRM_REJECT_THRESHOLD = 3;
 
   try {
-    for (let stepIndex = 1; stepIndex <= MAX_STEPS; stepIndex++) {
+    // M1-U5 — resume path starts the counter at the next step beyond
+    // what was persisted. The MAX_STEPS bound still applies as the
+    // absolute task ceiling; resume does not reset it.
+    const startStepIndex = (ctx.resumedFromStep ?? 0) + 1;
+    for (let stepIndex = startStepIndex; stepIndex <= MAX_STEPS; stepIndex++) {
       lastStepIndex = stepIndex;
       if (signal.aborted) return; // → finally
 
@@ -579,22 +716,35 @@ export async function runAgentLoop(ctx: AgentLoopContext): Promise<void> {
       //    → convert trailing user to array: user([text(task), obs])
       //  Step N>1: history = [..., assistant(tool_use), user([tool_results...])]
       //    → append obs block: user([tool_results..., obs])
-      const lastMsg = history[history.length - 1];
-      if (lastMsg && lastMsg.role === "user") {
-        if (typeof lastMsg.content === "string") {
-          // Convert string content to block array, prepend task text, append observation
-          const taskText = lastMsg.content;
-          lastMsg.content = [
-            { type: "text", text: taskText },
-            observationBlock,
-          ] as ContentBlock[];
-        } else {
-          // Already an array (tool_result blocks from prior step) — append observation
-          (lastMsg.content as ContentBlock[]).push(observationBlock);
-        }
+      //
+      // M1-U5 RESUME EXCEPTION: when this is the first iteration of a
+      // resumed loop, the trailing user message in `history` is the
+      // persisted snapshot — which already contains an observation
+      // block from the step that completed before SW death. Merging
+      // a fresh observation here would produce *two* observations in
+      // the same user turn, confusing the LLM. So skip the merge for
+      // the first iteration of a resume; subsequent iterations behave
+      // normally.
+      if (isResumedFirstIteration) {
+        isResumedFirstIteration = false;
       } else {
-        // Shouldn't happen in normal flow, but guard just in case
-        history.push({ role: "user", content: [observationBlock] });
+        const lastMsg = history[history.length - 1];
+        if (lastMsg && lastMsg.role === "user") {
+          if (typeof lastMsg.content === "string") {
+            // Convert string content to block array, prepend task text, append observation
+            const taskText = lastMsg.content;
+            lastMsg.content = [
+              { type: "text", text: taskText },
+              observationBlock,
+            ] as ContentBlock[];
+          } else {
+            // Already an array (tool_result blocks from prior step) — append observation
+            (lastMsg.content as ContentBlock[]).push(observationBlock);
+          }
+        } else {
+          // Shouldn't happen in normal flow, but guard just in case
+          history.push({ role: "user", content: [observationBlock] });
+        }
       }
 
       // Apply sliding window
@@ -692,6 +842,19 @@ export async function runAgentLoop(ctx: AgentLoopContext): Promise<void> {
       if (completedToolCalls.length === 0) {
         port.postMessage({ type: "chat-done" });
         normalTextReply = true;
+        // M1-U3 v2 — pure-text replies don't push history, so no
+        // per-step snapshot has fired this turn. But a prior task's
+        // stale (stepIndex > 0) snapshot might still be in storage.
+        // Write a tombstone here so a chat-only round following a
+        // completed agent task also clears in-flight markers.
+        if (ctx.onStepSnapshot) {
+          ctx.onStepSnapshot(buildSessionAgentTombstone()).catch((e) => {
+            console.warn(
+              `[agent] tombstone (pure-text) failed for session=${ctx.sessionId}:`,
+              e,
+            );
+          });
+        }
         return;
       }
 
@@ -1152,6 +1315,28 @@ export async function runAgentLoop(ctx: AgentLoopContext): Promise<void> {
       // at the start of the next iteration (avoids adjacent user messages).
       history.push({ role: "assistant", content: assistantBlocks });
       history.push({ role: "user", content: toolResultBlocks });
+
+      // M1-U3 — step-boundary snapshot. Both assistant + user(tool_result)
+      // are pushed at this point, so the persisted state is a complete
+      // round-trip (LLM resume after SW restart can re-feed the
+      // tool_result back to the model without confusion). `history` is
+      // structuredClone'd so the next iteration's in-place observation
+      // merge (loop body around line ~587) does not contaminate the
+      // already-persisted copy (D4 deep clone invariant).
+      //
+      // Fire-and-forget: a slow / failing storage write must not stall
+      // the next LLM call. R28 v2: agentMessages are persisted RAW; the
+      // panel-display redaction happens via redactArgsForPanel on the
+      // sendAgentStep path, which is a separate code path.
+      if (ctx.onStepSnapshot) {
+        const snapshot = buildSessionAgentSnapshot(history, stepIndex);
+        ctx.onStepSnapshot(snapshot).catch((e) => {
+          console.warn(
+            `[agent] snapshot failed for session=${ctx.sessionId} step=${stepIndex}:`,
+            e,
+          );
+        });
+      }
 
       // Terminal tool check
       if (shouldTerminate && terminationResult) {
