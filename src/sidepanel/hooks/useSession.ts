@@ -126,6 +126,10 @@ export function useSession(): UseSession {
   // closure).
   const sessionIdRef = useRef<string | null>(null);
   const messagesRef = useRef<DisplayMessage[]>([]);
+  // P1-6 — mirror of streaming state for use in the storage onChanged
+  // listener (which closes over this ref and therefore can't depend on the
+  // streaming state closure).
+  const streamingRef = useRef<boolean>(false);
   // Per-stream scratch — reset by sendMessage, mutated by the
   // persistent listener.
   const accumulatedRef = useRef<string>("");
@@ -137,6 +141,9 @@ export function useSession(): UseSession {
   useEffect(() => {
     messagesRef.current = messages;
   }, [messages]);
+  useEffect(() => {
+    streamingRef.current = streaming;
+  }, [streaming]);
 
   // ── Persist helper ─────────────────────────────────────────────────
   // Writes the in-memory messages array to session_${id}_meta. Only
@@ -434,13 +441,31 @@ export function useSession(): UseSession {
             status?: SessionStatus;
           }
         | undefined;
+      // Status update is always adopted — the SW transitions (paused→active,
+      // active→failed) must land even mid-stream (e.g. SW cold-start marking
+      // a task paused while the panel thinks it's still running).
       if (newMeta?.status !== undefined) setStatus(newMeta.status);
       if (newMeta?.messages !== undefined) {
-        // Only adopt the SW's view if it differs by reference — avoids
-        // round-tripping our own writes back into local state.
-        if (newMeta.messages !== messagesRef.current) {
-          setMessages(newMeta.messages);
+        // P1-6 — prevent self-write echo. chrome.storage.local deserializes
+        // through structured-clone so reference equality always fails; we need
+        // a content comparison to skip our own writes.
+        //
+        // During streaming: NEVER adopt the SW's messages. makeStepSnapshotHandler
+        // bumps updateLastAccessed every 5 steps which writes meta with the last
+        // persisted (stale) messages → onChanged fires → without this guard the
+        // panel's in-flight chunks get clobbered and the user's sent message
+        // disappears from chat mid-stream.
+        //
+        // Not streaming: lightweight content equality check to skip our own
+        // persistMessages writes echoing back.
+        if (streamingRef.current) {
+          // Mid-stream: silently discard SW messages write-back.
+          return;
         }
+        if (JSON.stringify(newMeta.messages) === JSON.stringify(messagesRef.current)) {
+          return; // self-write echo — no-op
+        }
+        setMessages(newMeta.messages);
       }
     };
     chrome.storage.local.onChanged.addListener(listener);
