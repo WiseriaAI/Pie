@@ -343,3 +343,50 @@ export async function scrubPendingConfirm(sessionId: string): Promise<void> {
 export async function getTotalBytes(): Promise<number> {
   return chrome.storage.local.getBytesInUse(null);
 }
+
+// ── SEC-PLAN-009 — pending confirm flood protection ───────────────────────────
+//
+// When ≥ PENDING_CONFIRM_FLOOD_LIMIT sessions simultaneously have a live
+// `pendingConfirm`, a runaway agent loop is the most likely cause. The SW
+// uses `isPendingConfirmFloodLimited` to detect this and auto-reject the
+// N+1th confirm rather than silently queueing an unbounded number of
+// blocking confirm dialogs. This protects BYOK users from runaway spending
+// (informed-approval invariant K-1) and prevents unbounded storage growth
+// (D6). Limit = 5 (experimentally generous enough for multi-tab workflows
+// while still catching runaway loops).
+
+export const PENDING_CONFIRM_FLOOD_LIMIT = 5;
+
+/**
+ * Count the number of sessions that currently have a live `pendingConfirm`
+ * in their agent state. Reads ALL `session_*_agent` keys from storage.
+ *
+ * Uses `chrome.storage.local.get(null)` to get all keys in one call, then
+ * filters for the `session_*_agent` key pattern. This is deliberately
+ * full-scan because (a) the index doesn't carry pendingConfirm, and
+ * (b) this is called only in the hot confirm path, not on every tick.
+ */
+export async function getPendingConfirmCount(): Promise<number> {
+  const all = await chrome.storage.local.get(null);
+  let count = 0;
+  for (const [key, value] of Object.entries(all)) {
+    if (!key.endsWith("_agent")) continue;
+    // Key shape: `session_${id}_agent`
+    if (!key.startsWith("session_")) continue;
+    const agentState = value as SessionAgentState | null | undefined;
+    if (agentState?.pendingConfirm != null) {
+      count++;
+    }
+  }
+  return count;
+}
+
+/**
+ * Returns `true` when the number of sessions with a live `pendingConfirm`
+ * exceeds PENDING_CONFIRM_FLOOD_LIMIT. The SW should auto-reject the next
+ * confirm and emit a toast warning to the panel.
+ */
+export async function isPendingConfirmFloodLimited(): Promise<boolean> {
+  const count = await getPendingConfirmCount();
+  return count > PENDING_CONFIRM_FLOOD_LIMIT;
+}
