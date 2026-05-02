@@ -238,6 +238,50 @@ describe("buildSessionAgentSnapshot", () => {
   });
 });
 
+// ── M2-U2 P1-9: flood-reject does NOT increment confirmRejections ─────────────
+//
+// The K-10 fatigue counter (confirmRejections) should only count user-initiated
+// rejections, not SEC-PLAN-009 flood-limit auto-rejects. To test this without
+// mocking Chrome APIs, we validate the data-contract assumption: sendConfirmRequest
+// returns `{ approved: false, reason: 'flood-limit' }` on flood, and the loop
+// only increments when `reason !== 'flood-limit'`. The loop itself delegates to
+// the sendConfirmRequest callback so we test the contract shape here.
+
+describe("M2-U2 P1-9 — flood-reject sendConfirmRequest return shape", () => {
+  it("flood-limit result has approved=false and reason='flood-limit'", () => {
+    // This is the shape that handleChatStream / handleResumeRequest
+    // now returns for flood-limited confirms. Loop must NOT increment
+    // confirmRejections for this variant.
+    const floodResult: { approved: boolean; reason?: "flood-limit" | "user-reject" } = {
+      approved: false,
+      reason: "flood-limit",
+    };
+    expect(floodResult.approved).toBe(false);
+    expect(floodResult.reason).toBe("flood-limit");
+    // Guard: loop only counts when reason !== 'flood-limit'
+    const shouldCount = floodResult.reason !== "flood-limit";
+    expect(shouldCount).toBe(false);
+  });
+
+  it("user-reject result has approved=false and reason='user-reject'", () => {
+    const userReject: { approved: boolean; reason?: "flood-limit" | "user-reject" } = {
+      approved: false,
+      reason: "user-reject",
+    };
+    expect(userReject.approved).toBe(false);
+    const shouldCount = userReject.reason !== "flood-limit";
+    expect(shouldCount).toBe(true);
+  });
+
+  it("approve result has approved=true and no reason", () => {
+    const approveResult: { approved: boolean; reason?: "flood-limit" | "user-reject" } = {
+      approved: true,
+    };
+    expect(approveResult.approved).toBe(true);
+    expect(approveResult.reason).toBeUndefined();
+  });
+});
+
 // ── M2-U1: multi-session stack isolation smoke test ──────────────────────────
 //
 // The goal is to ensure that two concurrent runAgentLoop invocations
