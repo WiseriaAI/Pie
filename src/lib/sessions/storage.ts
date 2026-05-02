@@ -15,15 +15,7 @@ import type {
 // would have to `get(null)` the entire storage namespace (provider keys,
 // skill keys, encryption_key, etc.) on every render.
 
-const INDEX_KEY = "session_index";
-
-function metaKey(id: string): string {
-  return `session_${id}_meta`;
-}
-
-function agentKey(id: string): string {
-  return `session_${id}_agent`;
-}
+export const INDEX_KEY = "session_index";
 
 // ── Atomic write helper ─────────────────────────────────────────────────────
 //
@@ -32,10 +24,27 @@ function agentKey(id: string): string {
 // multiple keys is the platform's atomic-batch primitive (all or nothing on
 // the single quota check / change notification). Setting a key to
 // `undefined` removes it — emulated by the test harness too.
-type WriteBatch = Record<string, unknown>;
+//
+// Exported for `lifecycle.ts` so it can write directly (bypassing the
+// pre-write quota guard in `setSessionAgent`) without a skipQuotaGuard
+// flag leaking into the public API.
+export type WriteBatch = Record<string, unknown>;
 
-async function writeAtomic(batch: WriteBatch): Promise<void> {
+export async function writeAtomic(batch: WriteBatch): Promise<void> {
   await chrome.storage.local.set(batch);
+}
+
+// ── Key helpers (exported for lifecycle.ts) ──────────────────────────────────
+export function metaKey(id: string): string {
+  return `session_${id}_meta`;
+}
+
+export function agentKey(id: string): string {
+  return `session_${id}_agent`;
+}
+
+export function archivedKey(id: string): string {
+  return `session_${id}_archived`;
 }
 
 // ── Index helpers ───────────────────────────────────────────────────────────
@@ -46,6 +55,26 @@ async function readIndex(): Promise<SessionIndexEntry[]> {
   if (!Array.isArray(raw)) return [];
   // Defensive: drop entries missing required fields so a corrupt index
   // doesn't break the entire session list.
+  return raw.filter(
+    (e): e is SessionIndexEntry =>
+      e !== null &&
+      typeof e === "object" &&
+      typeof (e as SessionIndexEntry).id === "string" &&
+      typeof (e as SessionIndexEntry).lastAccessedAt === "number" &&
+      typeof (e as SessionIndexEntry).status === "string",
+  );
+}
+
+/**
+ * Read the raw session index (including archived entries) without filtering.
+ * Exported for `lifecycle.ts` which needs to iterate ALL entries including
+ * archived ones (for hardDeleteExpired, checkAndArchiveLRU, etc.).
+ * Returns an empty array if the index doesn't exist or isn't an array.
+ */
+export async function readIndexRaw(): Promise<SessionIndexEntry[]> {
+  const result = await chrome.storage.local.get(INDEX_KEY);
+  const raw = result[INDEX_KEY];
+  if (!Array.isArray(raw)) return [];
   return raw.filter(
     (e): e is SessionIndexEntry =>
       e !== null &&
@@ -170,15 +199,38 @@ export async function getSessionAgent(
   return raw ?? null;
 }
 
+// ── Pre-write quota guard ─────────────────────────────────────────────────────
+//
+// `checkAndArchiveLRU` lives in `lifecycle.ts` to avoid coupling storage.ts to
+// archive logic. We import it lazily (dynamic import) inside `setSessionAgent`
+// so there's no circular-module dependency at module load time.
+//
+// `lifecycle.ts` writes via `writeAtomic` directly (not via `setSessionAgent`),
+// which naturally bypasses this guard — no `skipQuotaGuard` flag needed.
+const QUOTA_GUARD_BYTES = 8 * 1024 * 1024; // 8 MB
+
 /**
  * Persist agent state. Does NOT touch the index — agent writes are the
  * hottest path (every step) and the index does not carry any agent-side
- * fields. M2-U1 will add `lastAccessedAt` bumping here as a separate step.
+ * fields.
+ *
+ * M2-U4: before writing, checks total storage usage. If already at or above
+ * the 8 MB budget, triggers `checkAndArchiveLRU` to free space (archive the
+ * oldest non-archived sessions). The guard is NOT recursive — lifecycle.ts
+ * writes via `writeAtomic` directly, bypassing this function.
  */
 export async function setSessionAgent(
   id: string,
   state: SessionAgentState,
 ): Promise<void> {
+  // Pre-write quota guard (D6 / M2-U4). Lazy import avoids circular dependency.
+  const used = await chrome.storage.local.getBytesInUse(null);
+  if (used >= QUOTA_GUARD_BYTES) {
+    // Estimate new bytes: conservatively use JSON length of the agent state.
+    const estimatedNewBytes = JSON.stringify(state).length;
+    const { checkAndArchiveLRU } = await import("./lifecycle");
+    await checkAndArchiveLRU(estimatedNewBytes);
+  }
   await writeAtomic({ [agentKey(id)]: state });
 }
 
