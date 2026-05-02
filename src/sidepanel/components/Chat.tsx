@@ -1,10 +1,4 @@
 import { useState, useEffect, useRef, useMemo } from "react";
-import type { ChatMessage } from "@/lib/model-router";
-import type {
-  PortMessageToPanel,
-  ResolvedElement,
-  DisplayMessage,
-} from "@/types";
 import type { SkillDefinition } from "@/lib/skills";
 import {
   getEnabledSkills,
@@ -13,6 +7,7 @@ import {
   normalizeSkillSlashKey,
 } from "@/lib/skills";
 import { getActiveProvider, getProviderConfig } from "@/lib/storage";
+import type { UseSession } from "@/sidepanel/hooks/useSession";
 import AgentStepBubble from "./AgentStepBubble";
 import AgentConfirmCard from "./AgentConfirmCard";
 import AgentSummary from "./AgentSummary";
@@ -24,6 +19,9 @@ interface ChatProps {
   onOpenSettings: () => void;
   prefillInput?: string;
   onPrefillConsumed?: () => void;
+  /** Session state owned by App so port + onMessage listener survive
+   *  Chat unmounts (Settings sub-view swap). */
+  session: UseSession;
 }
 
 function filterAndSortSkillsForSlash(
@@ -63,12 +61,21 @@ export default function Chat({
   onOpenSettings,
   prefillInput,
   onPrefillConsumed,
+  session,
 }: ChatProps) {
-  const [messages, setMessages] = useState<DisplayMessage[]>([]);
+  const {
+    ready,
+    messages,
+    streaming,
+    streamingText,
+    error,
+    sendMessage: sessionSendMessage,
+    abort,
+    resolveConfirm,
+    clearMessages,
+    clearError,
+  } = session;
   const [input, setInput] = useState("");
-  const [streaming, setStreaming] = useState(false);
-  const [streamingText, setStreamingText] = useState("");
-  const [error, setError] = useState<string | null>(null);
   const [hasConfig, setHasConfig] = useState<boolean | null>(null);
   const [pageChanged, setPageChanged] = useState(false);
   const [enabledSkills, setEnabledSkills] = useState<SkillDefinition[]>([]);
@@ -76,7 +83,6 @@ export default function Chat({
   const [dismissedInput, setDismissedInput] = useState<string | null>(null);
   const [pinnedOrigin, setPinnedOrigin] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const portRef = useRef<chrome.runtime.Port | null>(null);
 
   useEffect(() => {
     checkConfig();
@@ -180,16 +186,16 @@ export default function Chat({
 
   async function sendMessage(text?: string) {
     const content = (text ?? input).trim();
-    if (!content || streaming) return;
+    if (!content || streaming || !ready) return;
 
     setInput("");
-    setError(null);
+    clearError();
 
     let expandedForLLM: string | undefined = undefined;
     if (content.startsWith("/")) {
       try {
-        const enabledSkills = await getEnabledSkills();
-        const match = resolveSlashCommand(content, enabledSkills);
+        const skills = await getEnabledSkills();
+        const match = resolveSlashCommand(content, skills);
         if (match) {
           expandedForLLM = expandSlashCommand(match);
         }
@@ -198,147 +204,7 @@ export default function Chat({
       }
     }
 
-    const userMessage: DisplayMessage = { role: "user", content, expandedForLLM };
-    const updatedMessages = [...messages, userMessage];
-    setMessages(updatedMessages);
-    setStreaming(true);
-    setStreamingText("");
-
-    const chatMessages: ChatMessage[] = updatedMessages
-      .filter(
-        (m): m is { role: "user"; content: string; expandedForLLM?: string } | { role: "assistant"; content: string } =>
-          m.role === "user" || m.role === "assistant",
-      )
-      .map((m) =>
-        m.role === "user" && m.expandedForLLM
-          ? { role: "user" as const, content: m.expandedForLLM }
-          : { role: m.role, content: m.content },
-      );
-
-    const port = chrome.runtime.connect({ name: "chat-stream" });
-    portRef.current = port;
-
-    let accumulated = "";
-    let finished = false;
-
-    port.onMessage.addListener((message: PortMessageToPanel) => {
-      if (message.type === "chat-chunk") {
-        accumulated += message.text;
-        setStreamingText(accumulated);
-      } else if (message.type === "chat-done") {
-        finished = true;
-        if (accumulated.trim()) {
-          setMessages((prev) => [
-            ...prev,
-            { role: "assistant", content: accumulated },
-          ]);
-        }
-        setStreamingText("");
-        setStreaming(false);
-        portRef.current = null;
-      } else if (message.type === "chat-error") {
-        finished = true;
-        setError(message.error);
-        if (accumulated.trim()) {
-          setMessages((prev) => [
-            ...prev,
-            { role: "assistant", content: accumulated },
-          ]);
-        }
-        setStreamingText("");
-        setStreaming(false);
-        portRef.current = null;
-      } else if (message.type === "agent-step") {
-        if (accumulated.trim()) {
-          setMessages((prev) => [
-            ...prev,
-            { role: "assistant", content: accumulated },
-          ]);
-          setStreamingText("");
-        }
-        accumulated = "";
-        setStreamingText("");
-        const { stepIndex, tool, args, resolvedElement, status, observation } =
-          message;
-        setMessages((prev) => {
-          for (let i = prev.length - 1; i >= 0; i--) {
-            const m = prev[i];
-            if (m.role !== "agent-step" && m.role !== "agent-confirm") break;
-            if (
-              m.role === "agent-step" &&
-              m.stepIndex === stepIndex &&
-              m.tool === tool
-            ) {
-              const updated = [...prev];
-              updated[i] = {
-                role: "agent-step",
-                stepIndex,
-                tool,
-                args,
-                resolvedElement,
-                status,
-                observation,
-              };
-              return updated;
-            }
-          }
-          return [
-            ...prev,
-            {
-              role: "agent-step",
-              stepIndex,
-              tool,
-              args,
-              resolvedElement,
-              status,
-              observation,
-            },
-          ];
-        });
-      } else if (message.type === "agent-confirm-request") {
-        const { confirmationId, tool, args, resolvedElement, riskReason, metaSkillPreview } =
-          message;
-        setMessages((prev) => [
-          ...prev,
-          {
-            role: "agent-confirm",
-            confirmationId,
-            tool,
-            args,
-            resolvedElement,
-            riskReason,
-            metaSkillPreview,
-            resolved: undefined,
-          },
-        ]);
-      } else if (message.type === "agent-done-task") {
-        finished = true;
-        const { success, summary, stepCount } = message;
-        setMessages((prev) => [
-          ...prev,
-          { role: "agent-summary", success, summary, stepCount },
-        ]);
-        setStreamingText("");
-        setStreaming(false);
-        portRef.current = null;
-      }
-    });
-
-    port.onDisconnect.addListener(() => {
-      if (!finished) {
-        if (accumulated.trim()) {
-          setMessages((prev) => [
-            ...prev,
-            { role: "assistant", content: accumulated },
-          ]);
-        }
-        setStreamingText("");
-        setStreaming(false);
-        portRef.current = null;
-      }
-    });
-
-    port.postMessage({ type: "chat-start", messages: chatMessages });
+    sessionSendMessage({ content, expandedForLLM });
   }
 
   function handleKeyDown(e: React.KeyboardEvent) {
@@ -385,19 +251,12 @@ export default function Chat({
   }
 
   function handleStop() {
-    const port = portRef.current;
-    if (!port) return;
-    try {
-      port.postMessage({ type: "chat-abort" });
-    } catch {
-      // port may be in the process of closing
-    }
+    abort();
   }
 
   function handleNewTask() {
-    setMessages([]);
+    void clearMessages();
     setPageChanged(false);
-    setError(null);
   }
 
   if (hasConfig === false) {
@@ -494,38 +353,12 @@ export default function Chat({
                     riskReason={msg.riskReason}
                     resolved={msg.resolved}
                     metaSkillPreview={msg.metaSkillPreview}
-                    onApprove={() => {
-                      const port = portRef.current;
-                      if (!port) return;
-                      port.postMessage({
-                        type: "agent-confirm-response",
-                        confirmationId: msg.confirmationId,
-                        approved: true,
-                      });
-                      setMessages((prev) =>
-                        prev.map((m, idx) =>
-                          idx === i && m.role === "agent-confirm"
-                            ? { ...m, resolved: "approved" as const }
-                            : m,
-                        ),
-                      );
-                    }}
-                    onReject={() => {
-                      const port = portRef.current;
-                      if (!port) return;
-                      port.postMessage({
-                        type: "agent-confirm-response",
-                        confirmationId: msg.confirmationId,
-                        approved: false,
-                      });
-                      setMessages((prev) =>
-                        prev.map((m, idx) =>
-                          idx === i && m.role === "agent-confirm"
-                            ? { ...m, resolved: "rejected" as const }
-                            : m,
-                        ),
-                      );
-                    }}
+                    onApprove={() =>
+                      resolveConfirm(msg.confirmationId, true)
+                    }
+                    onReject={() =>
+                      resolveConfirm(msg.confirmationId, false)
+                    }
                   />
                 );
               }

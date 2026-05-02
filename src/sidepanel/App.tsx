@@ -4,6 +4,7 @@ import Settings from "@/sidepanel/components/Settings";
 import { getActiveProvider, getProviderConfig } from "@/lib/storage";
 import { getProviderMeta } from "@/lib/model-router";
 import { normalizeSkillSlashKey } from "@/lib/skills";
+import { useSession } from "@/sidepanel/hooks/useSession";
 
 type View = "agent" | "settings";
 
@@ -11,6 +12,9 @@ export default function App() {
   const [view, setView] = useState<View>("agent");
   const [providerLabel, setProviderLabel] = useState<string | null>(null);
   const [chatPrefill, setChatPrefill] = useState<string | undefined>(undefined);
+  // Hook lives at App level so the SW port + onMessage listener survive
+  // Chat unmounts (Settings sub-view swap). Plan M1-U2 root-cause #1 fix.
+  const session = useSession();
 
   function handleRunSkill(skillId: string, skillName: string) {
     const slug = normalizeSkillSlashKey(skillName);
@@ -66,6 +70,7 @@ export default function App() {
           onOpenSettings={() => setView("settings")}
           prefillInput={chatPrefill}
           onPrefillConsumed={() => setChatPrefill(undefined)}
+          session={session}
         />
       ) : (
         <Settings
