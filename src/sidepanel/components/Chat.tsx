@@ -265,13 +265,6 @@ export default function Chat({
   if (hasConfig === false) {
     return (
       <div className="flex h-full flex-col">
-        <Header
-          providerLabel={null}
-          pinnedOrigin={pinnedOrigin}
-          streaming={false}
-          stepCount={0}
-          onOpenSettings={onOpenSettings}
-        />
         <div className="flex flex-1 flex-col items-center justify-center gap-4 px-6 text-fg-2">
           <span className="caps text-fg-3">NO API KEY</span>
           <p className="text-center text-[13px] leading-5">
@@ -291,13 +284,6 @@ export default function Chat({
   if (hasConfig === null) {
     return (
       <div className="flex h-full flex-col">
-        <Header
-          providerLabel={null}
-          pinnedOrigin={pinnedOrigin}
-          streaming={false}
-          stepCount={0}
-          onOpenSettings={onOpenSettings}
-        />
         <div className="flex flex-1 items-center justify-center text-fg-3">
           <span className="caps">LOADING</span>
         </div>
@@ -309,13 +295,30 @@ export default function Chat({
 
   return (
     <div className="flex h-full flex-col">
-      <Header
-        providerLabel={providerLabel}
-        pinnedOrigin={pinnedOrigin}
-        streaming={streaming}
-        stepCount={stepCount}
-        onOpenSettings={onOpenSettings}
-      />
+      {/* Pinned origin + provider label info bar */}
+      {(pinnedOrigin || providerLabel) && (
+        <div className="flex flex-shrink-0 items-center gap-2 border-b border-line bg-canvas px-4 py-1.5">
+          {pinnedOrigin && (
+            <>
+              <span className="caps text-fg-3">PINNED</span>
+              <span className="flex-1 truncate font-mono text-[11px] text-fg-2">
+                {pinnedOrigin}
+              </span>
+            </>
+          )}
+          {!pinnedOrigin && <div className="flex-1" />}
+          {streaming && stepCount > 0 && (
+            <span className="font-mono text-[10px] uppercase tracking-[0.08em] text-accent tabular">
+              step {String(stepCount).padStart(2, "0")}
+            </span>
+          )}
+          {providerLabel && (
+            <span className="font-mono text-[10px] uppercase tracking-[0.08em] text-fg-2">
+              {providerLabel}
+            </span>
+          )}
+        </div>
+      )}
 
       {/* M1-U5 — paused-task affordance. Sticky bar appears whenever
           the SW has marked this session paused (cold-start detected an
@@ -482,88 +485,6 @@ export default function Chat({
   );
 }
 
-function Header({
-  providerLabel,
-  pinnedOrigin,
-  streaming,
-  stepCount,
-  onOpenSettings,
-}: {
-  providerLabel: string | null;
-  pinnedOrigin: string | null;
-  streaming: boolean;
-  stepCount: number;
-  onOpenSettings: () => void;
-}) {
-  return (
-    <header className="flex flex-shrink-0 flex-col gap-2 border-b border-line bg-canvas px-4 pb-3 pt-3.5">
-      <div className="flex items-center gap-2.5">
-        <BrandMark active={streaming} />
-        <span className="text-[13px] font-semibold tracking-[-0.005em] text-fg-1">
-          Chrome AI Agent
-        </span>
-        <div className="flex-1" />
-        {providerLabel && (
-          <span className="font-mono text-[10px] uppercase tracking-[0.08em] text-fg-2">
-            {providerLabel}
-          </span>
-        )}
-        <button
-          onClick={onOpenSettings}
-          className="ml-1 flex h-6 w-6 items-center justify-center rounded text-fg-2 hover:bg-field hover:text-fg-1"
-          title="Settings"
-          aria-label="Open settings"
-        >
-          <GearIcon />
-        </button>
-      </div>
-      {pinnedOrigin && (
-        <div className="flex items-center gap-1.5">
-          <span className="caps text-fg-3">PINNED</span>
-          <span className="flex-1 truncate font-mono text-[11px] text-fg-2">
-            {pinnedOrigin}
-          </span>
-          {streaming && stepCount > 0 && (
-            <span className="font-mono text-[10px] uppercase tracking-[0.08em] text-accent tabular">
-              step {String(stepCount).padStart(2, "0")}
-            </span>
-          )}
-        </div>
-      )}
-    </header>
-  );
-}
-
-function BrandMark({ active }: { active: boolean }) {
-  return (
-    <div className="relative flex h-[18px] w-[18px] items-center justify-center">
-      <div
-        className={`absolute inset-0 rounded-full border ${
-          active ? "border-accent-line" : "border-line"
-        }`}
-      />
-      <div
-        className={`h-1.5 w-1.5 rounded-full bg-accent ${
-          active ? "animate-pulse" : ""
-        }`}
-      />
-    </div>
-  );
-}
-
-function GearIcon() {
-  return (
-    <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-      <circle cx="7" cy="7" r="2.25" stroke="currentColor" strokeWidth="1.1" />
-      <path
-        d="M7 1V2.5M7 11.5V13M13 7H11.5M2.5 7H1M11.24 2.76L10.18 3.82M3.82 10.18L2.76 11.24M11.24 11.24L10.18 10.18M3.82 3.82L2.76 2.76"
-        stroke="currentColor"
-        strokeWidth="1.1"
-        strokeLinecap="round"
-      />
-    </svg>
-  );
-}
 
 function EmptyState({
   skills,

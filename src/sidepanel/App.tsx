@@ -137,11 +137,14 @@ export default function App() {
   }
 
   function handleResumeSession(id: string) {
-    // Navigate to the session and trigger resume via the existing resumeTask path
-    void session.setActive(id).then(() => {
-      // Send resume-task message; useSession.resumeTask uses sessionIdRef so
-      // after setActive the ref is updated.
-      session.resumeTask();
+    // Navigate to the session and trigger resume via the existing resumeTask path.
+    // Guard: setActive returns null when streaming=true; skip resumeTask in that case.
+    void session.setActive(id).then((result) => {
+      if (result) {
+        // Send resume-task message; useSession.resumeTask uses sessionIdRef so
+        // after setActive the ref is updated.
+        session.resumeTask();
+      }
     });
   }
 
