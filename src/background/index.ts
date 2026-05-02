@@ -41,6 +41,9 @@ import {
 } from "./cdp-session";
 import { KEYBOARD_SIMULATION_STORAGE_KEY } from "@/lib/keyboard-simulation";
 import { runSessionMigrations } from "@/lib/sessions/migration";
+import { chat } from "@/lib/model-router";
+import { deriveTitleFromMessages } from "@/lib/sessions/title";
+import { generateTitle, maybeUpgradeFallbackTitle } from "@/lib/sessions/title-generator";
 
 // Open side panel when extension icon is clicked
 chrome.action.onClicked.addListener(async (tab) => {
@@ -725,6 +728,36 @@ async function handleChatStream(
         e,
       );
     });
+
+    // M2-U3 — LLM async title generation (R29).
+    // Trigger only on the first user message (messages.length === 1 and role=user).
+    // At that point the panel has already written the fallback title
+    // (deriveTitleFromMessages) to meta. We fire-and-forget an LLM call to
+    // generate a better short title; if the user changes the title manually
+    // before the LLM returns, maybeUpgradeFallbackTitle race-guard skips the write.
+    if (messages.length === 1 && messages[0]?.role === "user") {
+      const firstUserContent = messages[0].content;
+      // Compute the expected fallback sentinel from the exact same messages array
+      // the panel used (same function, same input → identical string).
+      const expectedFallback = deriveTitleFromMessages(messages);
+      if (expectedFallback !== undefined) {
+        const callChat = (
+          msgs: Array<{ role: "system" | "user" | "assistant"; content: string }>,
+        ) => chat(config, msgs as ChatMessage[]).then((r) => r.content);
+
+        generateTitle(firstUserContent, callChat)
+          .then((llmTitle) =>
+            maybeUpgradeFallbackTitle(sessionId, expectedFallback, llmTitle),
+          )
+          .catch((e) => {
+            // Fallback title is already in storage — swallow error silently.
+            console.debug(
+              `[sw] M2-U3 title generation failed for session=${sessionId}; keeping fallback:`,
+              e,
+            );
+          });
+      }
+    }
 
     // Extract task from last user message
     const task =

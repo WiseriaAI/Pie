@@ -204,6 +204,9 @@ export default function SessionRow({
             textOverflow: "ellipsis",
           }}
         >
+          {/* M2-U3 R29: title is a React text node — no innerHTML / dangerouslySetInnerHTML path.
+               HTML entities (e.g. &lt;) from escapeUntrustedWrappers are rendered as literal
+               text by React, not parsed as HTML, so XSS via a crafted LLM title is not possible. */}
           {displayTitle}
         </span>
         <span
