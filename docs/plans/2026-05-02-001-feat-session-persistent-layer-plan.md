@@ -9,7 +9,7 @@ m1_pr: https://github.com/WiseriaAI/Pie/pull/8
 m1_learnings: docs/solutions/2026-05-02-session-as-first-class-persistent-layer-m1.md
 ---
 
-> **Status note (2026-05-02)**: M1 (units U1-U5) shipped via PR #8 — single-session persistent layer + SW restart recovery + R11 drift card. M2 (multi-session UI) and M3 (per-session sandbox) NOT YET STARTED. See `m1_learnings` link for shipped invariants future M2/M3 work must preserve.
+> **Status note (2026-05-02)**: M1 (units U1-U5) shipped via PR #8 — single-session persistent layer + SW restart recovery + R11 drift card. **M2-U1 shipped via PR #9** — multi-session schema + state machine + skillExecutionScopeStack (76 → 106 tests). **M2-U2 设计稿已定** — Paper file "Pie Frontend" artboards 07/08 是视觉真值源, 方向 = B (top-pull overlay drawer + 顶栏 `[≡●] [+] {title}`). M2-U2/U3/U4 与 M3 全部 NOT YET STARTED. See `m1_learnings` link for shipped invariants future work must preserve.
 
 # feat: Session as First-Class Persistent Layer
 
@@ -489,7 +489,7 @@ stateDiagram-v2
 
 ### M2 — 多 session UI（在 M1 单 session 持久化基础上加 list / 命名 / 归档；同时仅 1 active task）
 
-- [ ] **Unit M2-U1: Multi-session schema + state machine enumeration + skillExecutionScopeStack**
+- [x] **Unit M2-U1: Multi-session schema + state machine enumeration + skillExecutionScopeStack** ✅ shipped (commits `1494eaa` + `0363f29` + `ce9a2f6` + `1862895`, PR feat/session-m2-u1)
 
 **Goal:** 把 M1 hardcoded id='default' 升级为 multi-session；status enum 含 paused；定义完整 state machine（实现 origin Deferred 项 design-lens state machine）。
 
@@ -502,15 +502,21 @@ stateDiagram-v2
 - Create: `src/lib/sessions/migration.ts` (idempotent migration: M1 早期可能写入的任意 id 默认值清理；M1-U1 已用 UUID 应无 stale 'default' key, 但 defensive 启动 scan 一次)
 - Test: `src/lib/sessions/migration.test.ts` (idempotency: 跑两次无副作用)
 - Modify: `src/lib/sessions/storage.ts` (createSession 用 crypto.randomUUID(); listSessionIndex 增分页/过滤; updateLastAccessed helper)
-- Modify: `src/lib/agent/loop.ts` (currentSkillScope: SkillScope|null line 407 重命名/扩展为 stack + 通过 ctx 传入 + snapshot 时持久化)
+- Modify: `src/lib/agent/loop.ts` (currentSkillScope 升级为 stack + 通过 ctx 传入 + snapshot 时持久化 — **plan-as-written 错误地把 `currentSkillScope` 描述为 module-level (line 407)，实际它已经是 `runAgentLoop` 函数内 local var (loop.ts:511 的 `let` 在函数体内)。本 unit 是纯 shape 升级 (scalar→stack) + 持久化 (snapshot 携带 stack, resume 还原)，不是 race fix。**)
 - Create: `src/lib/sessions/state-machine.ts` (state machine 验证 helper: canTransition(from, to): boolean; allTransitions: list 文档化转移)
 - Create: `src/lib/sessions/state-machine.test.ts`
 
 **Approach:**
 - 完整 state machine 见 plan 顶部 Mermaid 图
 - skillExecutionScopeStack 是 SkillScope[]（栈）；M1 单 session 时间复用同一份 ctx；M2 多 session 每 session 独立栈
-- lastAccessedAt 三种 trigger（用户切到该 session / 收到新 message / agent step 推进）在 setSessionMeta + setSessionAgent 各自调用点 inline 更新
+- lastAccessedAt 三种 trigger（用户切到该 session / 收到新 message / agent step 推进）在 setSessionMeta + setSessionAgent 各自调用点 inline 更新；step 推进侧采用 `stepIndex % 5 === 0` 节流防 meta 写抖动 (tombstone `stepIndex=0` 也命中, task done 自然 bump)
 - canTransition 是为防御性编码（任何 status 变更走 helper 而非直接赋值）
+
+**Shipped notes:**
+- Migration 在 SW startup 通过 module-level `recoveryReady` promise 串行化, 保证 `migration → detectAndMarkPaused` 严格顺序 (cold-start 路径不能按旧 'default' id 处理)
+- `buildSessionAgentSnapshot` 加可选 3rd arg (默认 `[]` 保持 9 个现有测试 backward compat); `AgentLoopContext.resumedSkillScopeStack?` 由 `handleResumeRequest` 注入
+- 多并发 `runAgentLoop` 的 stack 隔离作为 regression guard test 而非 fix (function-local 已天然隔离)
+- 测试: 76 → 106 (+30: state-machine 19, migration 5, loop stack 6)
 
 **Test scenarios:**
 - Happy path: createSession 返回唯一 id（多次调用不撞）
@@ -531,21 +537,34 @@ stateDiagram-v2
 
 **Dependencies:** M2-U1
 
+**Design reference:** Paper file "Pie Frontend" — artboards `07 — Sessions · B · Drawer Collapsed · Dark` 与 `08 — Sessions · B · Drawer Open Overlay · Dark` 是定稿设计。决策方向 = **B (Top-pull overlay drawer)**, 落地时以 paper artboard 为视觉真值源。
+
 **Files:**
-- Create: `src/sidepanel/components/SessionDrawer.tsx` (折叠/展开抽屉, session list, 状态图标, 行内 Resume button for paused, Show archived toggle)
-- Create: `src/sidepanel/components/SessionRow.tsx` (单行: title + lastAccessedAt + status icon + per-row aria-label)
-- Create: `src/sidepanel/components/PendingBadge.tsx` (顶栏 'N pending' 总 badge component; **N > 9 显示 '9+'**; 当 pending count > **5** 时**新进高 risk confirm 自动 deny + 提示** "too many concurrent confirms" — 守 informed-approval 不变量, security-lens SEC-PLAN-009 fix)
-- Modify: `src/sidepanel/App.tsx` (新增顶栏 PendingBadge + SessionDrawer + activeSessionId state + Settings/Chat 都按 activeSessionId 渲染; 移除 agent/tabs 两个 placeholder bottom nav)
+- Create: `src/sidepanel/components/SessionDrawer.tsx` (296px 宽 overlay drawer + backdrop rgba(8,13,16,0.72); 内含 drawer header "Sessions · N", ACTIVE 段 + 5 行混状态 session list, SHOW ARCHIVED 折叠, 底部 STORAGE 进度条; **不含** "+ New session" 行 — 该入口移到顶栏)
+- Create: `src/sidepanel/components/SessionRow.tsx` (单行: 18×18 status icon + flex-1 title (13/500 ellipsis) + 10/400 mono caption "RELATIVE_TIME · STEP_N · STATE" + 行内 action button (paused→Resume, pending_confirm→Review, 其他无); active session 加 left border 2px ice silver `#B8C8D6` + bg `#14171C`)
+- Create: `src/sidepanel/components/TopBarListButton.tsx` (24×24 hairline-bordered ≡ button; 抽屉打开时 border 切 ice silver; 右上角 absolute 7px warning `#C260BE` 红点 + 1.5px bg `#080D10` 描边形成 island; **当 pending count > 5 时**新进 high-risk confirm 自动 deny + toast "too many concurrent confirms" — security-lens SEC-PLAN-009 不变量保留, 红点不显数字, 上限仍硬 enforce)
+- Create: `src/sidepanel/components/TopBarNewSessionButton.tsx` (24×24 hairline-bordered + button; 紧邻 list button 右侧)
+- Modify: `src/sidepanel/App.tsx` (顶栏布局 `[≡●] [+] {sessionTitle 纯文本} ─── [☼]`; 移除原 "Chrome AI Agent" 标题 + logo + ANTHROPIC SONNET 文字 + 原 PendingBadge 概念 (已折叠到 ≡ 按钮 corner dot); session title 是纯文本展示, 不再是 click target; SessionDrawer 由 ≡ 按钮 toggle, overlay 在主区上 + backdrop dim; activeSessionId state 在 App; 移除 agent/tabs 两个 placeholder bottom nav)
 - Modify: `src/sidepanel/components/Chat.tsx` -> ChatView (接受 sessionId prop)
 - Modify: `src/sidepanel/main.tsx` 或 App.tsx (首次启动检测 session_index 为空 → createSession + setActive)
 - Modify: `src/sidepanel/components/Settings.tsx` (handleRunSkill 路径检测 active session 是否 archived → 创建新 session 后再 dispatch slash command)
 - Create: `src/sidepanel/components/SessionDrawer.test.tsx`
 
 **Approach:**
-- 抽屉默认 collapsed（仅显窄 icon 列）；展开 ~200px 宽
-- 顶栏 'N pending' 总 badge: count 来自 listSessionIndex 中所有 session.pendingConfirm != null 的数量；点击展开抽屉聚焦到第一个 pending session
-- 每 row 含 status icon (5 状态 + spinner): active=●, paused=⏸, running=◌(spinner), pending_confirm=! (yellow warning glyph), failed=✗, archived 走 'Show archived' 折叠, soft-deleted hidden。**所有 icon 走 SVG 而非 emoji**（design-lens AI-slop fix; 📦 被 screen reader 读为 "package" 不是 "archived"）；icon DOM 节点 `aria-hidden="true"`，row 的 `aria-label` 完整描述状态文本（"Session 'X', paused, last accessed yesterday"）
-- a11y: 抽屉 role=region aria-label, list role=list, row role=listitem with aria-label '${title}, ${status}, ${time}', drift 卡继承 Phase 3 R13 dialog baseline, badge aria-label='N pending confirms across sessions'
+- **Drawer 形态**: 296px overlay (不是永久 rail), 默认完全收起 (chat 区域不被压缩); ≡ 按钮 toggle; backdrop rgba(8,13,16,0.72) 覆盖剩余 104px 并可点击关闭
+- **顶栏 `[≡●] [+] {title}`**:
+  - `≡` (24×24): drawer toggle, 含 corner pending dot — *单一红点而非数字徽章, 简化视觉负担; 实际 pending count 在 drawer 内可见*
+  - `+` (24×24): "新建 session" 主入口 — 主页面级别 affordance, 不放在 drawer 内 (3 处入口要求中的"主页面"承接点)
+  - title (Inter 13/500): 纯文本展示当前 session 名 (LLM 标题 / fallback first-30-chars), max-width 200 + ellipsis; 不是 button
+- **Drawer 内部**: header `Sessions · N` (count) + ACTIVE 段 + N 行 SessionRow + SHOW ARCHIVED 折叠 + 底部 STORAGE bar (`X / 8.0 MB` + 视觉进度条 ice silver, M2-U4 后真实驱动); 顶部 count 与底部进度条**不重复** (count = session 数, progress = bytes 占用, 维度独立)
+- **Status icon (5 种, 全 SVG, aria-hidden, paper artboard 是真值)**:
+  - `active` (selected) — 8px ice silver `#B8C8D6` 实心圆 + row 整体 surface bg `#14171C` + left border 2px ice silver
+  - `running` — 12×12 圆环, 1px ice silver 上 + 左 border (其余 transparent), 真实 React 实现旋转动画
+  - `pending_confirm` — 12×12 1px warning `#C260BE` 圆环 + 4px 实心 dot 中心
+  - `paused` — 12×12 1px text-2 `#8A929E` 圆环 (无 fill)
+  - `failed` — 12×12 text-2 `#8A929E` 实心圆 + 6px X SVG path 中心 (stroke `#0E1216` 与背景对冲)
+- **关键 design tokens (与 00 Foundations 一致)**: bg `#080D10`, surface `#14171C`, hairline `#22272F`, text-1 `#E5E8EC`, text-2 `#8A929E`, text-3 `#525965`, accent `#B8C8D6`, warning `#C260BE`; Inter 13/500 row title, JetBrains Mono 10/400 0.08em letter-spacing meta caption
+- a11y: 抽屉 `role=dialog aria-modal=true aria-label="Sessions"`, list `role=list`, row `role=listitem` with aria-label `'${title}, ${status}, ${time}'`, ≡ 按钮 `aria-label="Open sessions list, ${N} pending"`, drift 卡继承 Phase 3 R13 dialog baseline
 
 **Patterns to follow:**
 - React 19 + Tailwind v4
@@ -553,19 +572,22 @@ stateDiagram-v2
 - Phase 3 OriginSummaryRow a11y baseline
 
 **Test scenarios:**
-- Happy path: 首次 install → 自动建 'New Session' + 显示在抽屉
-- Happy path: 用户 click '+ New Session' → 新建 + 切换 active
-- Happy path: SW 写 session_index → onChanged 触发抽屉刷新
-- Edge case: pending confirm 在非 active session → 顶栏 badge 显示 +1, 抽屉里该 row 高亮
-- Edge case: active session archived → 用户输 prompt → 自动建新 session
+- Happy path: 首次 install → 自动建 'New Session' + 顶栏 title 显示该 session
+- Happy path: 用户 click 顶栏 `+` → 新建 + 切换 active + drawer 不打开 (主页面级 action)
+- Happy path: 用户 click 顶栏 `≡` → drawer 展开 overlay + backdrop 出现
+- Happy path: SW 写 session_index → onChanged 触发 drawer + 顶栏 corner dot 刷新
+- Edge case: pending confirm 在非 active session → ≡ 按钮 corner dot 出现, drawer 内该 row pending 标记 + Review 行内 action
+- Edge case: pending count > 5 → 新进 high-risk confirm 自动 deny + toast (corner dot 不显数字, count 限仍 enforce)
+- Edge case: active session archived → 用户输 prompt → 自动建新 session, 顶栏 title 切换
 - Edge case: '/<skill>' 触发于 archived active session → 自动建 + 触发 (R23)
-- Integration: 切 settings 时 PendingBadge 仍 visible（K3 不变量）
-- a11y: 屏幕阅读器报告每 row 完整状态文本 (vitest + @testing-library/jest-dom 验证 aria-label)
+- Integration: 切 settings 时 ≡ 按钮 corner dot 仍 visible（K3 不变量）
+- a11y: 屏幕阅读器报告每 row 完整状态文本 (vitest + @testing-library/jest-dom 验证 aria-label) + ≡ 按钮 aria-label 含 pending count
 
 **Verification:**
 - vitest 通过
-- 手动 + axe-core dev console: 抽屉 / list / badge / drift 卡的 a11y 0 violation
-- 手动: pending confirm 在 settings 视图下顶栏 badge 仍能看到
+- 手动 + axe-core dev console: drawer overlay / list / 按钮 / drift 卡的 a11y 0 violation
+- 手动: pending confirm 在 settings 视图下 ≡ 按钮 corner dot 仍能看到
+- 手动 visual regression: Paper artboards 07/08 的视觉对照 — 顶栏布局 / drawer overlay / status icon / 底部 storage bar 与 sidepanel 实际渲染一致
 
 ---
 
