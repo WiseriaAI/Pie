@@ -1,0 +1,149 @@
+import type { DisplayMessage } from "@/types";
+import type { AgentMessage } from "@/lib/model-router";
+
+/**
+ * Session lifecycle status (M1-U1 ships the full enum even though M1 only
+ * uses `active` and `failed` actively — `paused` is wired by M1-U5 and
+ * `archived` by M2-U4. Shipping the full enum up front avoids type
+ * migrations later.)
+ *
+ * State machine (per plan):
+ *   active → failed              (task error / cross-origin abort)
+ *   active → paused              (SW restart, no pending confirm — M1-U5)
+ *   paused → active              (user clicks 'Resume task', drift OK)
+ *   paused → failed              (user clicks 'Discard' on R11 drift card)
+ *   {active|failed|paused} → archived  (LRU eviction or soft delete — M2-U4)
+ *   archived → active            (user manually unarchives, ≤30d window)
+ *
+ * `done` is intentionally omitted — task completion does not change the
+ * session-level status; sessions retain a "done" task as part of their
+ * agent-message history while staying `active`.
+ */
+export type SessionStatus = "active" | "paused" | "failed" | "archived";
+
+/**
+ * Pending confirm record persisted to `session_${id}_agent.pendingConfirm`
+ * while the SW is alive. Two carve-out invariants apply:
+ *
+ *   1. **SW-alive only** — the resolver lives in SW memory; on SW restart
+ *      this record is meaningless. M1-U5's `R10(session-resume)` cold-start
+ *      gate scans and clears all `pendingConfirm` fields *before* any other
+ *      recovery work, then marks the session as `failed`. So this field
+ *      should never be observed across SW lifetimes.
+ *
+ *   2. **Raw payload at-rest** — the confirm card needs un-redacted args to
+ *      let the user make an informed decision (Phase 2.5 binary-channel
+ *      invariant: confirm shows raw, panel-step display redacts). The raw
+ *      lives in storage for the duration of the pending confirm so that
+ *      panel re-mount can re-render the card; on resolve (approve/reject)
+ *      the SW immediately scrubs this field.
+ *
+ * `kind` is the discriminator for the M1-U4 `SessionConfirmRequestMessage`
+ * variant family. M1-U1 only declares the placeholder shape — `payload` is
+ * `unknown` until M1-U4 fills in concrete shapes per kind.
+ */
+export interface PendingConfirmRecord {
+  confirmationId: string;
+  kind: "agent-tool" | "pinned-tab-drift" | "paused-resume";
+  payload: unknown;
+}
+
+/**
+ * Display-side metadata for one session, plus the panel-rendered chat
+ * history. Persisted at `session_${id}_meta`. Split from
+ * `SessionAgentState` (D2) so that:
+ *   - panel can read meta without pulling the (potentially large)
+ *     agent-message history into the side panel bundle's hot path
+ *   - SW agent loop can write `session_${id}_agent` per step without
+ *     racing the panel's meta writes
+ *
+ * `messages` is the full DisplayMessage history shown to the user. The SW
+ * appends to this on `chat-done` boundaries (not mid-stream — see plan
+ * M1-U2 "Approach"). Streaming text stays in component-local React state
+ * and is allowed to be lost on sub-view switch.
+ */
+export interface SessionMeta {
+  /** crypto.randomUUID() — no `default` magic value, no prefix (PRD-3 fix). */
+  id: string;
+  /** Set once at createSession time; never mutated. */
+  createdAt: number;
+  /**
+   * Updated on three triggers (M2-U1 wires all three):
+   *   - user activates this session in the drawer
+   *   - SW receives a new chat-start for this session
+   *   - agent loop completes a step and writes a snapshot
+   */
+  lastAccessedAt: number;
+  status: SessionStatus;
+  /** LLM-generated short title (M2-U3). Falls back to first-message prefix
+   *  when LLM call fails or is in flight. */
+  title?: string;
+  /** Pinned tab captured at session creation (M3-U2). M1-U1 does not write
+   *  this yet; createSession accepts it so M3-U2 doesn't have to widen the
+   *  signature later. */
+  pinnedTabId?: number;
+  pinnedOrigin?: string;
+  /** Set when the session is moved to archived storage. M2-U4 also reads
+   *  this to drive the 30-day hard-delete sweep. Absence = not archived. */
+  archivedAt?: number;
+  /** Panel-rendered chat history. The SW writes the full array on
+   *  chat-done boundaries (M1-U2); panel reads it on mount and re-renders
+   *  on storage onChanged. */
+  messages: DisplayMessage[];
+}
+
+/**
+ * Per-session agent runtime state, persisted at `session_${id}_agent`. This
+ * is the LLM-facing IR — the panel does not import this type to render
+ * chat (that's `SessionMeta.messages`), it only reads it when the user
+ * clicks 'Resume task' on a paused session (M1-U5).
+ *
+ * `agentMessages` retains raw tool args; redaction is a panel-display
+ * concern only (R28 v2 reinterpretation, see plan D7 / M1-U3). Resume
+ * needs the raw values to give the LLM enough context to plan the next
+ * step.
+ *
+ * `skillExecutionScopeStack` is an array — M1-U1 ships it because
+ * `SessionAgentState` is the natural carrier and M2-U1 will wire it for
+ * real. M1's single-session loop still uses the in-memory
+ * `currentSkillScope` in `loop.ts`; the stack here is empty until M2.
+ */
+export interface SessionAgentState {
+  /** Full LLM-side conversation including tool_use / tool_result blocks. */
+  agentMessages: AgentMessage[];
+  /** Monotonic counter incremented per agent step. Equals
+   *  `agentMessages` length minus the seed message count, but persisted
+   *  explicitly so resume doesn't have to recompute. */
+  stepIndex: number;
+  /** Phase 2.6 skill scope stack. Empty in M1; populated by M2-U1. */
+  skillExecutionScopeStack: Array<{
+    skillId: string;
+    allowedTools: string[] | null;
+  }>;
+  /** Set while a confirm is awaiting user response. Cleared synchronously
+   *  on resolve. M1-U5 cold-start sweep unconditionally clears this on
+   *  SW startup before any other recovery work. */
+  pendingConfirm?: PendingConfirmRecord | null;
+}
+
+/**
+ * Lightweight summary of a session, persisted in the single
+ * `session_index` key. Avoids `chrome.storage.local.get(null)` full-scan
+ * for the drawer (D1).
+ *
+ * Sort order: returned by `listSessionIndex` is `lastAccessedAt` desc.
+ *
+ * `pinnedOrigin` is intentionally NOT here — write traffic on
+ * lastAccessedAt is high enough that we don't want to also write the
+ * origin string on every access; consumers that need pinnedOrigin
+ * (close_tabs cross-session check via plan D9) read from the per-session
+ * meta. `pinnedTabId` is here because cross-session
+ * `getActivePinnedTabs()` (M3-U4) wants index-only access.
+ */
+export interface SessionIndexEntry {
+  id: string;
+  lastAccessedAt: number;
+  status: SessionStatus;
+  title?: string;
+  pinnedTabId?: number;
+}
