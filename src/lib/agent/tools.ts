@@ -123,7 +123,13 @@ export const BUILT_IN_TOOLS: Tool[] = [
     },
     handler: async (args: unknown, ctx: ToolHandlerContext): Promise<ActionResult> => {
       const a = args as { direction: "up" | "down"; amount?: number };
-      return execInTab(ctx.tabId, scroll, [a.direction, a.amount]);
+      // chrome.scripting.executeScript args go through structuredClone, which
+      // rejects `undefined` (unlike JSON which silently drops it). When LLM
+      // omits the optional amount, drop the trailing slot entirely so the
+      // serializer sees [direction] not [direction, undefined].
+      const scrollArgs: ["up" | "down"] | ["up" | "down", number] =
+        a.amount !== undefined ? [a.direction, a.amount] : [a.direction];
+      return execInTab(ctx.tabId, scroll, scrollArgs);
     },
   },
 
