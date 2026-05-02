@@ -487,3 +487,85 @@ describe("M3-U4 — collectCrossSessionConflicts", () => {
     expect(result).toEqual([7]);
   });
 });
+
+describe("M3-U5 — multi-session invariant regression", () => {
+  it("buildSessionAgentSnapshot — concurrent calls with different histories never share state", () => {
+    // The advisor (M3-U5 verification) flagged: every per-call helper
+    // MUST stay function-local. This test runs two snapshots in
+    // simulated concurrent fashion and asserts independence — if a
+    // future refactor hoists state into module scope, this fails.
+    const historyA: AgentMessage[] = [
+      { role: "user", content: "task-A" },
+    ];
+    const historyB: AgentMessage[] = [
+      { role: "user", content: "task-B" },
+    ];
+
+    const stackA: SessionAgentState["skillExecutionScopeStack"] = [
+      { skillId: "skill-A", allowedTools: ["click"] },
+    ];
+    const stackB: SessionAgentState["skillExecutionScopeStack"] = [
+      { skillId: "skill-B", allowedTools: ["type"] },
+    ];
+
+    const snapA = buildSessionAgentSnapshot(historyA, 1, stackA);
+    const snapB = buildSessionAgentSnapshot(historyB, 2, stackB);
+
+    // Independent contents.
+    expect(snapA.agentMessages[0]).toEqual({
+      role: "user",
+      content: "task-A",
+    });
+    expect(snapB.agentMessages[0]).toEqual({
+      role: "user",
+      content: "task-B",
+    });
+    // Independent stacks.
+    expect(snapA.skillExecutionScopeStack[0]!.skillId).toBe("skill-A");
+    expect(snapB.skillExecutionScopeStack[0]!.skillId).toBe("skill-B");
+    // Independent step indices.
+    expect(snapA.stepIndex).toBe(1);
+    expect(snapB.stepIndex).toBe(2);
+    // Independent object identities (no shared references).
+    expect(snapA.skillExecutionScopeStack).not.toBe(snapB.skillExecutionScopeStack);
+  });
+
+  it("collectCrossSessionConflicts — two simulated sessions with overlapping pin produce independent conflict sets", () => {
+    // Scenario: Session A pinned tab 7, Session B pinned tab 7 too
+    // (both happen to share). On A's dispatch, crossSessionPinnedTabIds
+    // = {7} (because the registry excludes A but contains B). A's click
+    // tool would conflict on its own pin — caught.
+    //
+    // From B's perspective the registry for B's call would be {7}
+    // (excludes B, contains A's pin). B's click ALSO conflicts.
+    // Both flag — neither one runs unobserved. This is exactly the
+    // R7 lock semantic.
+    const fromA = collectCrossSessionConflicts(
+      "click",
+      { elementIndex: 0 },
+      7,
+      new Set([7]),
+    );
+    const fromB = collectCrossSessionConflicts(
+      "click",
+      { elementIndex: 0 },
+      7,
+      new Set([7]),
+    );
+    expect(fromA).toEqual([7]);
+    expect(fromB).toEqual([7]);
+  });
+
+  it("collectCrossSessionConflicts — same-session calls (excluded from registry) do not conflict", () => {
+    // The registry construction (getCrossSessionPinnedTabIds) excludes
+    // the calling session's own pin. So the typical single-session
+    // scenario hands an empty set to the helper.
+    const result = collectCrossSessionConflicts(
+      "click",
+      { elementIndex: 0 },
+      7,
+      new Set(), // single-session = no cross-session pins
+    );
+    expect(result).toEqual([]);
+  });
+});
