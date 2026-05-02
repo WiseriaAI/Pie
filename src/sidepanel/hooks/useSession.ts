@@ -54,6 +54,30 @@ import { deriveTitleFromMessages } from "@/lib/sessions/title";
 // so the SW side can share the same sentinel string for the LLM title race guard).
 // The DisplayMessage type satisfies TitleableMessage (has role + content fields).
 
+/**
+ * M3-U2 — capture the user's currently-active tab + its origin so a new
+ * session can anchor to it at creation time. Returns null when the
+ * active tab can't be resolved (no window focused, restricted URL, etc.) —
+ * the loop's first-iteration origin check handles that case as today.
+ *
+ * Restricted URLs (chrome://, file://, blob:, etc.) parse to a URL whose
+ * `origin` is the literal string "null"; treat those as not-pinnable so
+ * callers don't persist a pin that can never be resumed cleanly.
+ */
+async function captureActivePinned(): Promise<
+  { pinnedTabId: number; pinnedOrigin: string } | null
+> {
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!tab?.id || !tab.url) return null;
+    const origin = new URL(tab.url).origin;
+    if (!origin || origin === "null") return null;
+    return { pinnedTabId: tab.id, pinnedOrigin: origin };
+  } catch {
+    return null;
+  }
+}
+
 interface SendMessageInput {
   /** What the user typed — rendered in the chat. */
   content: string;
@@ -452,7 +476,11 @@ export function useSession(): UseSession {
         let initialMessages: DisplayMessage[] = [];
         let initialStatus: SessionStatus = "active";
         if (list.length === 0) {
-          const meta = await createSession();
+          // M3-U2 — anchor a freshly-created bootstrap session to the
+          // user's current active tab. Failure to capture is non-fatal
+          // (loop falls back to active-tab anchoring at first chat-start).
+          const pinned = await captureActivePinned();
+          const meta = await createSession(pinned ?? undefined);
           if (cancelled) return;
           id = meta.id;
           initialStatus = meta.status;
@@ -463,6 +491,20 @@ export function useSession(): UseSession {
           id = top.id;
           initialMessages = meta?.messages ?? [];
           initialStatus = meta?.status ?? "active";
+          // M3-U2 — legacy-session pin migration on bootstrap. Same as
+          // setActive's backfill: capture + persist once for any session
+          // missing a pin, so resume / chat-start can anchor cleanly.
+          if (meta && (meta.pinnedTabId === undefined || !meta.pinnedOrigin)) {
+            const pinned = await captureActivePinned();
+            if (pinned) {
+              await setSessionMeta({
+                ...meta,
+                pinnedTabId: pinned.pinnedTabId,
+                pinnedOrigin: pinned.pinnedOrigin,
+                lastAccessedAt: Date.now(),
+              });
+            }
+          }
         }
         setSessionId(id);
         setStatus(initialStatus);
@@ -751,7 +793,32 @@ export function useSession(): UseSession {
     // No-op if already on this session.
     if (sessionIdRef.current === id) return id;
 
-    // Bump lastAccessedAt in storage (M2-U1 three-trigger wiring)
+    // M3-U2 — legacy-session pin migration. Sessions created before
+    // M3-U2 (M1 / M2) have `pinnedTabId === undefined`; capture the
+    // user's current active tab and persist before activation so the
+    // SW agent loop can anchor to it. Done at activation (not at first
+    // chat-start) so the Chat view's PINNED indicator and the persisted
+    // pin agree from the moment the session becomes visible.
+    // Captured once per session — re-activation never overwrites an
+    // existing pin (the user's choice survives later tab switches).
+    let metaForActivate = meta;
+    if (meta.pinnedTabId === undefined || !meta.pinnedOrigin) {
+      const pinned = await captureActivePinned();
+      if (pinned) {
+        const patched = {
+          ...meta,
+          pinnedTabId: pinned.pinnedTabId,
+          pinnedOrigin: pinned.pinnedOrigin,
+          lastAccessedAt: Date.now(),
+        };
+        await setSessionMeta(patched);
+        metaForActivate = patched;
+      }
+    }
+
+    // Bump lastAccessedAt in storage (M2-U1 three-trigger wiring).
+    // No-op if the legacy-pin migration above already wrote a fresh
+    // lastAccessedAt; updateLastAccessed re-reads + re-writes anyway.
     await updateLastAccessed(id);
 
     // M3-U1 — swap to the new session's port. Disconnect old (its
@@ -768,8 +835,8 @@ export function useSession(): UseSession {
 
     // Load the session's messages into React state
     setSessionId(id);
-    setStatus(meta.status);
-    setMessages(meta.messages ?? []);
+    setStatus(metaForActivate.status);
+    setMessages(metaForActivate.messages ?? []);
     setError(null);
     setToast(null);
 
@@ -801,7 +868,12 @@ export function useSession(): UseSession {
     accumulatedRef.current = "";
     streamFinishedRef.current = true;
 
-    const meta = await createSession();
+    // M3-U2 — capture the user's current active tab + origin so the new
+    // session pins to "what the user was looking at when they hit New".
+    // Failing to capture is non-fatal: the loop falls back to active-tab
+    // anchoring on first chat-start (legacy path).
+    const pinned = await captureActivePinned();
+    const meta = await createSession(pinned ?? undefined);
     // M3-U1 — swap to the new session's port (the new session's id is
     // freshly minted, so the prior port belongs to a different session
     // and must be disconnected to release its SW-side resources).

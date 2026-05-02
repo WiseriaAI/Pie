@@ -41,6 +41,7 @@ import {
 } from "./cdp-session";
 import { KEYBOARD_SIMULATION_STORAGE_KEY } from "@/lib/keyboard-simulation";
 import { runSessionMigrations } from "@/lib/sessions/migration";
+import { getCrossSessionPinnedTabIds } from "@/lib/sessions/pinned-tab-registry";
 import { chat } from "@/lib/model-router";
 import { generateTitle, maybeUpgradeFallbackTitle } from "@/lib/sessions/title-generator";
 
@@ -556,6 +557,14 @@ async function handleResumeRequest(
     taskForPrompt = typeof c === "string" ? c : "(resumed task)";
   }
 
+  // M3-U2 — same pin injection as chat-start path. checkPinnedDrift
+  // already validated the pin against current tab state above; the loop
+  // itself will re-check on every iteration.
+  // M3-U4 — cross-session pinned-tab registry, computed at resume time.
+  const pinnedTabId = meta.pinnedTabId;
+  const pinnedOrigin = meta.pinnedOrigin;
+  const crossSessionPinnedTabIds = await getCrossSessionPinnedTabIds(sessionId);
+
   await runAgentLoop({
     port,
     task: taskForPrompt,
@@ -574,6 +583,9 @@ async function handleResumeRequest(
     // M2-U1: restore the skill-scope stack so R2/R3 enforcement picks
     // up where it left off if the task was paused mid-skill.
     resumedSkillScopeStack: agent.skillExecutionScopeStack,
+    pinnedTabId,
+    pinnedOrigin,
+    crossSessionPinnedTabIds,
   });
 }
 
@@ -848,6 +860,16 @@ async function handleChatStream(
       }
     };
 
+    // M3-U2 — read the panel-captured pinned tab/origin from meta and
+    // inject into the loop context. Legacy sessions without a pin fall
+    // through to the loop's active-tab fallback (already handled there).
+    // M3-U4 — compute the cross-session pinned-tab registry once per
+    // chat-start so write tools can refuse cross-session conflicts.
+    const sessionMeta = await getSessionMeta(sessionId);
+    const pinnedTabId = sessionMeta?.pinnedTabId;
+    const pinnedOrigin = sessionMeta?.pinnedOrigin;
+    const crossSessionPinnedTabIds = await getCrossSessionPinnedTabIds(sessionId);
+
     await runAgentLoop({
       port,
       task,
@@ -864,6 +886,9 @@ async function handleChatStream(
       // (see makeStepSnapshotHandler). Errors caught + logged inside
       // runAgentLoop; this wrapper only does the storage calls.
       onStepSnapshot: makeStepSnapshotHandler(sessionId),
+      pinnedTabId,
+      pinnedOrigin,
+      crossSessionPinnedTabIds,
     });
   } catch (e) {
     if (signal.aborted) return;

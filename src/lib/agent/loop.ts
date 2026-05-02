@@ -127,6 +127,37 @@ export interface AgentLoopContext {
    * was active; the loop starts fresh.
    */
   resumedSkillScopeStack?: Array<{ skillId: string; allowedTools: string[] | null }>;
+  /**
+   * M3-U2 — pre-anchored pinned tab + origin. Captured by the panel at
+   * session creation / activation and stored on the session meta; the SW
+   * dispatcher (`handleChatStream` / `handleResumeRequest`) reads them
+   * and injects them here. When both are present the loop SKIPS the
+   * legacy `chrome.tabs.query({active:true,currentWindow:true})` anchor
+   * step — sessions are pinned to "what the user was looking at when
+   * they created the session", not to "whatever happens to be active
+   * the moment chat-start arrives" (which would race the user's tab
+   * switches and produce surprising cross-origin pins).
+   *
+   * Both undefined OR both set. When undefined (legacy M1 / M2 sessions
+   * whose meta was written before this field existed), the loop falls
+   * back to the legacy active-tab anchor — backward compatible. The
+   * panel's setActive / bootstrap migration backfills missing pins on
+   * the first activation under M3 so the legacy path is rarely hit.
+   */
+  pinnedTabId?: number;
+  pinnedOrigin?: string;
+  /**
+   * M3-U4 — set of tab ids that are pinned by OTHER active sessions in
+   * the cross-session pinned-tab registry (`session_index` derived).
+   * Computed by the SW dispatcher from listSessionIndex() and passed
+   * verbatim into the tool dispatch ctx so write-class handlers can
+   * refuse to operate on a tab another session owns (R7 lock; K2).
+   *
+   * undefined means "no other session is pinned" (which is the common
+   * case in single-window single-session use). The set excludes the
+   * caller's own pinnedTabId; check against it directly with `.has(id)`.
+   */
+  crossSessionPinnedTabIds?: Set<number>;
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -580,41 +611,60 @@ export async function runAgentLoop(ctx: AgentLoopContext): Promise<void> {
     sendAgentStep(port, { ...msg, sessionId });
   };
 
-  // 1. Anchor tab + origin at task start
+  // 1. Anchor tab + origin at task start.
+  //
+  // M3-U2 — preferred path: ctx carries the panel-captured pin (set at
+  // session creation / activation). Trust it without re-querying active
+  // tab; the per-iteration origin re-check (loop body, ~line 705) handles
+  // any drift between session creation and chat-start. Re-querying here
+  // would race the user's tab focus and produce surprising "the agent
+  // pinned to the wrong tab" outcomes (e.g. user typed a task in session
+  // A while focused on an unrelated tab).
+  //
+  // Legacy fallback: M1 / M2 sessions whose meta was written before
+  // M3-U2 won't carry a pin. Fall through to the historical active-tab
+  // anchor; the panel's backfill migration covers most of these on
+  // first M3 activation, but the fallback ensures correctness if a
+  // session somehow reaches runAgentLoop without one.
   let pinnedTabId: number;
   let pinnedOrigin: string;
 
-  try {
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (!tab?.id || !tab.url || isRestrictedUrl(tab.url)) {
+  if (ctx.pinnedTabId !== undefined && ctx.pinnedOrigin) {
+    pinnedTabId = ctx.pinnedTabId;
+    pinnedOrigin = ctx.pinnedOrigin;
+  } else {
+    try {
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (!tab?.id || !tab.url || isRestrictedUrl(tab.url)) {
+        emitDone({
+          type: "agent-done-task",
+          success: false,
+          summary: "Cannot run agent on this page type",
+          stepCount: 0,
+        });
+        return;
+      }
+      const origin = safeParseOrigin(tab.url);
+      if (!origin) {
+        emitDone({
+          type: "agent-done-task",
+          success: false,
+          summary: "Cannot run agent on this page (unresolvable origin)",
+          stepCount: 0,
+        });
+        return;
+      }
+      pinnedTabId = tab.id;
+      pinnedOrigin = origin;
+    } catch {
       emitDone({
         type: "agent-done-task",
         success: false,
-        summary: "Cannot run agent on this page type",
+        summary: "Failed to get active tab",
         stepCount: 0,
       });
       return;
     }
-    const origin = safeParseOrigin(tab.url);
-    if (!origin) {
-      emitDone({
-        type: "agent-done-task",
-        success: false,
-        summary: "Cannot run agent on this page (unresolvable origin)",
-        stepCount: 0,
-      });
-      return;
-    }
-    pinnedTabId = tab.id;
-    pinnedOrigin = origin;
-  } catch {
-    emitDone({
-      type: "agent-done-task",
-      success: false,
-      summary: "Failed to get active tab",
-      stepCount: 0,
-    });
-    return;
   }
 
   // Curried CdpSession factory — passed to keyboard tools via closure.
