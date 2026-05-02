@@ -400,6 +400,7 @@ async function handleResumeRequest(
   sessionId: string,
   signal: AbortSignal,
   pendingConfirmations: Map<string, (approved: boolean) => void>,
+  pendingConfirmationsBySession: Map<string, string>,
 ): Promise<void> {
   const meta = await getSessionMeta(sessionId);
   if (!meta || meta.status !== "paused") {
@@ -509,6 +510,8 @@ async function handleResumeRequest(
         pendingConfirmations.set(confirmationId, (approved) => {
           resolve(approved ? { approved: true } : { approved: false, reason: "user-reject" });
         });
+        // P1-4 — register session ownership for response verification.
+        pendingConfirmationsBySession.set(confirmationId, sessionId);
         port.postMessage({
           type: "agent-confirm-request",
           confirmationId,
@@ -517,6 +520,7 @@ async function handleResumeRequest(
         } satisfies AgentConfirmRequestMessage);
       });
     } finally {
+      pendingConfirmationsBySession.delete(confirmationId);
       scrubPendingConfirm(sessionId).catch((e) => {
         console.warn(
           `[agent] resume scrub pendingConfirm failed for session=${sessionId}:`,
@@ -673,6 +677,7 @@ async function handleChatStream(
   sessionId: string,
   signal: AbortSignal,
   pendingConfirmations: Map<string, (approved: boolean) => void>,
+  pendingConfirmationsBySession: Map<string, string>,
 ) {
   try {
     // Get active provider config
@@ -768,6 +773,9 @@ async function handleChatStream(
           pendingConfirmations.set(confirmationId, (approved) => {
             resolve(approved ? { approved: true } : { approved: false, reason: "user-reject" });
           });
+          // P1-4 — register session ownership so agent-confirm-response
+          // handler can verify the approval came from the right session.
+          pendingConfirmationsBySession.set(confirmationId, sessionId);
           port.postMessage({
             type: "agent-confirm-request",
             confirmationId,
@@ -776,6 +784,7 @@ async function handleChatStream(
           } satisfies AgentConfirmRequestMessage);
         });
       } finally {
+        pendingConfirmationsBySession.delete(confirmationId);
         scrubPendingConfirm(sessionId).catch((e) => {
           console.warn(
             `[agent] scrub pendingConfirm failed for session=${sessionId} confirmId=${confirmationId}:`,
@@ -819,6 +828,11 @@ chrome.runtime.onConnect.addListener((port) => {
 
   // Per-port pending confirmation map
   const pendingConfirmations = new Map<string, (approved: boolean) => void>();
+  // P1-4 — tracks which session owns each pending confirmationId. Used to
+  // verify that an agent-confirm-response came from the session whose confirm
+  // card was displayed, preventing wrong-session approval (defense-in-depth
+  // behind the P0-1/P0-2 streaming guards).
+  const pendingConfirmationsBySession = new Map<string, string>();
 
   // Drain any pending high-risk confirm prompts when the task is aborted
   // (Stop button, kill-switch, or programmatic abort from inside the
@@ -834,6 +848,7 @@ chrome.runtime.onConnect.addListener((port) => {
         resolve(false);
       }
       pendingConfirmations.clear();
+      pendingConfirmationsBySession.clear();
     },
     { once: true },
   );
@@ -851,10 +866,27 @@ chrome.runtime.onConnect.addListener((port) => {
         message.sessionId,
         abortController.signal,
         pendingConfirmations,
+        pendingConfirmationsBySession,
       );
     } else if (message.type === "chat-abort") {
       abortController.abort();
     } else if (message.type === "agent-confirm-response") {
+      // P1-4 — verify the response belongs to the session that owns
+      // the confirmationId. Prevents wrong-session approval (defense-
+      // in-depth behind the P0-1/P0-2 streaming guards).
+      const expectedSession = pendingConfirmationsBySession.get(message.confirmationId);
+      if (expectedSession !== undefined && expectedSession !== message.sessionId) {
+        console.warn(
+          `[sw] agent-confirm-response sessionId mismatch: expected=${expectedSession} got=${message.sessionId} confirmId=${message.confirmationId} — refusing`,
+        );
+        port.postMessage({
+          type: "session-toast",
+          level: "warn",
+          text: "Approval rejected — session changed since the confirm card was shown.",
+          sessionId: message.sessionId,
+        });
+        return;
+      }
       const resolver = pendingConfirmations.get(message.confirmationId);
       if (resolver) {
         resolver(message.approved);
@@ -877,6 +909,7 @@ chrome.runtime.onConnect.addListener((port) => {
         message.sessionId,
         abortController.signal,
         pendingConfirmations,
+        pendingConfirmationsBySession,
       ).catch((e) => {
         console.warn(
           `[sw] resume-task handler failed for session=${message.sessionId}:`,
@@ -914,6 +947,7 @@ chrome.runtime.onConnect.addListener((port) => {
       resolve(false);
     }
     pendingConfirmations.clear();
+    pendingConfirmationsBySession.clear();
   });
 });
 
