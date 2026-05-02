@@ -1,1 +1,122 @@
 @import "tailwindcss";
+
+@layer base {
+  :root {
+    color-scheme: light dark;
+
+    --c-canvas: #FAFBFC;
+    --c-surface: #FFFFFF;
+    --c-field: #F4F6F8;
+    --c-line: #E4E8EC;
+    --c-fg-1: #14181D;
+    --c-fg-2: #5A6470;
+    --c-fg-3: #98A1AC;
+    --c-accent: #4A5C6E;
+    --c-warning: #B85A4D;
+    --c-dot-grid: rgba(20, 24, 29, 0.04);
+    --c-accent-tint: rgba(74, 92, 110, 0.08);
+    --c-accent-line: rgba(74, 92, 110, 0.3);
+    --c-warning-tint: rgba(184, 90, 77, 0.08);
+    --c-warning-line: rgba(184, 90, 77, 0.4);
+    --c-overlay: rgba(20, 24, 29, 0.04);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --c-canvas: #0B0D10;
+      --c-surface: #14171C;
+      --c-field: #1A1E25;
+      --c-line: #22272F;
+      --c-fg-1: #E5E8EC;
+      --c-fg-2: #8A929E;
+      --c-fg-3: #525965;
+      --c-accent: #B8C8D6;
+      --c-warning: #C26B5E;
+      --c-dot-grid: rgba(232, 236, 242, 0.05);
+      --c-accent-tint: rgba(184, 200, 214, 0.08);
+      --c-accent-line: rgba(184, 200, 214, 0.3);
+      --c-warning-tint: rgba(194, 107, 94, 0.08);
+      --c-warning-line: rgba(194, 107, 94, 0.45);
+      --c-overlay: rgba(232, 236, 242, 0.04);
+    }
+  }
+}
+
+@theme {
+  --color-canvas: var(--c-canvas);
+  --color-surface: var(--c-surface);
+  --color-field: var(--c-field);
+  --color-line: var(--c-line);
+  --color-fg-1: var(--c-fg-1);
+  --color-fg-2: var(--c-fg-2);
+  --color-fg-3: var(--c-fg-3);
+  --color-accent: var(--c-accent);
+  --color-accent-tint: var(--c-accent-tint);
+  --color-accent-line: var(--c-accent-line);
+  --color-warning: var(--c-warning);
+  --color-warning-tint: var(--c-warning-tint);
+  --color-warning-line: var(--c-warning-line);
+  --color-overlay: var(--c-overlay);
+
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Consolas, monospace;
+}
+
+body {
+  font-family: var(--font-sans);
+  background-color: var(--c-canvas);
+  color: var(--c-fg-1);
+  font-feature-settings: "ss01", "cv11";
+}
+
+.dot-grid {
+  background-image: radial-gradient(circle at 1px 1px, var(--c-dot-grid) 1px, transparent 0);
+  background-size: 24px 24px;
+}
+
+.caps {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.hairline {
+  background-color: var(--c-line);
+  height: 1px;
+  width: 100%;
+}
+
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+textarea,
+input {
+  font-family: var(--font-sans);
+}
+
+textarea:focus,
+input:focus {
+  outline: none;
+}
+
+button {
+  font-family: var(--font-sans);
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--c-line);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--c-fg-3);
+}
