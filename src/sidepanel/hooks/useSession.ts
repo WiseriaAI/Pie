@@ -544,10 +544,20 @@ export function useSession(): UseSession {
     const port = portRef.current;
     const id = sessionIdRef.current;
     if (!port || !id) return;
+    // P0-2 — set streaming=true BEFORE posting so the setActive guard
+    // blocks any concurrent session switch while the resumed loop is running.
+    // The existing chat-done / chat-error / agent-done-task done-boundary
+    // paths will correctly flip streaming back to false when the loop ends.
+    setStreaming(true);
+    accumulatedRef.current = "";
+    streamFinishedRef.current = false;
     try {
       port.postMessage({ type: "resume-task", sessionId: id });
     } catch {
       // port may be in the process of closing — non-fatal
+      // If post fails, revert streaming flag so the UI doesn't get stuck
+      setStreaming(false);
+      streamFinishedRef.current = true;
     }
   }, []);
 
