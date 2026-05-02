@@ -6,6 +6,7 @@ import {
   getSessionMeta,
   listSessionIndex,
   setSessionMeta,
+  updateLastAccessed,
 } from "@/lib/sessions/storage";
 import type { SessionStatus } from "@/lib/sessions/types";
 
@@ -70,6 +71,9 @@ export interface UseSession {
   streaming: boolean;
   streamingText: string;
   error: string | null;
+  /** M2-U2 — transient toast from the SW (e.g. SEC-PLAN-009 flood warn).
+   *  Rendered by Chat as a dismissable banner. Not persisted. */
+  toast: { level: "warn" | "error" | "info"; text: string } | null;
   sendMessage: (input: SendMessageInput) => void;
   /** Sends a chat-abort message to the SW. Caller is responsible for
    *  guarding against rapid-fire aborts. */
@@ -87,6 +91,21 @@ export interface UseSession {
   clearMessages: () => Promise<void>;
   /** Allows Chat to dismiss the error banner without re-sending. */
   clearError: () => void;
+  /** Dismiss the SEC-PLAN-009 toast. */
+  clearToast: () => void;
+  /**
+   * M2-U2 — switch the active session. Loads the session's persisted
+   * messages, bumps lastAccessedAt, and sends a panel-mounted handshake
+   * on the existing port. Refuses if `streaming === true` (no abort
+   * mid-stream; user must Stop first). Returns the new sessionId or null
+   * if the switch was refused.
+   */
+  setActive: (id: string) => Promise<string | null>;
+  /**
+   * M2-U2 — create a new session and make it active. Returns the new
+   * session's id.
+   */
+  createAndActivate: () => Promise<string>;
 }
 
 export function useSession(): UseSession {
@@ -96,6 +115,7 @@ export function useSession(): UseSession {
   const [streaming, setStreaming] = useState(false);
   const [streamingText, setStreamingText] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [toast, setToast] = useState<{ level: "warn" | "error" | "info"; text: string } | null>(null);
   const [ready, setReady] = useState(false);
 
   // Persistent port across the whole hook lifetime (mount → unmount).
@@ -304,6 +324,10 @@ export function useSession(): UseSession {
             },
           ];
         });
+      } else if (message.type === "session-toast") {
+        // SEC-PLAN-009 — transient warning from SW (flood-limit, etc.)
+        // Rendered as a dismissable banner by Chat.
+        setToast({ level: message.level, text: message.text });
       }
     },
     [persistMessages],
@@ -550,6 +574,72 @@ export function useSession(): UseSession {
   }, []);
 
   const clearError = useCallback(() => setError(null), []);
+  const clearToast = useCallback(() => setToast(null), []);
+
+  /**
+   * M2-U2 — switch active session. Refuses when streaming is true
+   * (no per-session port yet; M3 will allow this).
+   *
+   * On switch:
+   *   1. Loads persisted messages for the new session from storage.
+   *   2. Bumps lastAccessedAt so LRU order reflects user interaction.
+   *   3. Sends panel-mounted on the existing port so the SW re-emits
+   *      any live pendingConfirm for the new session (R4 re-emit path).
+   */
+  const setActive = useCallback(async (id: string): Promise<string | null> => {
+    // Guard: don't switch mid-stream (M3-U1 will allow this with per-session ports)
+    if (streaming) return null;
+
+    const meta = await getSessionMeta(id);
+    if (!meta) return null;
+
+    // Bump lastAccessedAt in storage (M2-U1 three-trigger wiring)
+    await updateLastAccessed(id);
+
+    // Load the session's messages into React state
+    setSessionId(id);
+    setStatus(meta.status);
+    setMessages(meta.messages ?? []);
+    setError(null);
+    setToast(null);
+
+    // Announce to the SW so it can re-emit any live confirm-request (R4)
+    const port = portRef.current;
+    if (port) {
+      try {
+        port.postMessage({ type: "panel-mounted", sessionId: id });
+      } catch {
+        // port may be closing — non-fatal, the listener will handle reconnect
+      }
+    }
+
+    return id;
+  }, [streaming]);
+
+  /**
+   * M2-U2 — create a new session and make it active. Returns the new
+   * session's id. Does not open a new port (M3-U1 concern); reuses the
+   * existing port with a new panel-mounted announce.
+   */
+  const createAndActivate = useCallback(async (): Promise<string> => {
+    const meta = await createSession();
+    setSessionId(meta.id);
+    setStatus(meta.status);
+    setMessages([]);
+    setError(null);
+    setToast(null);
+
+    const port = portRef.current;
+    if (port) {
+      try {
+        port.postMessage({ type: "panel-mounted", sessionId: meta.id });
+      } catch {
+        // non-fatal
+      }
+    }
+
+    return meta.id;
+  }, []);
 
   return {
     sessionId,
@@ -559,6 +649,7 @@ export function useSession(): UseSession {
     streaming,
     streamingText,
     error,
+    toast,
     sendMessage,
     abort,
     resolveConfirm,
@@ -566,5 +657,8 @@ export function useSession(): UseSession {
     discardTask,
     clearMessages,
     clearError,
+    clearToast,
+    setActive,
+    createAndActivate,
   };
 }
