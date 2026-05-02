@@ -9,7 +9,7 @@ m1_pr: https://github.com/WiseriaAI/Pie/pull/8
 m1_learnings: docs/solutions/2026-05-02-session-as-first-class-persistent-layer-m1.md
 ---
 
-> **Status note (2026-05-02)**: M1 (units U1-U5) shipped via PR #8 — single-session persistent layer + SW restart recovery + R11 drift card. **M2-U1 shipped via PR #9** — multi-session schema + state machine + skillExecutionScopeStack (76 → 106 tests). **M2-U2 设计稿已定** — Paper file "Pie Frontend" artboards 07/08 是视觉真值源, 方向 = B (top-pull overlay drawer + 顶栏 `[≡●] [+] {title}`). M2-U2/U3/U4 与 M3 全部 NOT YET STARTED. See `m1_learnings` link for shipped invariants future work must preserve.
+> **Status note (2026-05-02)**: M1 (units U1-U5) shipped via PR #8 — single-session persistent layer + SW restart recovery + R11 drift card. **M2-U1 shipped via PR #9** — multi-session schema + state machine + skillExecutionScopeStack (76 → 106 tests). **M2-U2 shipped via PR #10** — multi-session sidepanel UI: 4 new components (TopBarListButton ≡ + corner pending dot / TopBarNewSessionButton + / SessionDrawer 296px overlay / SessionRow 5 status SVGs) + SEC-PLAN-009 flood guard + R23 archived auto-create + ce:review pass-2 fix sweep (2 P0 cross-session contamination + 9 P1) (106 → 135 tests). M2-U3/U4 与 M3 全部 NOT YET STARTED. See `m1_learnings` link for shipped invariants future work must preserve.
 
 # feat: Session as First-Class Persistent Layer
 
@@ -529,7 +529,18 @@ stateDiagram-v2
 
 ---
 
-- [ ] **Unit M2-U2: Sidepanel 左侧抽屉 + session list UI + 'New Session' + 顶部 'N pending' badge + R27 a11y**
+- [x] **Unit M2-U2: Sidepanel 左侧抽屉 + session list UI + 'New Session' + 顶部 'N pending' badge + R27 a11y** ✅ shipped (commits `4baef1b` PortMessageToPanel sessionId routing + `a815da2` P0-1 createAndActivate guard + `dabf1f5` P0-2 resumeTask streaming + `51537b2` P1-4 resolver sessionId verify + `179e0b5` P1-3+P1-8 handleSelect/Resume + `2d5dae5` P1-5 onClose useCallback + `40ffb73` P1-6 metaKey listener echo guard + `292861f` P1-7 SessionRow keyboard a11y + `4c2db49` P1-9 flood-reject vs K-10 + `cdb03bf` P1-10 drift-card cascade fix; impl commits `dea793e..f6e9a50` 8 commits; PR #10)
+
+**Shipped notes:**
+- 顶栏布局最终落地为 `[≡●] [+] {sessionTitle 纯文本} ─── [☼]` (列表按钮在最左, 新建按钮居中, title 纯文本不再 click target — 用户在 paper 设计阶段反馈调整)
+- ce:review pass-2 surface 2 P0 (createAndActivate / resumeTask 缺 streaming guard → cross-session message contamination → K-1 informed-approval bypass) + 9 P1, 全部 fix
+- **关键 wire-format upgrade**: 给 8 个 PortMessageToPanel variant (chat-chunk / chat-done / chat-error / agent-step / agent-confirm-request / agent-done-task / session-toast / session-confirm-request) 加 `sessionId: string` 必填字段 + handlePortMessage filter, 防止旧 session 的 agent-confirm-request 被路由到新 session 的 UI 让用户在错误 context 下 approve
+- `sendConfirmRequest` 返回类型升级 `Promise<boolean>` → `Promise<{approved, reason?: 'flood-limit'|'user-reject'}>`, loop 据 reason 决定是否累计 K-10 confirmRejections (避免 SEC-PLAN-009 flood-reject 错误触发 "User repeatedly rejected" 自动终止)
+- `getPendingConfirmCount` 改为仅 count `pendingConfirm.kind === 'agent-tool'` (drift-card pendingConfirm 不入 flood 计数, 防止永久 flood-DoS cascade)
+- `useSession.metaKey` listener echo guard 改: streaming 时不 adopt messages, 不 streaming 时 content-equality (避免 SW updateLastAccessed 每 5 步 mid-stream clobber 用户消息)
+- `SessionDrawer` focus trap: onClose 在 App.tsx useCallback 包装 + FOCUSABLE_SELECTORS 含 `[role='listitem']` + SessionRow tabIndex+Enter/Space + Show Archived as `<button aria-disabled>`
+- "Show Archived" 仍为 stub (M2-U4 才真正 toggle), 现以 disabled button 语义渲染
+- 测试: 106 → 135 (+29: drawer 17 / SEC-PLAN-009 boundary 8 / loop flood vs reject 4)
 
 **Goal:** 加 ChatGPT-like 多 session UI，守住 K3 跨 sub-view confirm 可见性。
 
