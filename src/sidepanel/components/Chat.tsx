@@ -1,6 +1,10 @@
 import { useState, useEffect, useRef, useMemo } from "react";
 import type { ChatMessage } from "@/lib/model-router";
-import type { PortMessageToPanel, ResolvedElement } from "@/types";
+import type {
+  PortMessageToPanel,
+  ResolvedElement,
+  DisplayMessage,
+} from "@/types";
 import type { SkillDefinition } from "@/lib/skills";
 import {
   getEnabledSkills,
@@ -14,42 +18,6 @@ import AgentConfirmCard from "./AgentConfirmCard";
 import AgentSummary from "./AgentSummary";
 import MarkdownContent from "./Markdown";
 import SkillSlashPopover from "./SkillSlashPopover";
-
-type DisplayMessage =
-  | {
-      role: "user";
-      content: string;
-      expandedForLLM?: string;
-    }
-  | { role: "assistant"; content: string }
-  | {
-      role: "agent-step";
-      stepIndex: number;
-      tool: string;
-      args: unknown;
-      resolvedElement?: ResolvedElement;
-      status: "pending" | "ok" | "error";
-      observation?: string;
-    }
-  | {
-      role: "agent-confirm";
-      confirmationId: string;
-      tool: string;
-      args: unknown;
-      resolvedElement: ResolvedElement;
-      riskReason: string;
-      resolved?: "approved" | "rejected";
-      metaSkillPreview?: {
-        existing: SkillDefinition | null;
-        effective: SkillDefinition;
-      };
-    }
-  | {
-      role: "agent-summary";
-      success: boolean;
-      summary: string;
-      stepCount: number;
-    };
 
 interface ChatProps {
   providerLabel: string | null;

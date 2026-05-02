@@ -50,6 +50,57 @@ export interface ExtractPageResponse {
   error?: string;
 }
 
+// --- Panel-rendered chat history ---
+
+/**
+ * DisplayMessage — the panel-rendered chat history item type. Lives in
+ * `src/types/messages.ts` so SessionMeta (`src/lib/sessions/types.ts`) and
+ * the Chat view can share a single source of truth.
+ *
+ * This is a *display* type — it is what the user sees, not what the LLM
+ * sees. The LLM-facing IR is `AgentMessage` from `@/lib/model-router`,
+ * carried separately on `SessionAgentState.agentMessages`. The split keeps
+ * agent IR (with raw tool args, redactable for panel display) out of the
+ * panel-message store while still letting the panel render the agent's
+ * step-by-step trace via the `agent-step` / `agent-confirm` / `agent-summary`
+ * variants below.
+ */
+export type DisplayMessage =
+  | {
+      role: "user";
+      content: string;
+      expandedForLLM?: string;
+    }
+  | { role: "assistant"; content: string }
+  | {
+      role: "agent-step";
+      stepIndex: number;
+      tool: string;
+      args: unknown;
+      resolvedElement?: ResolvedElement;
+      status: "pending" | "ok" | "error";
+      observation?: string;
+    }
+  | {
+      role: "agent-confirm";
+      confirmationId: string;
+      tool: string;
+      args: unknown;
+      resolvedElement: ResolvedElement;
+      riskReason: string;
+      resolved?: "approved" | "rejected";
+      metaSkillPreview?: {
+        existing: SkillDefinition | null;
+        effective: SkillDefinition;
+      };
+    }
+  | {
+      role: "agent-summary";
+      success: boolean;
+      summary: string;
+      stepCount: number;
+    };
+
 // --- Agent: resolved element info (from snapshot, not LLM) ---
 
 export interface ResolvedElement {
