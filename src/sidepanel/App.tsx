@@ -5,35 +5,30 @@ import { getActiveProvider, getProviderConfig } from "@/lib/storage";
 import { getProviderMeta } from "@/lib/model-router";
 import { normalizeSkillSlashKey } from "@/lib/skills";
 
-type Tab = "chat" | "agent" | "tabs" | "settings";
+type View = "agent" | "settings";
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<Tab>("chat");
+  const [view, setView] = useState<View>("agent");
   const [providerLabel, setProviderLabel] = useState<string | null>(null);
   const [chatPrefill, setChatPrefill] = useState<string | undefined>(undefined);
 
-  // Phase 2.6+ slash-command prefill. Prefer the slugified human name
-  // (e.g. `/extract-tables`) — falls back to the raw id when the name
-  // slugifies to empty (rare; e.g. all-punctuation names).
   function handleRunSkill(skillId: string, skillName: string) {
     const slug = normalizeSkillSlashKey(skillName);
     const key = slug.length > 0 ? slug : skillId;
     setChatPrefill(`/${key}`);
-    setActiveTab("chat");
+    setView("agent");
   }
 
   useEffect(() => {
-    // Check first run
     chrome.storage.local.get("firstRun", (result) => {
       if (result.firstRun) {
-        setActiveTab("settings");
+        setView("settings");
         chrome.storage.local.remove("firstRun");
       }
     });
 
     loadProviderLabel();
 
-    // Refresh label when storage changes (e.g. after saving settings)
     const listener = (changes: { [key: string]: chrome.storage.StorageChange }) => {
       if (changes.active_provider || Object.keys(changes).some((k) => k.startsWith("provider_"))) {
         loadProviderLabel();
@@ -64,57 +59,20 @@ export default function App() {
   }
 
   return (
-    <div className="flex h-screen flex-col bg-neutral-950 text-neutral-100">
-      {/* Header */}
-      <header className="flex items-center gap-2 border-b border-neutral-800 px-4 py-3">
-        <span className="text-lg font-semibold">Chrome AI Agent</span>
-        {providerLabel && (
-          <span className="rounded bg-neutral-800 px-2 py-0.5 text-xs text-neutral-400">
-            {providerLabel}
-          </span>
-        )}
-      </header>
-
-      {/* Content */}
-      <main className="flex-1 overflow-y-auto p-4">
-        {activeTab === "chat" && (
-          <Chat
-            onGoToSettings={() => setActiveTab("settings")}
-            prefillInput={chatPrefill}
-            onPrefillConsumed={() => setChatPrefill(undefined)}
-          />
-        )}
-        {activeTab === "agent" && <Placeholder label="Agent" />}
-        {activeTab === "tabs" && <Placeholder label="Tabs" />}
-        {activeTab === "settings" && (
-          <Settings onRunSkill={handleRunSkill} />
-        )}
-      </main>
-
-      {/* Bottom Nav */}
-      <nav className="flex border-t border-neutral-800">
-        {(["chat", "agent", "tabs", "settings"] as Tab[]).map((tab) => (
-          <button
-            key={tab}
-            onClick={() => setActiveTab(tab)}
-            className={`flex-1 py-3 text-center text-xs font-medium capitalize transition-colors ${
-              activeTab === tab
-                ? "bg-neutral-800 text-white"
-                : "text-neutral-500 hover:text-neutral-300"
-            }`}
-          >
-            {tab}
-          </button>
-        ))}
-      </nav>
-    </div>
-  );
-}
-
-function Placeholder({ label }: { label: string }) {
-  return (
-    <div className="flex items-center justify-center pt-20 text-neutral-500">
-      <p className="text-sm">{label} — coming soon</p>
+    <div className="bg-canvas text-fg-1 dot-grid flex h-screen flex-col">
+      {view === "agent" ? (
+        <Chat
+          providerLabel={providerLabel}
+          onOpenSettings={() => setView("settings")}
+          prefillInput={chatPrefill}
+          onPrefillConsumed={() => setChatPrefill(undefined)}
+        />
+      ) : (
+        <Settings
+          onBack={() => setView("agent")}
+          onRunSkill={handleRunSkill}
+        />
+      )}
     </div>
   );
 }

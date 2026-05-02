@@ -19,9 +19,6 @@ type DisplayMessage =
   | {
       role: "user";
       content: string;
-      /** Phase 2.6+: when set, this is the LLM-facing rewrite of a slash
-       *  command; `content` remains the raw `/foo` for chat-history display.
-       *  Send `expandedForLLM` to the model instead of `content`. */
       expandedForLLM?: string;
     }
   | { role: "assistant"; content: string }
@@ -42,9 +39,6 @@ type DisplayMessage =
       resolvedElement: ResolvedElement;
       riskReason: string;
       resolved?: "approved" | "rejected";
-      // Phase 2.6 — for create_skill / update_skill confirms, the SW sends
-      // the effective merged skill so AgentConfirmCard can render full
-      // content (P0-D / adv-1).
       metaSkillPreview?: {
         existing: SkillDefinition | null;
         effective: SkillDefinition;
@@ -58,18 +52,12 @@ type DisplayMessage =
     };
 
 interface ChatProps {
-  onGoToSettings: () => void;
-  /** When set, pre-fills the input field; cleared after consumption. */
+  providerLabel: string | null;
+  onOpenSettings: () => void;
   prefillInput?: string;
   onPrefillConsumed?: () => void;
 }
 
-/**
- * Score and sort skills for the slash popover. Returns skills with score > 0
- * sorted by score desc, then createdAt desc. Empty query returns all skills
- * sorted purely by createdAt (newest first). Built-in skills (createdAt=0)
- * sink naturally.
- */
 function filterAndSortSkillsForSlash(
   query: string,
   skills: SkillDefinition[],
@@ -81,7 +69,7 @@ function filterAndSortSkillsForSlash(
     const id = s.id.toLowerCase();
     let score = 0;
     if (q === "") {
-      score = 1; // include all
+      score = 1;
     } else if (slug === q || id === q) {
       score = 100;
     } else if (slug.startsWith(q)) {
@@ -102,7 +90,12 @@ function filterAndSortSkillsForSlash(
   return scored.map((x) => x.skill);
 }
 
-export default function Chat({ onGoToSettings, prefillInput, onPrefillConsumed }: ChatProps) {
+export default function Chat({
+  providerLabel,
+  onOpenSettings,
+  prefillInput,
+  onPrefillConsumed,
+}: ChatProps) {
   const [messages, setMessages] = useState<DisplayMessage[]>([]);
   const [input, setInput] = useState("");
   const [streaming, setStreaming] = useState(false);
@@ -111,22 +104,17 @@ export default function Chat({ onGoToSettings, prefillInput, onPrefillConsumed }
   const [hasConfig, setHasConfig] = useState<boolean | null>(null);
   const [pageChanged, setPageChanged] = useState(false);
   const [enabledSkills, setEnabledSkills] = useState<SkillDefinition[]>([]);
-  // popoverSelected: keyboard-highlighted index in slash popover.
   const [popoverSelected, setPopoverSelected] = useState(0);
-  // dismissedInput: when set, popover stays closed for this exact input
-  // value (until the user types something else). Lets Esc dismiss without
-  // wiping the user's draft.
   const [dismissedInput, setDismissedInput] = useState<string | null>(null);
+  const [pinnedOrigin, setPinnedOrigin] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const portRef = useRef<chrome.runtime.Port | null>(null);
 
   useEffect(() => {
     checkConfig();
+    loadActiveOrigin();
   }, []);
 
-  // Load + watch enabled skills for the slash popover. chrome.storage
-  // onChange fires for any skill_<id> CRUD or enabled_skills toggle, so
-  // the popover stays in sync with SkillsList edits.
   useEffect(() => {
     function reload() {
       getEnabledSkills()
@@ -151,15 +139,9 @@ export default function Chat({ onGoToSettings, prefillInput, onPrefillConsumed }
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, streamingText]);
 
-  // Consume prefillInput: set it into the input field without clobbering user
-  // input during streaming (guard on truthy to skip undefined/empty updates).
   useEffect(() => {
     if (prefillInput) {
       setInput(prefillInput);
-      // Skip the slash popover for programmatic prefills (user just clicked
-      // Run on a skill in SkillsList — they already chose; one Enter sends).
-      // Once the user edits the input, dismissedInput auto-clears via the
-      // textarea onChange handler.
       if (prefillInput.startsWith("/")) {
         setDismissedInput(prefillInput);
       }
@@ -167,7 +149,6 @@ export default function Chat({ onGoToSettings, prefillInput, onPrefillConsumed }
     }
   }, [prefillInput]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Detect URL changes on active tab
   useEffect(() => {
     const listener = (
       _tabId: number,
@@ -176,6 +157,9 @@ export default function Chat({ onGoToSettings, prefillInput, onPrefillConsumed }
     ) => {
       if (changeInfo.url && tab.active && messages.length > 0) {
         setPageChanged(true);
+      }
+      if (changeInfo.url && tab.active) {
+        setPinnedOrigin(extractOrigin(changeInfo.url));
       }
     };
     chrome.tabs.onUpdated.addListener(listener);
@@ -196,17 +180,15 @@ export default function Chat({ onGoToSettings, prefillInput, onPrefillConsumed }
     }
   }
 
-  // ── Phase 2.6+ slash popover state machine ────────────────────────────
-  //
-  // Popover is open iff:
-  //   (a) input starts with "/" AND
-  //   (b) there is no whitespace after the leading slash (i.e. user is still
-  //       inside the skill-key token, not yet typing args), AND
-  //   (c) the current input string is not the dismissedInput value.
-  //
-  // Filter / sort: exact-match (id or name slug) > prefix-match > substring
-  // > everything-else; tie-break by createdAt desc. Empty query (just "/")
-  // returns all enabled skills sorted by recency.
+  async function loadActiveOrigin() {
+    try {
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (tab?.url) setPinnedOrigin(extractOrigin(tab.url));
+    } catch {
+      // non-fatal
+    }
+  }
+
   const slashState = useMemo(() => {
     if (!input.startsWith("/")) return null;
     const m = input.match(/^\/(\S*)$/);
@@ -217,7 +199,6 @@ export default function Chat({ onGoToSettings, prefillInput, onPrefillConsumed }
 
   const popoverOpen = slashState !== null && input !== dismissedInput;
 
-  // Reset highlighted row when query changes (new filter list = new top-1).
   useEffect(() => {
     setPopoverSelected(0);
   }, [slashState?.query]);
@@ -236,10 +217,6 @@ export default function Chat({ onGoToSettings, prefillInput, onPrefillConsumed }
     setInput("");
     setError(null);
 
-    // Phase 2.6+ slash-command resolution: detect /<key> matching an enabled
-    // skill (by id or normalized name) and rewrite for the LLM. The raw
-    // slash text stays in chat history for display; only the LLM-facing
-    // copy is expanded. Unknown /commands fall through unchanged.
     let expandedForLLM: string | undefined = undefined;
     if (content.startsWith("/")) {
       try {
@@ -249,7 +226,7 @@ export default function Chat({ onGoToSettings, prefillInput, onPrefillConsumed }
           expandedForLLM = expandSlashCommand(match);
         }
       } catch {
-        // resolver failure is non-fatal; pass raw content through
+        // resolver failure is non-fatal
       }
     }
 
@@ -259,8 +236,6 @@ export default function Chat({ onGoToSettings, prefillInput, onPrefillConsumed }
     setStreaming(true);
     setStreamingText("");
 
-    // Build chat messages for the API — only user/assistant text, skip agent-* display messages.
-    // For user messages with a slash-command expansion, send the expanded text.
     const chatMessages: ChatMessage[] = updatedMessages
       .filter(
         (m): m is { role: "user"; content: string; expandedForLLM?: string } | { role: "assistant"; content: string } =>
@@ -272,7 +247,6 @@ export default function Chat({ onGoToSettings, prefillInput, onPrefillConsumed }
           : { role: m.role, content: m.content },
       );
 
-    // Establish port connection
     const port = chrome.runtime.connect({ name: "chat-stream" });
     portRef.current = port;
 
@@ -285,9 +259,6 @@ export default function Chat({ onGoToSettings, prefillInput, onPrefillConsumed }
         setStreamingText(accumulated);
       } else if (message.type === "chat-done") {
         finished = true;
-        // Only push assistant message if there's actual (non-whitespace) content.
-        // LLMs sometimes emit a stray "\n" or " " before a tool_call; without
-        // this guard, chat-done (or agent-step flush below) creates an empty bubble.
         if (accumulated.trim()) {
           setMessages((prev) => [
             ...prev,
@@ -310,9 +281,6 @@ export default function Chat({ onGoToSettings, prefillInput, onPrefillConsumed }
         setStreaming(false);
         portRef.current = null;
       } else if (message.type === "agent-step") {
-        // Flush any pending streaming text as an assistant message.
-        // Require non-whitespace content — a lone "\n" emitted before a tool_call
-        // would otherwise render as an empty MarkdownContent bubble.
         if (accumulated.trim()) {
           setMessages((prev) => [
             ...prev,
@@ -320,14 +288,11 @@ export default function Chat({ onGoToSettings, prefillInput, onPrefillConsumed }
           ]);
           setStreamingText("");
         }
-        // Always reset accumulated and streamingText — even if content was just
-        // whitespace we don't want it re-rendered as a partial streaming bubble.
         accumulated = "";
         setStreamingText("");
         const { stepIndex, tool, args, resolvedElement, status, observation } =
           message;
         setMessages((prev) => {
-          // Search in reverse for an existing agent-step with same stepIndex+tool to update in-place
           for (let i = prev.length - 1; i >= 0; i--) {
             const m = prev[i];
             if (m.role !== "agent-step" && m.role !== "agent-confirm") break;
@@ -349,7 +314,6 @@ export default function Chat({ onGoToSettings, prefillInput, onPrefillConsumed }
               return updated;
             }
           }
-          // No existing entry — push new
           return [
             ...prev,
             {
@@ -410,9 +374,6 @@ export default function Chat({ onGoToSettings, prefillInput, onPrefillConsumed }
   }
 
   function handleKeyDown(e: React.KeyboardEvent) {
-    // Phase 2.6+ slash popover: when open AND has results, intercept arrow
-    // navigation, Enter/Tab pick, and Escape dismiss before falling through
-    // to the default Enter-to-send behavior.
     if (popoverOpen && slashState && slashState.results.length > 0) {
       const list = slashState.results;
       if (e.key === "ArrowDown") {
@@ -443,8 +404,6 @@ export default function Chat({ onGoToSettings, prefillInput, onPrefillConsumed }
         return;
       }
     }
-    // Popover open but empty (no matches): Esc still dismisses. Other keys
-    // fall through so the user can keep typing.
     if (popoverOpen && e.key === "Escape") {
       e.preventDefault();
       setDismissedInput(input);
@@ -463,226 +422,350 @@ export default function Chat({ onGoToSettings, prefillInput, onPrefillConsumed }
     try {
       port.postMessage({ type: "chat-abort" });
     } catch {
-      // port may be in the process of closing; that's fine — SW-side
-      // onDisconnect will fire its own abort path.
+      // port may be in the process of closing
     }
   }
 
-  // No config — guide user to settings
+  function handleNewTask() {
+    setMessages([]);
+    setPageChanged(false);
+    setError(null);
+  }
+
   if (hasConfig === false) {
     return (
-      <div className="flex flex-col items-center justify-center gap-4 pt-20 text-neutral-500">
-        <p className="text-sm">No API key configured.</p>
-        <button
-          onClick={onGoToSettings}
-          className="rounded bg-blue-600 px-4 py-2 text-sm text-white hover:bg-blue-700"
-        >
-          Go to Settings
-        </button>
+      <div className="flex h-full flex-col">
+        <Header
+          providerLabel={null}
+          pinnedOrigin={pinnedOrigin}
+          streaming={false}
+          stepCount={0}
+          onOpenSettings={onOpenSettings}
+        />
+        <div className="flex flex-1 flex-col items-center justify-center gap-4 px-6 text-fg-2">
+          <span className="caps text-fg-3">NO API KEY</span>
+          <p className="text-center text-[13px] leading-5">
+            Add an API key from any supported provider to start using the agent.
+          </p>
+          <button
+            onClick={onOpenSettings}
+            className="rounded-md bg-fg-1 px-4 py-2 text-[13px] font-medium text-canvas hover:opacity-90"
+          >
+            Open Settings
+          </button>
+        </div>
       </div>
     );
   }
 
-  // Loading
   if (hasConfig === null) {
     return (
-      <div className="flex items-center justify-center pt-20 text-neutral-500">
-        <p className="text-sm">Loading...</p>
+      <div className="flex h-full flex-col">
+        <Header
+          providerLabel={null}
+          pinnedOrigin={pinnedOrigin}
+          streaming={false}
+          stepCount={0}
+          onOpenSettings={onOpenSettings}
+        />
+        <div className="flex flex-1 items-center justify-center text-fg-3">
+          <span className="caps">LOADING</span>
+        </div>
       </div>
     );
   }
+
+  const stepCount = messages.filter((m) => m.role === "agent-step").length;
 
   return (
     <div className="flex h-full flex-col">
-      {/* Messages */}
-      <div className="flex-1 space-y-3 overflow-y-auto pb-4">
-        {pageChanged && (
-          <div className="flex items-center justify-between rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-2 text-xs text-neutral-400">
-            <span>Page changed. Start a new conversation?</span>
-            <button
-              onClick={() => {
-                setMessages([]);
-                setPageChanged(false);
-                setError(null);
-              }}
-              className="rounded bg-neutral-800 px-2 py-1 text-neutral-300 hover:bg-neutral-700"
-            >
-              New Chat
-            </button>
-          </div>
-        )}
+      <Header
+        providerLabel={providerLabel}
+        pinnedOrigin={pinnedOrigin}
+        streaming={streaming}
+        stepCount={stepCount}
+        onOpenSettings={onOpenSettings}
+      />
 
-        {messages.length === 0 && !streaming && !pageChanged && (
-          <EmptyState onSend={sendMessage} />
-        )}
-
-        {messages.map((msg, i) => {
-          if (msg.role === "user" || msg.role === "assistant") {
-            return <MessageBubble key={i} message={msg} />;
-          }
-          if (msg.role === "agent-step") {
-            return (
-              <AgentStepBubble
-                key={i}
-                stepIndex={msg.stepIndex}
-                tool={msg.tool}
-                args={msg.args}
-                resolvedElement={msg.resolvedElement}
-                status={msg.status}
-                observation={msg.observation}
-              />
-            );
-          }
-          if (msg.role === "agent-confirm") {
-            return (
-              <AgentConfirmCard
-                key={i}
-                tool={msg.tool}
-                args={msg.args}
-                resolvedElement={msg.resolvedElement}
-                riskReason={msg.riskReason}
-                resolved={msg.resolved}
-                metaSkillPreview={msg.metaSkillPreview}
-                onApprove={() => {
-                  const port = portRef.current;
-                  if (!port) return;
-                  port.postMessage({
-                    type: "agent-confirm-response",
-                    confirmationId: msg.confirmationId,
-                    approved: true,
-                  });
-                  setMessages((prev) =>
-                    prev.map((m, idx) =>
-                      idx === i && m.role === "agent-confirm"
-                        ? { ...m, resolved: "approved" as const }
-                        : m,
-                    ),
-                  );
-                }}
-                onReject={() => {
-                  const port = portRef.current;
-                  if (!port) return;
-                  port.postMessage({
-                    type: "agent-confirm-response",
-                    confirmationId: msg.confirmationId,
-                    approved: false,
-                  });
-                  setMessages((prev) =>
-                    prev.map((m, idx) =>
-                      idx === i && m.role === "agent-confirm"
-                        ? { ...m, resolved: "rejected" as const }
-                        : m,
-                    ),
-                  );
-                }}
-              />
-            );
-          }
-          if (msg.role === "agent-summary") {
-            return (
-              <AgentSummary
-                key={i}
-                success={msg.success}
-                summary={msg.summary}
-                stepCount={msg.stepCount}
-              />
-            );
-          }
-          return null;
-        })}
-
-        {streaming && streamingText && (
-          <MessageBubble
-            message={{ role: "assistant", content: streamingText }}
+      <div className="flex-1 overflow-y-auto">
+        {messages.length === 0 && !streaming && !pageChanged ? (
+          <EmptyState
+            skills={enabledSkills.slice(0, 3)}
+            onPickSkill={(slug) => setInput(`/${slug} `)}
           />
-        )}
-
-        {streaming && !streamingText && messages.at(-1)?.role !== "agent-step" && (
-          <TypingIndicator />
-        )}
-
-        {error && (
-          <div className="rounded-lg border border-red-800 bg-red-950/50 px-4 py-3 text-sm text-red-400">
-            {error}
-          </div>
-        )}
-
-        <div ref={messagesEndRef} />
-      </div>
-
-      {/* Input */}
-      <div className="border-t border-neutral-800 pt-3">
-        <div className="relative">
-          {popoverOpen && slashState && (
-            <SkillSlashPopover
-              skills={slashState.results}
-              query={slashState.query}
-              selectedIndex={popoverSelected}
-              onSelect={setPopoverSelected}
-              onPick={pickSlashSkill}
-            />
-          )}
-          <div className="flex gap-2">
-            <textarea
-              value={input}
-              onChange={(e) => {
-                setInput(e.target.value);
-                // User edited away from the dismissed value → re-arm popover.
-                if (dismissedInput !== null && e.target.value !== dismissedInput) {
-                  setDismissedInput(null);
-                }
-              }}
-              onKeyDown={handleKeyDown}
-              placeholder="Ask about this page... (type / to insert a skill)"
-              rows={1}
-              disabled={streaming}
-              className="flex-1 resize-none rounded border border-neutral-700 bg-neutral-800 px-3 py-2 text-sm text-neutral-100 placeholder-neutral-500 focus:border-blue-600 focus:outline-none disabled:opacity-50"
-            />
-            {streaming ? (
-              <button
-                onClick={handleStop}
-                className="rounded bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700"
-                title="Cancel the running task"
-              >
-                Stop
-              </button>
-            ) : (
-              <button
-                onClick={() => sendMessage()}
-                disabled={!input.trim()}
-                className="rounded bg-blue-600 px-4 py-2 text-sm text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                Send
-              </button>
+        ) : (
+          <div className="flex flex-col gap-[18px] px-4 py-5">
+            {pageChanged && (
+              <PageChangedBanner onNewTask={handleNewTask} />
             )}
+
+            {messages.map((msg, i) => {
+              if (msg.role === "user" || msg.role === "assistant") {
+                return <MessageBubble key={i} message={msg} />;
+              }
+              if (msg.role === "agent-step") {
+                return (
+                  <AgentStepBubble
+                    key={i}
+                    stepIndex={msg.stepIndex}
+                    tool={msg.tool}
+                    args={msg.args}
+                    resolvedElement={msg.resolvedElement}
+                    status={msg.status}
+                    observation={msg.observation}
+                  />
+                );
+              }
+              if (msg.role === "agent-confirm") {
+                return (
+                  <AgentConfirmCard
+                    key={i}
+                    tool={msg.tool}
+                    args={msg.args}
+                    resolvedElement={msg.resolvedElement}
+                    riskReason={msg.riskReason}
+                    resolved={msg.resolved}
+                    metaSkillPreview={msg.metaSkillPreview}
+                    onApprove={() => {
+                      const port = portRef.current;
+                      if (!port) return;
+                      port.postMessage({
+                        type: "agent-confirm-response",
+                        confirmationId: msg.confirmationId,
+                        approved: true,
+                      });
+                      setMessages((prev) =>
+                        prev.map((m, idx) =>
+                          idx === i && m.role === "agent-confirm"
+                            ? { ...m, resolved: "approved" as const }
+                            : m,
+                        ),
+                      );
+                    }}
+                    onReject={() => {
+                      const port = portRef.current;
+                      if (!port) return;
+                      port.postMessage({
+                        type: "agent-confirm-response",
+                        confirmationId: msg.confirmationId,
+                        approved: false,
+                      });
+                      setMessages((prev) =>
+                        prev.map((m, idx) =>
+                          idx === i && m.role === "agent-confirm"
+                            ? { ...m, resolved: "rejected" as const }
+                            : m,
+                        ),
+                      );
+                    }}
+                  />
+                );
+              }
+              if (msg.role === "agent-summary") {
+                return (
+                  <AgentSummary
+                    key={i}
+                    success={msg.success}
+                    summary={msg.summary}
+                    stepCount={msg.stepCount}
+                  />
+                );
+              }
+              return null;
+            })}
+
+            {streaming && streamingText && (
+              <MessageBubble
+                message={{ role: "assistant", content: streamingText }}
+              />
+            )}
+
+            {streaming && !streamingText && messages.at(-1)?.role !== "agent-step" && (
+              <TypingIndicator />
+            )}
+
+            {error && (
+              <div className="rounded-lg border border-warning-line bg-warning-tint px-3 py-2 text-[12px] text-warning">
+                {error}
+              </div>
+            )}
+
+            <div ref={messagesEndRef} />
           </div>
-        </div>
+        )}
       </div>
+
+      <Composer
+        input={input}
+        streaming={streaming}
+        popoverOpen={popoverOpen}
+        slashState={slashState}
+        popoverSelected={popoverSelected}
+        onChange={(v) => {
+          setInput(v);
+          if (dismissedInput !== null && v !== dismissedInput) {
+            setDismissedInput(null);
+          }
+        }}
+        onSelectPopover={setPopoverSelected}
+        onPickSkill={pickSlashSkill}
+        onKeyDown={handleKeyDown}
+        onSend={() => sendMessage()}
+        onStop={handleStop}
+      />
     </div>
   );
 }
 
-function EmptyState({ onSend }: { onSend: (text: string) => void }) {
-  const suggestions = [
-    "Summarize this page",
-    "Extract key information",
-    "Translate page content",
-  ];
-
+function Header({
+  providerLabel,
+  pinnedOrigin,
+  streaming,
+  stepCount,
+  onOpenSettings,
+}: {
+  providerLabel: string | null;
+  pinnedOrigin: string | null;
+  streaming: boolean;
+  stepCount: number;
+  onOpenSettings: () => void;
+}) {
   return (
-    <div className="flex flex-col items-center gap-4 pt-16 text-neutral-500">
-      <p className="text-sm">Ask anything about the current page</p>
-      <div className="flex flex-wrap justify-center gap-2">
-        {suggestions.map((s) => (
-          <button
-            key={s}
-            onClick={() => onSend(s)}
-            className="rounded-full border border-neutral-700 bg-neutral-900 px-3 py-1.5 text-xs text-neutral-300 hover:border-neutral-600 hover:text-neutral-100"
-          >
-            {s}
-          </button>
-        ))}
+    <header className="flex flex-shrink-0 flex-col gap-2 border-b border-line bg-canvas px-4 pb-3 pt-3.5">
+      <div className="flex items-center gap-2.5">
+        <BrandMark active={streaming} />
+        <span className="text-[13px] font-semibold tracking-[-0.005em] text-fg-1">
+          Chrome AI Agent
+        </span>
+        <div className="flex-1" />
+        {providerLabel && (
+          <span className="font-mono text-[10px] uppercase tracking-[0.08em] text-fg-2">
+            {providerLabel}
+          </span>
+        )}
+        <button
+          onClick={onOpenSettings}
+          className="ml-1 flex h-6 w-6 items-center justify-center rounded text-fg-2 hover:bg-field hover:text-fg-1"
+          title="Settings"
+          aria-label="Open settings"
+        >
+          <GearIcon />
+        </button>
       </div>
+      {pinnedOrigin && (
+        <div className="flex items-center gap-1.5">
+          <span className="caps text-fg-3">PINNED</span>
+          <span className="flex-1 truncate font-mono text-[11px] text-fg-2">
+            {pinnedOrigin}
+          </span>
+          {streaming && stepCount > 0 && (
+            <span className="font-mono text-[10px] uppercase tracking-[0.08em] text-accent tabular">
+              step {String(stepCount).padStart(2, "0")}
+            </span>
+          )}
+        </div>
+      )}
+    </header>
+  );
+}
+
+function BrandMark({ active }: { active: boolean }) {
+  return (
+    <div className="relative flex h-[18px] w-[18px] items-center justify-center">
+      <div
+        className={`absolute inset-0 rounded-full border ${
+          active ? "border-accent-line" : "border-line"
+        }`}
+      />
+      <div
+        className={`h-1.5 w-1.5 rounded-full bg-accent ${
+          active ? "animate-pulse" : ""
+        }`}
+      />
+    </div>
+  );
+}
+
+function GearIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+      <circle cx="7" cy="7" r="2.25" stroke="currentColor" strokeWidth="1.1" />
+      <path
+        d="M7 1V2.5M7 11.5V13M13 7H11.5M2.5 7H1M11.24 2.76L10.18 3.82M3.82 10.18L2.76 11.24M11.24 11.24L10.18 10.18M3.82 3.82L2.76 2.76"
+        stroke="currentColor"
+        strokeWidth="1.1"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
+function EmptyState({
+  skills,
+  onPickSkill,
+}: {
+  skills: SkillDefinition[];
+  onPickSkill: (slug: string) => void;
+}) {
+  return (
+    <div className="flex flex-col gap-8 px-6 pb-6 pt-14">
+      <div className="flex flex-col gap-3">
+        <span className="caps text-fg-3">READY</span>
+        <h1 className="text-[24px] font-semibold leading-8 tracking-[-0.015em] text-fg-1">
+          What should I do<br />on this page?
+        </h1>
+        <p className="text-[13px] leading-5 text-fg-2">
+          I can read it, click around, fill forms, manage tabs. Anything risky waits for your approval.
+        </p>
+      </div>
+
+      {skills.length > 0 && (
+        <div className="flex flex-col gap-3">
+          <div className="flex items-baseline justify-between">
+            <span className="caps text-fg-3">SUGGESTED</span>
+            <span className="font-mono text-[10px] text-fg-3">/ for all</span>
+          </div>
+          <div className="flex flex-col gap-px overflow-hidden rounded-lg border border-line bg-line">
+            {skills.map((s) => {
+              const slug = normalizeSkillSlashKey(s.name) || s.id;
+              const author = s.builtIn ? "BUILT-IN" : s.author === "agent" ? "AGENT" : "USER";
+              return (
+                <button
+                  key={s.id}
+                  onClick={() => onPickSkill(slug)}
+                  className="flex flex-col gap-1 bg-surface px-4 py-3.5 text-left hover:bg-field"
+                >
+                  <div className="flex items-center gap-2.5">
+                    <code className="font-mono text-[12px] text-accent">/{slug}</code>
+                    <span className="ml-auto font-mono text-[10px] uppercase tracking-[0.08em] text-fg-3">
+                      {author}
+                    </span>
+                  </div>
+                  {s.description && (
+                    <span className="text-[12px] leading-[18px] text-fg-2">
+                      {s.description}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PageChangedBanner({ onNewTask }: { onNewTask: () => void }) {
+  return (
+    <div className="flex items-center justify-between rounded-md border border-line bg-surface px-3 py-2 text-[12px] text-fg-2">
+      <span>Page changed. Start fresh?</span>
+      <button
+        onClick={onNewTask}
+        className="rounded border border-line bg-field px-2 py-1 text-fg-1 hover:bg-line"
+      >
+        New task
+      </button>
     </div>
   );
 }
@@ -692,38 +775,122 @@ function MessageBubble({
 }: {
   message: { role: "user" | "assistant"; content: string };
 }) {
-  const isUser = message.role === "user";
-
+  if (message.role === "user") {
+    return (
+      <div className="flex justify-end">
+        <div className="max-w-[280px] whitespace-pre-wrap rounded-[10px_10px_2px_10px] border border-line bg-field px-3.5 py-2.5 text-[13px] leading-5 text-fg-1">
+          {message.content}
+        </div>
+      </div>
+    );
+  }
   return (
-    <div className={`flex ${isUser ? "justify-end" : "justify-start"}`}>
-      <div
-        className={`max-w-[85%] rounded-lg px-3 py-2 text-sm ${
-          isUser
-            ? "whitespace-pre-wrap bg-blue-600 text-white"
-            : "bg-neutral-800 text-neutral-100"
-        }`}
-      >
-        {isUser ? (
-          message.content
-        ) : (
-          <MarkdownContent content={message.content} />
-        )}
+    <div className="flex max-w-[320px] flex-col gap-1.5">
+      <div className="flex items-center gap-2">
+        <div className="h-1 w-1 rounded-full bg-accent" />
+        <span className="caps text-fg-2">AGENT</span>
+      </div>
+      <div className="text-[13px] leading-5 text-fg-1">
+        <MarkdownContent content={message.content} />
       </div>
     </div>
   );
 }
 
-
 function TypingIndicator() {
   return (
-    <div className="flex justify-start">
-      <div className="rounded-lg bg-neutral-800 px-4 py-3">
-        <div className="flex gap-1">
-          <span className="h-2 w-2 animate-bounce rounded-full bg-neutral-500 [animation-delay:0ms]" />
-          <span className="h-2 w-2 animate-bounce rounded-full bg-neutral-500 [animation-delay:150ms]" />
-          <span className="h-2 w-2 animate-bounce rounded-full bg-neutral-500 [animation-delay:300ms]" />
+    <div className="flex items-center gap-1.5 px-1">
+      <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-fg-3 [animation-delay:0ms]" />
+      <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-fg-3 [animation-delay:200ms]" />
+      <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-fg-3 [animation-delay:400ms]" />
+    </div>
+  );
+}
+
+function Composer({
+  input,
+  streaming,
+  popoverOpen,
+  slashState,
+  popoverSelected,
+  onChange,
+  onSelectPopover,
+  onPickSkill,
+  onKeyDown,
+  onSend,
+  onStop,
+}: {
+  input: string;
+  streaming: boolean;
+  popoverOpen: boolean;
+  slashState: { query: string; results: SkillDefinition[] } | null;
+  popoverSelected: number;
+  onChange: (v: string) => void;
+  onSelectPopover: (i: number) => void;
+  onPickSkill: (skill: SkillDefinition) => void;
+  onKeyDown: (e: React.KeyboardEvent) => void;
+  onSend: () => void;
+  onStop: () => void;
+}) {
+  return (
+    <div className="flex flex-shrink-0 flex-col gap-2 border-t border-line bg-canvas px-4 pb-4 pt-3">
+      <div className="relative">
+        {popoverOpen && slashState && (
+          <SkillSlashPopover
+            skills={slashState.results}
+            query={slashState.query}
+            selectedIndex={popoverSelected}
+            onSelect={onSelectPopover}
+            onPick={onPickSkill}
+          />
+        )}
+        <div className="flex items-start gap-2 rounded-[10px] border border-line bg-field px-3.5 py-3 focus-within:border-accent-line">
+          <textarea
+            value={input}
+            onChange={(e) => onChange(e.target.value)}
+            onKeyDown={onKeyDown}
+            placeholder="Tell the agent what to do, or type / for skills…"
+            rows={1}
+            disabled={streaming}
+            className="flex-1 resize-none bg-transparent text-[13px] leading-5 text-fg-1 placeholder:text-fg-3 disabled:opacity-50"
+          />
+          {streaming ? (
+            <button
+              onClick={onStop}
+              className="self-end rounded border border-warning-line bg-transparent px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.08em] text-warning hover:bg-warning-tint"
+              title="Cancel running task"
+            >
+              <span className="mr-1 inline-block h-[5px] w-[5px] rounded-full bg-warning align-middle" />
+              STOP
+            </button>
+          ) : (
+            <button
+              onClick={onSend}
+              disabled={!input.trim()}
+              className="flex items-center gap-1.5 self-end rounded border border-line px-2.5 py-1 text-[11px] text-fg-2 hover:border-fg-3 hover:text-fg-1 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <span>Send</span>
+              <span className="font-mono text-[10px] text-fg-3">↵</span>
+            </button>
+          )}
         </div>
+      </div>
+      <div className="flex items-center gap-4 px-0.5 font-mono text-[10px] tracking-[0.08em] text-fg-3">
+        <span>/ skills</span>
+        <span>SHIFT ↵ NEWLINE</span>
       </div>
     </div>
   );
+}
+
+function extractOrigin(url: string): string | null {
+  try {
+    const u = new URL(url);
+    if (u.protocol !== "http:" && u.protocol !== "https:") return null;
+    if (!u.host) return null;
+    const path = u.pathname.length > 1 ? u.pathname : "";
+    return `${u.host}${path}`;
+  } catch {
+    return null;
+  }
 }

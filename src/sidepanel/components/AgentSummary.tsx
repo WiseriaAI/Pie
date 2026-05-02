@@ -12,31 +12,21 @@ export default function AgentSummary({
   stepCount,
 }: AgentSummaryProps) {
   return (
-    <div
-      className={`rounded bg-neutral-900 border-l-4 p-3 text-sm ${
-        success ? "border-l-green-600" : "border-l-red-600"
-      }`}
-    >
-      {/* Icon + status */}
-      <div
-        className={`mb-1 font-semibold ${
-          success ? "text-green-400" : "text-red-400"
-        }`}
-      >
-        {success ? "[OK]" : "[FAIL]"}{" "}
-        {success ? "Task completed" : "Task failed"}
+    <div className="flex flex-col gap-2.5 pt-2">
+      <div className="flex items-center gap-2">
+        <div
+          className={`h-1 w-1 rounded-full ${
+            success ? "bg-accent" : "bg-warning"
+          }`}
+        />
+        <span
+          className={`caps ${success ? "text-fg-2" : "text-warning"}`}
+        >
+          {success ? `DONE · ${stepCount} STEPS` : `FAILED AT STEP ${stepCount}`}
+        </span>
       </div>
-
-      {/* Summary — rendered as markdown (LLM may produce structured output) */}
-      <div className="mb-2 text-neutral-200">
+      <div className="text-[13px] leading-5 text-fg-1">
         <MarkdownContent content={summary} />
-      </div>
-
-      {/* Step count footer */}
-      <div className="text-xs text-neutral-500">
-        {success
-          ? `Completed in ${stepCount} step${stepCount !== 1 ? "s" : ""}`
-          : `Failed at step ${stepCount}`}
       </div>
     </div>
   );

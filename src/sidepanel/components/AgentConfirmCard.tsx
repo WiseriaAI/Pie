@@ -10,30 +10,14 @@ interface AgentConfirmCardProps {
   resolved?: "approved" | "rejected";
   onApprove: () => void;
   onReject: () => void;
-  /** Phase 2.6 — for create_skill / update_skill confirms, the SW pre-computes
-   *  the effective skill so the card can render full merged content. Without
-   *  this, update_skill confirms would only show the patch fields and hide
-   *  the persistent allowedTools / parameters / etc. (P0-D / adv-1). */
   metaSkillPreview?: {
     existing: SkillDefinition | null;
     effective: SkillDefinition;
   };
-  /** Phase 3 — for cross-tab tools, the SW pre-computes a TabTarget per
-   *  tabId in args. The card renders <TabTargetsList> with origin summary
-   *  row above for K-1 informed-approval equivalence (P3-E). */
   tabTargets?: TabTarget[];
-  /** Phase 3 — for get_tab_content (P3-U / R12). SW pre-fetches the page
-   *  content; the panel renders the first chunk so the user can see what
-   *  is being approved before clicking through. */
   contentPreview?: TabContentPreview;
 }
 
-/**
- * Redact sensitive values before display. The risk classifier already flagged
- * this as high-risk because the target is a sensitive field (password/CC/OTP).
- * Showing the plaintext value in the confirm card would defeat the redaction
- * that type.ts already applies to the tool_result observation.
- */
 function redactArgsForDisplay(tool: string, args: unknown, riskReason: string): unknown {
   if (tool !== "type") return args;
   if (!riskReason.toLowerCase().includes("sensitive")) return args;
@@ -52,23 +36,10 @@ function safeStringifyArgs(args: unknown): string {
   }
 }
 
-/** Phase 2.6 — meta tool detection (P0-D). For create_skill / update_skill the
- *  args object IS the trust-decision artifact, so the 2000-char cap and the
- *  generic args block must be bypassed in favor of full-content per-field
- *  rendering. */
 function isSkillMetaTool(tool: string): boolean {
   return tool === "create_skill" || tool === "update_skill";
 }
 
-/**
- * Phase 3 — origin summary row for tabTargets. Renders e.g.
- *   "2 origins: github.com (3), reddit.com (1)"
- *
- * This row stays above the tab list and never collapses, even when the list
- * itself is virtualized or truncated for large N. K-1 / I-4 equivalence
- * argument: informed approval requires the user to see the full origin set,
- * not just the per-row sample (D-2).
- */
 function OriginSummaryRow({ tabs }: { tabs: TabTarget[] }) {
   const counts = new Map<string, number>();
   for (const t of tabs) {
@@ -81,9 +52,9 @@ function OriginSummaryRow({ tabs }: { tabs: TabTarget[] }) {
   return (
     <div
       role="status"
-      className="rounded bg-neutral-800/60 border border-neutral-700 px-2 py-1.5 text-xs text-neutral-300"
+      className="rounded border border-line bg-field px-2.5 py-1.5 text-[12px] text-fg-1"
     >
-      <span className="text-neutral-500">
+      <span className="text-fg-3">
         {entries.length} {entries.length === 1 ? "origin" : "origins"}:
       </span>{" "}
       {entries.map(([origin, count], i) => {
@@ -91,8 +62,8 @@ function OriginSummaryRow({ tabs }: { tabs: TabTarget[] }) {
         return (
           <span key={origin}>
             <code className="font-mono">{host}</code>
-            <span className="text-neutral-500"> ({count})</span>
-            {i < entries.length - 1 ? <span className="text-neutral-600">, </span> : null}
+            <span className="text-fg-3"> ({count})</span>
+            {i < entries.length - 1 ? <span className="text-fg-3">, </span> : null}
           </span>
         );
       })}
@@ -100,28 +71,12 @@ function OriginSummaryRow({ tabs }: { tabs: TabTarget[] }) {
   );
 }
 
-/**
- * Phase 3 — render a list of TabTarget entries inside the confirm card.
- *
- * Each row shows favicon (if safe per SEC-5) + sanitized title + domain +
- * cross-origin marker (text label, not a colored pill — appears across many
- * rows, must be low-noise). Stale tabs (chrome.tabs.get failed at SW pre-
- * compute time) render with "(closed)" prefix and reduced opacity.
- *
- * a11y (P3-V):
- *  - aria-label on each row includes title + domain + cross-origin state
- *    so screen-readers announce all the trust-relevant info per row.
- *  - favicon img has alt="" (decorative) — accessible name comes from row text.
- *  - cross-origin tag is visible text, not solely a visual badge.
- */
 function TabTargetsList({ tabs }: { tabs: TabTarget[] }) {
   if (tabs.length === 0) {
-    return (
-      <div className="text-xs italic text-neutral-500">(no tabs to display)</div>
-    );
+    return <div className="text-[12px] italic text-fg-3">(no tabs to display)</div>;
   }
   return (
-    <ul className="space-y-1" role="list">
+    <ul className="flex flex-col gap-1" role="list">
       {tabs.map((t) => {
         const host = t.origin.replace(/^https?:\/\//, "") || "(unknown)";
         const stale = t.stale;
@@ -132,9 +87,10 @@ function TabTargetsList({ tabs }: { tabs: TabTarget[] }) {
           <li
             key={t.id}
             aria-label={a11yLabel}
-            className={`flex items-center gap-2 rounded border border-neutral-800 bg-neutral-950/50 px-2 py-1 text-xs ${stale ? "opacity-60" : ""}`}
+            className={`flex items-center gap-2 rounded border border-line bg-field px-2.5 py-1.5 text-[12px] ${
+              stale ? "opacity-60" : ""
+            }`}
           >
-            {/* favicon — decorative; alt="" so screen-readers don't double-read */}
             {t.favIconUrl ? (
               <img
                 src={t.favIconUrl}
@@ -143,21 +99,22 @@ function TabTargetsList({ tabs }: { tabs: TabTarget[] }) {
                 aria-hidden="true"
               />
             ) : (
-              <span className="h-4 w-4 flex-shrink-0" aria-hidden="true" />
+              <div
+                className="h-1.5 w-1.5 flex-shrink-0 rounded-full bg-fg-3"
+                aria-hidden="true"
+              />
             )}
-            {/* title + domain (truncate ellipsis on title) */}
             <div className="min-w-0 flex-1">
-              <div className="truncate text-neutral-200">
+              <div className="truncate text-fg-1">
                 {stale ? "(closed) " : ""}
                 {t.title}
               </div>
-              <div className="truncate font-mono text-neutral-500">{host}</div>
+              <div className="truncate font-mono text-[10px] text-fg-3">{host}</div>
             </div>
-            {/* cross-origin text tag — fixed-width, never wraps even on narrow widths.
-                Tag text rather than colored pill: appears 10-50× per card and
-                colored pills create visual noise (D-7). */}
             {t.crossOrigin && !stale ? (
-              <code className="flex-shrink-0 font-mono text-amber-400">cross-origin</code>
+              <code className="flex-shrink-0 font-mono text-[10px] uppercase tracking-[0.08em] text-accent">
+                cross-origin
+              </code>
             ) : null}
           </li>
         );
@@ -166,15 +123,6 @@ function TabTargetsList({ tabs }: { tabs: TabTarget[] }) {
   );
 }
 
-/**
- * Phase 3 — get_tab_content content preview (P3-U / SEC-2). Default shows
- * the first 100 chars; expand reveals up to ~200 (full preview the SW shipped).
- * The user sees what's being sent to the BYOK provider before approving.
- *
- * a11y: the expand toggle uses aria-expanded; the preview block has
- * role="region" + aria-label so screen-readers announce it as a distinct
- * landmark within the dialog.
- */
 function TabContentPreviewDetails({ preview }: { preview: TabContentPreview }) {
   const [expanded, setExpanded] = useState(false);
   const host = preview.origin.replace(/^https?:\/\//, "") || "(unknown)";
@@ -186,14 +134,14 @@ function TabContentPreviewDetails({ preview }: { preview: TabContentPreview }) {
     <div
       role="region"
       aria-label="Tab content preview"
-      className="rounded border border-neutral-800 bg-neutral-950/70 p-2 text-xs"
+      className="rounded border border-line bg-field p-2.5 text-[12px]"
     >
-      <div className="mb-1 text-neutral-500">
+      <div className="mb-1 text-fg-3">
         Content preview from <code className="font-mono">{host}</code> — showing{" "}
         {visible.length} of {preview.totalBytes} bytes
         {preview.totalBytes > preview.truncatedAtBytes ? " (truncated)" : ""}
       </div>
-      <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words font-mono text-neutral-300">
+      <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] text-fg-2">
         {visible}
         {truncatedView ? "…" : ""}
       </pre>
@@ -202,7 +150,7 @@ function TabContentPreviewDetails({ preview }: { preview: TabContentPreview }) {
           type="button"
           onClick={() => setExpanded(!expanded)}
           aria-expanded={expanded}
-          className="mt-1 text-xs text-neutral-400 underline hover:text-neutral-200"
+          className="mt-1.5 text-[11px] text-fg-2 underline hover:text-fg-1"
         >
           {expanded ? "Show less" : `Show full preview (${text.length} chars)`}
         </button>
@@ -219,18 +167,6 @@ function safeStringifyForPanel(value: unknown): string {
   }
 }
 
-/**
- * Render the EFFECTIVE skill content under review for a create_skill /
- * update_skill confirm card — the merged result that will actually persist
- * if the user approves. NO 2000-char cap (P0-D). Each field is a dedicated
- * scrollable panel with max-h so the card stays manageable.
- *
- * For update_skill, fields whose value is unchanged from the existing skill
- * are tagged "(unchanged)" so the user can quickly see what is being
- * modified without losing sight of what is being re-approved (this closes
- * adv-1, where rendering only the patch hid persistent broad capabilities
- * the user implicitly retained).
- */
 function SkillContentDetails({
   tool,
   metaSkillPreview,
@@ -245,7 +181,6 @@ function SkillContentDetails({
   const eff = metaSkillPreview.effective;
   const existing = metaSkillPreview.existing;
 
-  // Helper: is this field unchanged from existing? Only meaningful for update_skill.
   const unchanged = (key: "name" | "description" | "promptTemplate") =>
     isUpdate && existing !== null && existing[key] === eff[key];
   const parametersUnchanged =
@@ -260,11 +195,13 @@ function SkillContentDetails({
   const allowedTools = eff.allowedTools;
 
   return (
-    <div className="space-y-2.5">
-      <div className="rounded bg-amber-950/40 border border-amber-700/60 px-2 py-1 text-xs text-amber-300">
+    <div className="flex flex-col gap-2.5">
+      <div className="rounded border border-accent-line bg-accent-tint px-2.5 py-1.5 text-[12px] text-accent">
         {isUpdate ? (
           <>
-            Updating <code className="font-mono">{existing?.id ?? eff.id}</code>. After approval the skill is re-marked as agent-authored and the user will be asked to re-confirm on its next execution. Fields tagged "(unchanged)" stay as they were.
+            Updating <code className="font-mono">{existing?.id ?? eff.id}</code>. After
+            approval the skill is re-marked as agent-authored and the user will be asked
+            to re-confirm on its next execution. Fields tagged "(unchanged)" stay as they were.
           </>
         ) : (
           <>Creating a new agent-authored skill. The user will be asked to re-confirm on its first execution.</>
@@ -272,54 +209,56 @@ function SkillContentDetails({
       </div>
       {isUpdate && existing !== null && (
         <div>
-          <div className="text-xs text-neutral-500">id:</div>
-          <code className="font-mono text-xs text-neutral-300 break-all">{existing.id}</code>
+          <div className="text-[11px] text-fg-3">id:</div>
+          <code className="break-all font-mono text-[12px] text-fg-2">{existing.id}</code>
         </div>
       )}
       <div>
-        <div className="text-xs text-neutral-500">
-          name: {unchanged("name") && <span className="text-neutral-600">(unchanged)</span>}
+        <div className="text-[11px] text-fg-3">
+          name: {unchanged("name") && <span className="text-fg-3">(unchanged)</span>}
         </div>
-        <div className="text-neutral-200">{eff.name}</div>
+        <div className="text-[13px] text-fg-1">{eff.name}</div>
       </div>
       <div>
-        <div className="text-xs text-neutral-500">
-          description: {unchanged("description") && <span className="text-neutral-600">(unchanged)</span>}
+        <div className="text-[11px] text-fg-3">
+          description: {unchanged("description") && <span className="text-fg-3">(unchanged)</span>}
         </div>
-        <div className="text-neutral-300 whitespace-pre-wrap break-words">{eff.description}</div>
+        <div className="whitespace-pre-wrap break-words text-[12px] text-fg-1">{eff.description}</div>
       </div>
       <div>
-        <div className="text-xs text-neutral-500">
+        <div className="text-[11px] text-fg-3">
           promptTemplate ({eff.promptTemplate.length} chars){" "}
-          {unchanged("promptTemplate") && <span className="text-neutral-600">(unchanged)</span>}
+          {unchanged("promptTemplate") && <span className="text-fg-3">(unchanged)</span>}
         </div>
-        <pre className="max-h-64 overflow-auto rounded bg-neutral-950 p-2 font-mono text-xs text-neutral-300 whitespace-pre-wrap break-words">
+        <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words rounded border border-line bg-field p-2 font-mono text-[11px] text-fg-1">
           {eff.promptTemplate}
         </pre>
       </div>
       <div>
-        <div className="text-xs text-neutral-500">
+        <div className="text-[11px] text-fg-3">
           parameters (JSON Schema):{" "}
-          {parametersUnchanged && <span className="text-neutral-600">(unchanged)</span>}
+          {parametersUnchanged && <span className="text-fg-3">(unchanged)</span>}
         </div>
-        <pre className="max-h-48 overflow-auto rounded bg-neutral-950 p-2 font-mono text-xs text-neutral-300">
+        <pre className="max-h-48 overflow-auto rounded border border-line bg-field p-2 font-mono text-[11px] text-fg-2">
           {safeStringifyForPanel(eff.toolSchema.parameters)}
         </pre>
       </div>
       <div>
-        <div className="text-xs text-neutral-500">
-          allowedTools: {allowedToolsUnchanged && <span className="text-neutral-600">(unchanged)</span>}
+        <div className="text-[11px] text-fg-3">
+          allowedTools: {allowedToolsUnchanged && <span className="text-fg-3">(unchanged)</span>}
         </div>
         {allowedTools === null || allowedTools === undefined ? (
-          <div className="text-xs italic text-neutral-500">(legacy: no scope restriction)</div>
+          <div className="text-[11px] italic text-fg-3">(legacy: no scope restriction)</div>
         ) : allowedTools.length === 0 ? (
-          <div className="text-xs italic text-neutral-500">(empty — only done / fail callable inside this skill's scope)</div>
+          <div className="text-[11px] italic text-fg-3">
+            (empty — only done / fail callable inside this skill's scope)
+          </div>
         ) : (
           <div className="mt-1 flex flex-wrap gap-1">
             {allowedTools.map((t, i) => (
               <code
                 key={i}
-                className="rounded bg-neutral-800 px-1.5 py-0.5 font-mono text-xs text-neutral-300"
+                className="rounded border border-line bg-field px-1.5 py-0.5 font-mono text-[11px] text-fg-1"
               >
                 {t}
               </code>
@@ -344,7 +283,6 @@ export default function AgentConfirmCard({
   contentPreview,
 }: AgentConfirmCardProps) {
   function handleKeyDown(e: React.KeyboardEvent) {
-    // Prevent Enter from accidentally triggering Approve
     if (e.key === "Enter") {
       e.preventDefault();
     }
@@ -352,8 +290,6 @@ export default function AgentConfirmCard({
 
   const isMeta = isSkillMetaTool(tool);
   const hasTabTargets = !!tabTargets && tabTargets.length > 0;
-
-  // a11y: stable id for aria-labelledby (P3-V).
   const headingId = `agent-confirm-heading-${tool}`;
 
   return (
@@ -361,127 +297,102 @@ export default function AgentConfirmCard({
       role="dialog"
       aria-modal="false"
       aria-labelledby={headingId}
-      className="rounded bg-red-950/30 border border-red-800 p-3 text-sm"
+      className="flex flex-col gap-3 rounded-[10px] border border-warning-line bg-surface p-3.5"
       onKeyDown={handleKeyDown}
     >
-      {/* Heading */}
-      <div id={headingId} className="mb-2 font-semibold text-red-400">
-        [!] Confirm action
+      <div className="flex items-center gap-2">
+        <div className="h-1.5 w-1.5 rounded-full bg-warning" />
+        <span className="font-mono text-[10px] uppercase tracking-[0.16em] text-warning">
+          HIGH RISK · APPROVAL REQUIRED
+        </span>
+        <code className="ml-auto font-mono text-[12px] text-fg-1">{tool}</code>
       </div>
 
-      {/* Risk reason */}
-      <div className="mb-2 text-xs text-red-300">{riskReason}</div>
-
-      {/* Tool name */}
-      <div className="mb-2">
-        <span className="text-neutral-400 text-xs">Tool: </span>
-        <code className="font-mono text-neutral-200">{tool}</code>
-      </div>
-
-      {/* Phase 3 — origin summary row above the tab list. Stays visible
-          even if tabTargets list is virtualized / truncated; protects K-1
-          informed-approval invariant (D-2). */}
-      {hasTabTargets ? (
-        <div className="mb-2">
-          <OriginSummaryRow tabs={tabTargets!} />
+      <div id={headingId} className="flex flex-col gap-1">
+        <div className="text-[15px] font-semibold leading-[22px] tracking-[-0.005em] text-fg-1">
+          Confirm action
         </div>
-      ) : null}
+        <div className="text-[12px] leading-[18px] text-fg-2">{riskReason}</div>
+      </div>
 
-      {/* Resolved element — only for DOM-targeted tools (skip for meta tools whose
-          resolvedElement is a placeholder, AND skip for cross-tab tools where
-          tabTargets carries the trust-decision payload). */}
+      {hasTabTargets ? <OriginSummaryRow tabs={tabTargets!} /> : null}
+
       {!isMeta && !hasTabTargets && (
-        <div className="mb-2 space-y-0.5 text-xs">
+        <div className="flex flex-col gap-1 rounded border border-line bg-field px-2.5 py-2 text-[12px]">
           <div>
-            <span className="text-neutral-500">tag: </span>
-            <code className="font-mono text-neutral-300">
-              {"<"}
-              {resolvedElement.tag}
-              {">"}
+            <span className="text-fg-3">tag </span>
+            <code className="font-mono text-fg-1">
+              &lt;{resolvedElement.tag}&gt;
             </code>
           </div>
           {resolvedElement.text && (
             <div>
-              <span className="text-neutral-500">text: </span>
-              <span className="text-neutral-300">{resolvedElement.text}</span>
+              <span className="text-fg-3">text </span>
+              <span className="text-fg-1">{resolvedElement.text}</span>
             </div>
           )}
           {resolvedElement.ariaLabel && (
             <div>
-              <span className="text-neutral-500">aria-label: </span>
-              <span className="text-neutral-300">{resolvedElement.ariaLabel}</span>
+              <span className="text-fg-3">aria-label </span>
+              <span className="text-fg-1">{resolvedElement.ariaLabel}</span>
             </div>
           )}
           {resolvedElement.type && (
             <div>
-              <span className="text-neutral-500">type: </span>
-              <span className="text-neutral-300">{resolvedElement.type}</span>
+              <span className="text-fg-3">type </span>
+              <span className="text-fg-1">{resolvedElement.type}</span>
             </div>
           )}
           {resolvedElement.href && (
             <div>
-              <span className="text-neutral-500">href: </span>
-              <span className="text-neutral-300 break-all">{resolvedElement.href}</span>
+              <span className="text-fg-3">href </span>
+              <span className="break-all text-fg-1">{resolvedElement.href}</span>
             </div>
           )}
         </div>
       )}
 
-      {/* Phase 3 tabTargets list (P3-E) */}
-      {hasTabTargets ? (
-        <div className="mb-3">
-          <TabTargetsList tabs={tabTargets!} />
-        </div>
-      ) : null}
+      {hasTabTargets ? <TabTargetsList tabs={tabTargets!} /> : null}
 
-      {/* Phase 3 content preview for get_tab_content (P3-U / SEC-2) */}
-      {contentPreview ? (
-        <div className="mb-3">
-          <TabContentPreviewDetails preview={contentPreview} />
-        </div>
-      ) : null}
+      {contentPreview ? <TabContentPreviewDetails preview={contentPreview} /> : null}
 
-      {/* Args — meta tools render the EFFECTIVE merged skill (P0-D no cap,
-          adv-1 closure: update_skill must show retained fields, not just
-          the patch). Cross-tab tools render via tabTargets above. Falls
-          back to the generic args dump only when none of those carry the
-          trust-decision payload. */}
       {!hasTabTargets ? (
-        <div className="mb-3">
+        <>
           {isMeta && metaSkillPreview ? (
             <SkillContentDetails tool={tool} metaSkillPreview={metaSkillPreview} />
           ) : (
-            <>
-              <div className="mb-0.5 text-xs text-neutral-500">args:</div>
-              <pre className="overflow-x-auto rounded bg-neutral-950 p-1.5 font-mono text-xs text-neutral-300">
+            <div className="flex flex-col gap-1">
+              <div className="font-mono text-[10px] uppercase tracking-[0.12em] text-fg-3">
+                ARGS
+              </div>
+              <pre className="overflow-x-auto rounded border border-line bg-field p-2 font-mono text-[11px] leading-4 text-fg-2">
                 {safeStringifyArgs(redactArgsForDisplay(tool, args, riskReason))}
               </pre>
-            </>
+            </div>
           )}
-        </div>
+        </>
       ) : null}
 
-      {/* Action buttons or resolved status */}
       {resolved ? (
         <div
-          className={`text-xs font-mono ${
-            resolved === "approved" ? "text-green-400" : "text-neutral-400"
+          className={`font-mono text-[10px] uppercase tracking-[0.16em] ${
+            resolved === "approved" ? "text-fg-2" : "text-fg-3"
           }`}
         >
-          {resolved === "approved" ? "Approved" : "Rejected"}
+          {resolved === "approved" ? "✓ APPROVED" : "✕ REJECTED"}
         </div>
       ) : (
-        <div className="flex gap-2">
+        <div className="flex gap-2 pt-1">
           <button
             onClick={onReject}
             autoFocus
-            className="rounded bg-neutral-700 px-3 py-1.5 text-xs text-neutral-100 hover:bg-neutral-600 focus:outline focus:outline-2 focus:outline-neutral-500"
+            className="flex-1 rounded-md border border-line bg-transparent px-3.5 py-2.5 text-[13px] text-fg-2 hover:border-fg-3 hover:text-fg-1 focus:outline focus:outline-2 focus:outline-fg-3"
           >
             Reject
           </button>
           <button
             onClick={onApprove}
-            className="rounded bg-red-700 px-3 py-1.5 text-xs text-white hover:bg-red-600 focus:outline focus:outline-2 focus:outline-red-500"
+            className="flex-1 rounded-md border border-warning-line bg-transparent px-3.5 py-2.5 text-[13px] font-medium text-warning hover:bg-warning-tint focus:outline focus:outline-2 focus:outline-warning"
           >
             Approve
           </button>
