@@ -13,7 +13,7 @@
 | **Gemini provider** | design.md L80, L135 | registry pattern 加 entry 即可，差 host_permission |
 | **Ollama / 本地模型** | design.md L80–82, L135 | 需 manifest 加 `http://localhost/*`，streaming 协议适配 |
 | **快捷键支持** | design.md L136 | 零结构性风险的打磨项 |
-| **任务状态持久化（SW 重启恢复）** | design.md L91 | 现状 SW restart 即终止 in-flight 任务；与下方 Checkpoint & Resume 合并实施 |
+| **任务状态持久化（SW 重启恢复）** | design.md L91 | ✅ M1 partial done (PR #8) — single-session SW-restart recovery + tombstone + R11 drift card. M2/M3 (多 session UI / per-session sandbox) 仍待 |
 | **定时工作流（scheduled agent runs）** | design.md L40 "定时工作流可以作为后续迭代加上去" | 需先解决 SW 5 min 限制 + 任务持久化 |
 
 ## 2. Skill 框架进阶（Phase 2 / 2.6 brainstorm 主动 defer）
@@ -28,9 +28,9 @@
 | **Skill version 历史 / migration** | 同上 L81 | YAGNI；编辑直接覆盖 |
 | **Skill draft / quarantine 中间态** | 同上 L83 | 当前用 R10 首次执行二次 confirm 替代 |
 
-## 3. Checkpoint & Resume（Phase 2.6 brainstorm 附录 C1–C5）— **PLAN READY (in implementation)**
+## 3. Checkpoint & Resume（Phase 2.6 brainstorm 附录 C1–C5）— **M1 SHIPPED · M2/M3 pending**
 
-> **Status (2026-05-02)**: Brainstorm 升级为 "session 作为 first-class persistent layer" → `docs/brainstorms/2026-05-02-checkpoint-resume-requirements.md`。Plan 已 ship (14 unit / M1→M2→M3) → `docs/plans/2026-05-02-001-feat-session-persistent-layer-plan.md`。两次 document-review 已 apply 25+ auto-fixes 含 P0-A R28 范式重审 (storage 持 raw + panel-display redaction)。手动 `/ce:work docs/plans/2026-05-02-001-...` 推进 M1-U1 即可。
+> **Status (2026-05-02)**: Brainstorm 升级为 "session 作为 first-class persistent layer" → `docs/brainstorms/2026-05-02-checkpoint-resume-requirements.md`。Plan (14 unit / M1→M2→M3) → `docs/plans/2026-05-02-001-feat-session-persistent-layer-plan.md`，frontmatter status=`m1-shipped`. **M1 (U1-U5) 已 ship via PR #8** (single-session 持久化 + SW restart recovery + R11 drift card)。M1 关键 invariants + 踩过的坑 → `docs/solutions/2026-05-02-session-as-first-class-persistent-layer-m1.md`。**M2 (multi-session UI: drawer / LLM 标题 / LRU archive) 与 M3 (per-session sandbox) 在新 PR 单独推进** —— 不要堆在 m1 分支上。
 
 **Original C1–C5 outline (now superseded by full plan above; kept for traceability)**:
 
@@ -74,9 +74,9 @@
   - 选项 2：完整 agent IR（tool_use + tool_result）翻译——但 M1-U3 tombstone 已清掉
   - 选项 3：合成"上一轮做了 X / 看到了 Y"摘要
 
-**前置依赖**：M1 完成（不阻塞但简化 trade-off 视野）；与 `applySlidingWindow` token 预算策略联动。
+**前置依赖**：✅ M1 完成 (2026-05-02, PR #8)；与 `applySlidingWindow` token 预算策略联动。
 
-**建议路径**：M1 完整 ship 后单独 `/ce:brainstorm` + `/ce:plan`，不塞进 session-persistent-layer plan。
+**建议路径**：M1 已 ship — **可以开始单独 `/ce:brainstorm` + `/ce:plan`**，不塞进 session-persistent-layer plan。Half A 半小时改完 SW 一处取 `task` 的逻辑改用整个 messages 数组；Half B 需要决定上一轮 agent task IR (tool_use / tool_result / agent-summary) 怎么呈现成 assistant turn — 三个候选 (`agent-summary` 文本 / 完整 IR 翻译 / 合成摘要)。
 
 ---
 

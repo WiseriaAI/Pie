@@ -1,10 +1,15 @@
 ---
 title: "feat: Session as First-Class Persistent Layer (Checkpoint & Resume)"
 type: feat
-status: active
+status: m1-shipped
 date: 2026-05-02
+last_updated: 2026-05-02
 origin: docs/brainstorms/2026-05-02-checkpoint-resume-requirements.md
+m1_pr: https://github.com/WiseriaAI/Pie/pull/8
+m1_learnings: docs/solutions/2026-05-02-session-as-first-class-persistent-layer-m1.md
 ---
+
+> **Status note (2026-05-02)**: M1 (units U1-U5) shipped via PR #8 — single-session persistent layer + SW restart recovery + R11 drift card. M2 (multi-session UI) and M3 (per-session sandbox) NOT YET STARTED. See `m1_learnings` link for shipped invariants future M2/M3 work must preserve.
 
 # feat: Session as First-Class Persistent Layer
 
@@ -275,7 +280,7 @@ stateDiagram-v2
 
 ### M1 — 单 session 持久化（解三大用户症状，可独立 ship）
 
-- [ ] **Unit M1-U1: Session 数据层 + storage CRUD**
+- [x] **Unit M1-U1: Session 数据层 + storage CRUD** ✅ shipped (commit `1aa7216`)
 
 **Goal:** 建立 session 数据契约 + storage 读写原子操作 + listing。M1 后只支持单 session（id 固定 'default'），M2-U1 升级为多 session。
 
@@ -313,7 +318,7 @@ stateDiagram-v2
 
 ---
 
-- [ ] **Unit M1-U2: Lift Chat 状态到 App 层 + persist messages**
+- [x] **Unit M1-U2: Lift Chat 状态到 App 层 + persist messages** ✅ shipped (commit `34d5683`)
 
 **Goal:** 解 root-cause #1（切 sub-view 丢消息）。把 `Chat.tsx:106-121` 11 个 useState 中持久数据迁出到 sessions storage layer，让 `<Chat>` unmount 不丢数据。
 
@@ -352,7 +357,7 @@ stateDiagram-v2
 
 ---
 
-- [ ] **Unit M1-U3: Agent loop snapshot 集成 + R28 redaction preservation**
+- [x] **Unit M1-U3: Agent loop snapshot 集成 + R28 redaction preservation** ✅ shipped (commit `428d1fb` + P0 patch `f4bb1d0` 用户 reported tombstone gap)
 
 **Goal:** 解 root-cause #2（SW restart 丢 task）的写入端。Agent loop 每 step 边界 snapshot 到 storage，redacted 字段保持 redacted。
 
@@ -392,7 +397,7 @@ stateDiagram-v2
 
 ---
 
-- [ ] **Unit M1-U4: SessionConfirmRequestMessage 协议 + R4 in-memory pending confirm 恢复**
+- [x] **Unit M1-U4: SessionConfirmRequestMessage 协议 + R4 in-memory pending confirm 恢复** ✅ shipped (commit `d7d6b2c`)
 
 **Goal:** 引入 non-tool confirm 协议（为 M1-U5 的 R11 drift 卡 + 后续 R10(session-resume) paused-resume 卡铺路），并实现 R4 ：SW 未死场景下 panel 重连后能恢复显示 pending confirm 卡。
 
@@ -431,7 +436,7 @@ stateDiagram-v2
 
 ---
 
-- [ ] **Unit M1-U5: SW restart cold detection + R10(session-resume) paused state + R11 drift informed-approval 卡**
+- [x] **Unit M1-U5: SW restart cold detection + R10(session-resume) paused state + R11 drift informed-approval 卡** ✅ shipped (commit `cb8b73d`)
 
 **Goal:** 解 root-cause #2（SW restart 丢 task）的恢复端。SW restart 后检测未完成 task → 转 paused 状态 + 用户手动 Resume → R11 drift 检测 → 续跑或丢弃。
 
