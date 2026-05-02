@@ -75,6 +75,15 @@ const local = {
     local.__store = {};
     return Promise.resolve();
   },
+
+  // Minimal onChanged stub. Tests that need real storage-change
+  // notifications can override; useSession's M1-U5 listener only
+  // needs the .addListener / .removeListener API to exist so it
+  // doesn't throw on mount.
+  onChanged: {
+    addListener: vi.fn(),
+    removeListener: vi.fn(),
+  },
 };
 
 // chrome.runtime.connect mock — returns a FakePort whose onMessage /

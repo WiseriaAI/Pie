@@ -11,6 +11,7 @@ import type { UseSession } from "@/sidepanel/hooks/useSession";
 import AgentStepBubble from "./AgentStepBubble";
 import AgentConfirmCard from "./AgentConfirmCard";
 import AgentSummary from "./AgentSummary";
+import SessionConfirmCard from "./SessionConfirmCard";
 import MarkdownContent from "./Markdown";
 import SkillSlashPopover from "./SkillSlashPopover";
 
@@ -314,6 +315,28 @@ export default function Chat({
         onOpenSettings={onOpenSettings}
       />
 
+      {/* M1-U5 — paused-task affordance. Sticky bar appears whenever
+          the SW has marked this session paused (cold-start detected an
+          in-flight task that died with the SW). Click → Resume; SW
+          either restarts the loop or shows the drift card. */}
+      {session.status === "paused" && (
+        <div className="flex flex-shrink-0 items-center justify-between gap-3 border-b border-warning-line bg-warning-tint px-4 py-2 text-[12px]">
+          <div className="flex flex-col gap-0.5">
+            <span className="caps text-warning">PAUSED</span>
+            <span className="text-fg-1">
+              Task interrupted by service worker restart.
+            </span>
+          </div>
+          <button
+            onClick={() => session.resumeTask()}
+            className="rounded border border-warning-line bg-transparent px-3 py-1 font-mono text-[10px] uppercase tracking-[0.08em] text-warning hover:bg-warning-tint/60"
+            aria-label="Resume the paused task"
+          >
+            RESUME TASK
+          </button>
+        </div>
+      )}
+
       <div className="flex-1 overflow-y-auto">
         {messages.length === 0 && !streaming && !pageChanged ? (
           <EmptyState
@@ -369,6 +392,17 @@ export default function Chat({
                     success={msg.success}
                     summary={msg.summary}
                     stepCount={msg.stepCount}
+                  />
+                );
+              }
+              if (msg.role === "session-confirm") {
+                return (
+                  <SessionConfirmCard
+                    key={i}
+                    kind={msg.kind}
+                    payload={msg.payload}
+                    resolved={msg.resolved}
+                    onDiscard={() => session.discardTask(msg.confirmationId)}
                   />
                 );
               }

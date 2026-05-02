@@ -5,17 +5,31 @@ import type {
   ExtractPageResponse,
   PortMessageToWorker,
   AgentConfirmRequestMessage,
+  PinnedTabDriftPayload,
+  SessionConfirmRequestMessage,
+  AgentDoneTaskMessage,
+  DisplayMessage,
 } from "@/types";
-import type { ChatMessage, ModelConfig } from "@/lib/model-router";
+import type {
+  AgentMessage,
+  ChatMessage,
+  ContentBlock,
+  ModelConfig,
+} from "@/lib/model-router";
 import { getActiveProvider, getProviderConfig } from "@/lib/storage";
-import { runAgentLoop } from "@/lib/agent/loop";
+import { runAgentLoop, safeParseOrigin } from "@/lib/agent/loop";
 import { getEnabledSkills, resolveSkillToTools } from "@/lib/skills";
 import {
   setSessionAgent,
   setPendingConfirm,
   scrubPendingConfirm,
   getSessionAgent,
+  getSessionMeta,
+  setSessionMeta,
+  markFailedAndScrub,
 } from "@/lib/sessions/storage";
+import { escapeUntrustedWrappers } from "@/lib/agent/untrusted-wrappers";
+import { detectAndMarkPaused } from "./session-recovery";
 import {
   handleExternalDetach,
   detachAllSessions,
@@ -37,6 +51,29 @@ chrome.runtime.onInstalled.addListener((details) => {
   if (details.reason === "install") {
     chrome.storage.local.set({ firstRun: true });
   }
+  // M1-U5 — also try recovery (belt-and-suspenders; main path is the
+  // top-level call below + panel-mounted handler). Fire-and-forget.
+  detectAndMarkPaused().catch((e) => {
+    console.warn("[sw] recovery on onInstalled failed:", e);
+  });
+});
+
+// M1-U5 — Chrome process startup recovery. NOTE: in MV3 this fires
+// only on Chrome launch, NOT on SW wake-up after 30s idle. The
+// top-level call below covers wake-ups. Fire-and-forget.
+chrome.runtime.onStartup.addListener(() => {
+  detectAndMarkPaused().catch((e) => {
+    console.warn("[sw] recovery on onStartup failed:", e);
+  });
+});
+
+// M1-U5 — top-level recovery call. Fires every time the SW file is
+// imported, which includes every wake-up from idle. The 30s
+// `recoveryGuard` window deduplicates against the onStartup /
+// onInstalled / panel-mounted triggers. Fire-and-forget so SW
+// initialization is not delayed by storage IO.
+detectAndMarkPaused().catch((e) => {
+  console.warn("[sw] recovery on top-level failed:", e);
 });
 
 // --- Phase 2.5 — CDP keyboard simulation lifecycle hooks ---
@@ -220,6 +257,18 @@ async function handlePanelMounted(
   sessionId: string,
   pendingConfirmations: Map<string, (approved: boolean) => void>,
 ): Promise<void> {
+  // M1-U5 — panel mounting is a strong signal that the SW has just
+  // woken up (panel open ⇒ SW kept alive ⇒ guaranteed wake-up event).
+  // Run recovery before the R4 re-emit so the storage state is correct
+  // when we read it below. Guard window dedupes against the top-level
+  // call.
+  await detectAndMarkPaused().catch((e) => {
+    console.warn(
+      `[sw] recovery during panel-mounted failed for session=${sessionId}:`,
+      e,
+    );
+  });
+
   const agent = await getSessionAgent(sessionId);
   if (!agent?.pendingConfirm) return;
   const { confirmationId, kind, payload } = agent.pendingConfirm;
@@ -242,11 +291,304 @@ async function handlePanelMounted(
       confirmationId,
       ...p,
     } satisfies AgentConfirmRequestMessage);
+  } else if (kind === "pinned-tab-drift" || kind === "paused-resume") {
+    // M1-U5 — re-emit the SessionConfirmRequestMessage shape. The
+    // panel's useSession listener routes this to a SessionConfirmCard
+    // render path independent of agent-tool confirm cards.
+    port.postMessage({
+      type: "session-confirm-request",
+      confirmationId,
+      kind,
+      payload,
+    } satisfies SessionConfirmRequestMessage);
   }
-  // M1-U5 will add re-emit paths for kind='pinned-tab-drift' /
-  // 'paused-resume' via SessionConfirmRequestMessage. M1-U4 ships the
-  // protocol slot only — no emitter sets those kinds yet, so this
-  // path is unreachable until M1-U5.
+}
+
+// --- M1-U5: Resume + Discard handlers ---
+
+/**
+ * Detect whether the pinned tab is still usable for resuming a paused
+ * task. Returns null if no drift (tab present + origin unchanged), or
+ * a `PinnedTabDriftPayload` describing the kind of drift detected.
+ *
+ * Sanitization: `lastPinnedTabTitle` and `originalTask` are
+ * user/page-controlled strings; both run through
+ * `escapeUntrustedWrappers` before they reach the panel (P3-G family).
+ */
+async function checkPinnedDrift(
+  meta: { pinnedTabId?: number; pinnedOrigin?: string; messages: DisplayMessage[] },
+  agentStepIndex: number,
+): Promise<PinnedTabDriftPayload | null> {
+  // Pull the original task from the first user message if available.
+  const firstUser = meta.messages.find((m) => m.role === "user");
+  const rawTask = firstUser && firstUser.role === "user" ? firstUser.content : "";
+  const originalTask = escapeUntrustedWrappers(rawTask);
+
+  if (meta.pinnedTabId === undefined || !meta.pinnedOrigin) {
+    // M1 sessions don't have pinned anchored at creation (M3-U2
+    // ships that). No drift can be detected — treat as drift=null
+    // and let the loop's per-round origin check pick up real drift
+    // mid-resume.
+    return null;
+  }
+
+  let tab: chrome.tabs.Tab | null = null;
+  try {
+    tab = await chrome.tabs.get(meta.pinnedTabId);
+  } catch {
+    return {
+      reason: "tab-closed",
+      originalTask,
+      lastPinnedTabTitle: "",
+      pinnedOrigin: meta.pinnedOrigin,
+      lastStepIndex: agentStepIndex,
+    };
+  }
+
+  const currentUrl = tab.url ?? "";
+  const currentOrigin = safeParseOrigin(currentUrl);
+  const lastPinnedTabTitle = escapeUntrustedWrappers(tab.title ?? "");
+
+  if (!currentOrigin || currentOrigin !== meta.pinnedOrigin) {
+    return {
+      reason: "origin-changed",
+      originalTask,
+      lastPinnedTabTitle,
+      pinnedOrigin: meta.pinnedOrigin,
+      currentOrigin: currentOrigin ?? undefined,
+      lastStepIndex: agentStepIndex,
+    };
+  }
+
+  return null;
+}
+
+/**
+ * M1-U5 — handle a `resume-task` message from the panel. Two paths:
+ *   1. drift OK → flip session back to `active` + restart runAgentLoop
+ *      with `resumedAgentMessages` + `resumedFromStep`
+ *   2. drift detected → push a `session-confirm-request` (kind=
+ *      pinned-tab-drift) to the panel; the user's only choice is
+ *      Discard. The drift payload carries enough context for the
+ *      panel to render an informed-approval card.
+ *
+ * No-op (with a console.warn) if the session is not in `paused` state
+ * or has no in-flight agent state.
+ */
+async function handleResumeRequest(
+  port: chrome.runtime.Port,
+  sessionId: string,
+  signal: AbortSignal,
+  pendingConfirmations: Map<string, (approved: boolean) => void>,
+): Promise<void> {
+  const meta = await getSessionMeta(sessionId);
+  if (!meta || meta.status !== "paused") {
+    console.warn(
+      `[sw] resume-task ignored — session=${sessionId} not in paused state`,
+    );
+    return;
+  }
+  const agent = await getSessionAgent(sessionId);
+  if (!agent || agent.stepIndex === 0) {
+    console.warn(
+      `[sw] resume-task ignored — session=${sessionId} has no in-flight agent state`,
+    );
+    return;
+  }
+
+  const drift = await checkPinnedDrift(meta, agent.stepIndex);
+  if (drift !== null) {
+    // Push the drift card. Register a resolver entry so
+    // panel-mounted re-emit + discard-task wire up correctly.
+    const confirmationId = crypto.randomUUID();
+    const card: SessionConfirmRequestMessage = {
+      type: "session-confirm-request",
+      confirmationId,
+      kind: "pinned-tab-drift",
+      payload: drift,
+    };
+    // Persist + register resolver so a panel re-mount can recover the
+    // card via the existing M1-U4 R4 path. The resolver here is a
+    // no-op-on-true (drift card has only a Discard button); approve
+    // is intentionally unreachable.
+    await setPendingConfirm(sessionId, {
+      confirmationId,
+      kind: "pinned-tab-drift",
+      payload: drift,
+    });
+    pendingConfirmations.set(confirmationId, (_approved) => {
+      // No-op resolver — discard-task handles the actual cleanup
+      // path. We register here only to satisfy the M1-U4 two-source
+      // invariant (storage record + live resolver).
+    });
+    port.postMessage(card);
+    return;
+  }
+
+  // Drift OK — flip the session back to `active` and restart the loop.
+  await setSessionMeta({ ...meta, status: "active" });
+
+  const activeProvider = await getActiveProvider();
+  if (!activeProvider) {
+    port.postMessage({
+      type: "chat-error",
+      error: "No active provider configured.",
+    });
+    return;
+  }
+  const config = await getProviderConfig(activeProvider);
+  if (!config) {
+    port.postMessage({
+      type: "chat-error",
+      error: `No API key configured for ${activeProvider}.`,
+    });
+    return;
+  }
+  const modelConfig: ModelConfig = config;
+
+  // Reuse the chat-stream sendConfirmRequest pattern. Same persist +
+  // scrub flow applies to confirms during the resumed task.
+  const sendConfirmRequest = async (
+    confirmationId: string,
+    payload: Omit<AgentConfirmRequestMessage, "type" | "confirmationId">,
+  ): Promise<boolean> => {
+    await setPendingConfirm(sessionId, {
+      confirmationId,
+      kind: "agent-tool",
+      payload: {
+        tool: payload.tool,
+        args: payload.args,
+        resolvedElement: payload.resolvedElement,
+        riskReason: payload.riskReason,
+        ...(payload.metaSkillPreview
+          ? { metaSkillPreview: payload.metaSkillPreview }
+          : {}),
+        ...(payload.tabTargets ? { tabTargets: payload.tabTargets } : {}),
+        ...(payload.contentPreview
+          ? { contentPreview: payload.contentPreview }
+          : {}),
+      },
+    });
+    try {
+      return await new Promise<boolean>((resolve) => {
+        pendingConfirmations.set(confirmationId, resolve);
+        port.postMessage({
+          type: "agent-confirm-request",
+          confirmationId,
+          ...payload,
+        } satisfies AgentConfirmRequestMessage);
+      });
+    } finally {
+      scrubPendingConfirm(sessionId).catch((e) => {
+        console.warn(
+          `[agent] resume scrub pendingConfirm failed for session=${sessionId}:`,
+          e,
+        );
+      });
+    }
+  };
+
+  // task string for prompt header — pull from the snapshot's first
+  // user message. resume path doesn't really use this except as a
+  // human-readable label.
+  let taskForPrompt = "(resumed task)";
+  const firstUser = agent.agentMessages.find((m) => m.role === "user");
+  if (firstUser) {
+    const c = firstUser.content;
+    taskForPrompt = typeof c === "string" ? c : "(resumed task)";
+  }
+
+  await runAgentLoop({
+    port,
+    task: taskForPrompt,
+    modelConfig,
+    signal,
+    sendConfirmRequest,
+    getEnabledSkillTools: async () => {
+      const skills = await getEnabledSkills();
+      return resolveSkillToTools(skills);
+    },
+    sessionId,
+    onStepSnapshot: async (snapshot) => {
+      await setSessionAgent(sessionId, snapshot);
+    },
+    resumedAgentMessages: agent.agentMessages,
+    resumedFromStep: agent.stepIndex,
+  });
+}
+
+/**
+ * M1-U5 — user clicked 'Discard task' on the R11 drift card. Mark the
+ * session failed, scrub leftover pendingConfirm, and append a recap
+ * message to SessionMeta.messages so the chat scrollback shows what
+ * was discarded (recovery context per plan M1-U5 design-lens F3 +
+ * SEC-PLAN-005).
+ *
+ * Also emits an agent-done-task to the panel so useSession exits the
+ * streaming state cleanly.
+ */
+async function handleDiscardRequest(
+  port: chrome.runtime.Port,
+  sessionId: string,
+  confirmationId: string,
+  pendingConfirmations: Map<string, (approved: boolean) => void>,
+): Promise<void> {
+  // Resolve the matching pending resolver (drift card had a no-op
+  // resolver registered; clear the Map entry).
+  const resolver = pendingConfirmations.get(confirmationId);
+  if (resolver) {
+    resolver(false);
+    pendingConfirmations.delete(confirmationId);
+  }
+
+  const meta = await getSessionMeta(sessionId);
+  const agent = await getSessionAgent(sessionId);
+  if (!meta) return;
+
+  // Compose a recap line the user sees in chat scrollback. All
+  // user-/page-controlled fields are sanitized.
+  const firstUser = meta.messages.find((m) => m.role === "user");
+  const originalTask =
+    firstUser && firstUser.role === "user"
+      ? escapeUntrustedWrappers(firstUser.content)
+      : "(unknown)";
+  const lastStepIndex = agent?.stepIndex ?? 0;
+
+  let recapTitle = "(unknown)";
+  if (meta.pinnedTabId !== undefined) {
+    try {
+      const tab = await chrome.tabs.get(meta.pinnedTabId);
+      recapTitle = escapeUntrustedWrappers(tab.title ?? "");
+    } catch {
+      recapTitle = "(closed)";
+    }
+  }
+
+  const recapText = `Task discarded — original goal: ${originalTask}. Last step: ${lastStepIndex}. Last pinned tab: ${recapTitle}.`;
+
+  // Append the recap as an agent-summary message in the displayed chat.
+  const recapMessage: DisplayMessage = {
+    role: "agent-summary",
+    success: false,
+    summary: recapText,
+    stepCount: lastStepIndex,
+  };
+  await setSessionMeta({
+    ...meta,
+    messages: [...meta.messages, recapMessage],
+  });
+
+  // Mark failed + scrub. (markFailedAndScrub handles ordering.)
+  await markFailedAndScrub(sessionId);
+
+  // Tell the panel the session-level confirm flow ended so useSession
+  // can exit any streaming state.
+  port.postMessage({
+    type: "agent-done-task",
+    success: false,
+    summary: recapText,
+    stepCount: lastStepIndex,
+  } satisfies AgentDoneTaskMessage);
 }
 
 // --- Agent Loop via Port ---
@@ -426,6 +768,37 @@ chrome.runtime.onConnect.addListener((port) => {
           );
         },
       );
+    } else if (message.type === "resume-task") {
+      handleResumeRequest(
+        port,
+        message.sessionId,
+        abortController.signal,
+        pendingConfirmations,
+      ).catch((e) => {
+        console.warn(
+          `[sw] resume-task handler failed for session=${message.sessionId}:`,
+          e,
+        );
+        port.postMessage({
+          type: "chat-error",
+          error:
+            e instanceof Error
+              ? `Resume failed: ${e.message}`
+              : "Resume failed",
+        });
+      });
+    } else if (message.type === "discard-task") {
+      handleDiscardRequest(
+        port,
+        message.sessionId,
+        message.confirmationId,
+        pendingConfirmations,
+      ).catch((e) => {
+        console.warn(
+          `[sw] discard-task handler failed for session=${message.sessionId}:`,
+          e,
+        );
+      });
     }
   });
 

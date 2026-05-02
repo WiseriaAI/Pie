@@ -6,6 +6,9 @@ import {
   getSessionMeta,
   getTotalBytes,
   listSessionIndex,
+  markFailed,
+  markFailedAndScrub,
+  markPaused,
   removeSession,
   scrubPendingConfirm,
   setPendingConfirm,
@@ -397,6 +400,58 @@ describe("setPendingConfirm / scrubPendingConfirm — M1-U4", () => {
     expect(stored.args.text).toBe("password123");
     expect(stored.args.text).not.toContain("redacted");
     expect(stored.args.text).not.toContain("•");
+  });
+});
+
+describe("markPaused / markFailed / markFailedAndScrub — M1-U5", () => {
+  it("markPaused flips status from active to paused", async () => {
+    const meta = await createSession();
+    expect(meta.status).toBe("active");
+    const ok = await markPaused(meta.id);
+    expect(ok).toBe(true);
+    const refreshed = await getSessionMeta(meta.id);
+    expect(refreshed!.status).toBe("paused");
+  });
+
+  it("markPaused does NOT bump lastAccessedAt (LRU pollution avoidance)", async () => {
+    const meta = await createSession({ now: 1000 });
+    expect(meta.lastAccessedAt).toBe(1000);
+    await markPaused(meta.id);
+    const refreshed = await getSessionMeta(meta.id);
+    expect(refreshed!.lastAccessedAt).toBe(1000);
+  });
+
+  it("markPaused returns false for unknown session id", async () => {
+    expect(await markPaused("not-a-real-id")).toBe(false);
+  });
+
+  it("markPaused is idempotent on already-paused state", async () => {
+    const meta = await createSession();
+    await markPaused(meta.id);
+    expect(await markPaused(meta.id)).toBe(true);
+  });
+
+  it("markFailed flips status from active to failed", async () => {
+    const meta = await createSession();
+    const ok = await markFailed(meta.id);
+    expect(ok).toBe(true);
+    const refreshed = await getSessionMeta(meta.id);
+    expect(refreshed!.status).toBe("failed");
+  });
+
+  it("markFailedAndScrub clears pendingConfirm in addition to flipping status", async () => {
+    const meta = await createSession();
+    await setPendingConfirm(meta.id, {
+      confirmationId: "c1",
+      kind: "agent-tool",
+      payload: { tool: "click", args: {}, resolvedElement: { text: "", tag: "" }, riskReason: "x" },
+    });
+    const ok = await markFailedAndScrub(meta.id);
+    expect(ok).toBe(true);
+    const refreshed = await getSessionMeta(meta.id);
+    expect(refreshed!.status).toBe("failed");
+    const agent = await getSessionAgent(meta.id);
+    expect(agent!.pendingConfirm).toBeUndefined();
   });
 });
 

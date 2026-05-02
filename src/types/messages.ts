@@ -111,6 +111,19 @@ export type DisplayMessage =
       success: boolean;
       summary: string;
       stepCount: number;
+    }
+  | {
+      /** M1-U5 — session-level confirm card (R11 drift, future paused-resume).
+       *  Distinct from `agent-confirm` (per-tool confirm during a running
+       *  task) — driven by `SessionConfirmRequestMessage`. */
+      role: "session-confirm";
+      confirmationId: string;
+      kind: "pinned-tab-drift" | "paused-resume";
+      payload: unknown;
+      /** Set after the user clicks Discard — UI uses this to disable
+       *  the button and dim the card so a duplicate click doesn't
+       *  send another discard message. */
+      resolved?: "discarded";
     };
 
 // --- Agent: resolved element info (from snapshot, not LLM) ---
@@ -240,6 +253,32 @@ export interface AgentConfirmResponseMessage {
 }
 
 /**
+ * M1-U5 — panel → SW: user clicked the "Resume task" button on a
+ * paused session. SW checks pinned-tab drift; if OK, restarts the
+ * agent loop with the persisted history; if drifted, sends back a
+ * `session-confirm-request` (kind='pinned-tab-drift').
+ */
+export interface ResumeTaskMessage {
+  type: "resume-task";
+  sessionId: string;
+}
+
+/**
+ * M1-U5 — panel → SW: user clicked "Discard task" on the R11 drift
+ * card. SW marks the session as `failed`, scrubs any leftover
+ * pendingConfirm, and prepends a system message recap so the user
+ * has context when they type a new prompt.
+ */
+export interface DiscardTaskMessage {
+  type: "discard-task";
+  sessionId: string;
+  /** confirmationId from the SessionConfirmRequestMessage that
+   *  surfaced this drift card. SW uses it to clear the matching
+   *  resolver in `pendingConfirmations`. */
+  confirmationId: string;
+}
+
+/**
  * M1-U4 — fired by the panel right after `chrome.runtime.connect` so
  * the SW knows which session this new port belongs to AND whether
  * there's any state to recover (e.g. a pending agent-confirm card the
@@ -260,6 +299,34 @@ export interface AgentConfirmResponseMessage {
 export interface PanelMountedMessage {
   type: "panel-mounted";
   sessionId: string;
+}
+
+/**
+ * M1-U5 — concrete payload for `kind='pinned-tab-drift'`. The drift
+ * card needs to render the original task summary, the last step
+ * the agent reached, and which kind of drift triggered the gate
+ * (so the user can act with full context: did the tab close, or
+ * just navigate to a different origin?).
+ *
+ * `originalTask` and `lastPinnedTabTitle` are user-controlled /
+ * page-controlled strings; the SW must run them through
+ * `escapeUntrustedWrappers` before persisting + sending so panel
+ * rendering can't be hijacked (P3-G / R29 family).
+ */
+export interface PinnedTabDriftPayload {
+  reason: "tab-closed" | "origin-changed";
+  /** First user message of the task — what the user originally
+   *  asked the agent to do. Sanitized. */
+  originalTask: string;
+  /** Title of the pinned tab at task start. May be empty if the
+   *  agent never observed a title. Sanitized. */
+  lastPinnedTabTitle: string;
+  /** Origin captured at task start (e.g. "https://docs.google.com").
+   *  For 'origin-changed', also the current origin. */
+  pinnedOrigin: string;
+  currentOrigin?: string;
+  /** stepIndex reached before SW death. For UI context only. */
+  lastStepIndex: number;
 }
 
 /**
@@ -296,7 +363,9 @@ export type PortMessageToWorker =
   | ChatStartMessage
   | ChatAbortMessage
   | AgentConfirmResponseMessage
-  | PanelMountedMessage;
+  | PanelMountedMessage
+  | ResumeTaskMessage
+  | DiscardTaskMessage;
 
 export type PortMessageToPanel =
   | ChatChunkMessage

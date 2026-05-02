@@ -7,6 +7,7 @@ import {
   listSessionIndex,
   setSessionMeta,
 } from "@/lib/sessions/storage";
+import type { SessionStatus } from "@/lib/sessions/types";
 
 /**
  * useSession — single-source-of-truth for the active session's messages,
@@ -61,6 +62,10 @@ export interface UseSession {
    *  disable input until this flips true to avoid the user racing the
    *  bootstrap and overwriting persisted history with an empty array. */
   ready: boolean;
+  /** M1-U5 — current session status. App uses `paused` to surface the
+   *  'Resume task' affordance. Updated via storage onChanged so a SW
+   *  cold-start mark transitions the UI without panel reload. */
+  status: SessionStatus | null;
   messages: DisplayMessage[];
   streaming: boolean;
   streamingText: string;
@@ -73,6 +78,11 @@ export interface UseSession {
    *  SW and marks the corresponding message as resolved in React
    *  state. */
   resolveConfirm: (confirmationId: string, approved: boolean) => void;
+  /** M1-U5 — user clicks 'Resume task' on a paused session. SW
+   *  decides whether to drift-card or restart the loop. */
+  resumeTask: () => void;
+  /** M1-U5 — user clicks 'Discard task' on the R11 drift card. */
+  discardTask: (confirmationId: string) => void;
   /** Clears the message history both in React state and in storage. */
   clearMessages: () => Promise<void>;
   /** Allows Chat to dismiss the error banner without re-sending. */
@@ -81,6 +91,7 @@ export interface UseSession {
 
 export function useSession(): UseSession {
   const [sessionId, setSessionId] = useState<string | null>(null);
+  const [status, setStatus] = useState<SessionStatus | null>(null);
   const [messages, setMessages] = useState<DisplayMessage[]>([]);
   const [streaming, setStreaming] = useState(false);
   const [streamingText, setStreamingText] = useState("");
@@ -267,10 +278,33 @@ export function useSession(): UseSession {
         setStreamingText("");
         setStreaming(false);
         void persistMessages(next);
+      } else if (message.type === "session-confirm-request") {
+        // M1-U5 — drift card / paused-resume card. Idempotent by
+        // confirmationId so SW re-emit (panel-mounted) doesn't stack
+        // duplicate rows.
+        const { confirmationId, kind, payload } = message;
+        setMessages((prev) => {
+          for (let i = prev.length - 1; i >= 0; i--) {
+            const m = prev[i]!;
+            if (
+              m.role === "session-confirm" &&
+              m.confirmationId === confirmationId
+            ) {
+              return prev;
+            }
+          }
+          return [
+            ...prev,
+            {
+              role: "session-confirm",
+              confirmationId,
+              kind,
+              payload,
+              resolved: undefined,
+            },
+          ];
+        });
       }
-      // M1-U4 — `session-confirm-request` protocol slot exists but
-      // M1-U5 will add the SessionConfirmCard rendering path. M1-U4
-      // ignores it (no kind has an emitter yet).
     },
     [persistMessages],
   );
@@ -306,18 +340,22 @@ export function useSession(): UseSession {
 
         let id: string;
         let initialMessages: DisplayMessage[] = [];
+        let initialStatus: SessionStatus = "active";
         if (list.length === 0) {
           const meta = await createSession();
           if (cancelled) return;
           id = meta.id;
+          initialStatus = meta.status;
         } else {
           const top = list[0]!;
           const meta = await getSessionMeta(top.id);
           if (cancelled) return;
           id = top.id;
           initialMessages = meta?.messages ?? [];
+          initialStatus = meta?.status ?? "active";
         }
         setSessionId(id);
+        setStatus(initialStatus);
         setMessages(initialMessages);
 
         // M1-U4 — open the port and announce ourselves so the SW can
@@ -342,6 +380,39 @@ export function useSession(): UseSession {
       portRef.current = null;
     };
   }, [handlePortMessage, handlePortDisconnect]);
+
+  // M1-U5 — track status changes from SW writes (cold-start
+  // detectAndMarkPaused, post-resume markActive). Without this, the
+  // panel would never see the SW transition from `active` to `paused`
+  // after a SW death + wake-up that the user didn't trigger via
+  // closing/reopening the panel. Only watches the per-session meta key
+  // so traffic is minimal.
+  useEffect(() => {
+    if (!sessionId) return;
+    const metaKey = `session_${sessionId}_meta`;
+    const listener = (
+      changes: Record<string, chrome.storage.StorageChange>,
+    ) => {
+      const change = changes[metaKey];
+      if (!change) return;
+      const newMeta = change.newValue as
+        | {
+            messages?: DisplayMessage[];
+            status?: SessionStatus;
+          }
+        | undefined;
+      if (newMeta?.status !== undefined) setStatus(newMeta.status);
+      if (newMeta?.messages !== undefined) {
+        // Only adopt the SW's view if it differs by reference — avoids
+        // round-tripping our own writes back into local state.
+        if (newMeta.messages !== messagesRef.current) {
+          setMessages(newMeta.messages);
+        }
+      }
+    };
+    chrome.storage.local.onChanged.addListener(listener);
+    return () => chrome.storage.local.onChanged.removeListener(listener);
+  }, [sessionId]);
 
   // ── sendMessage ────────────────────────────────────────────────────
   // M1-U4 — does NOT open a port; reuses the persistent one opened at
@@ -431,6 +502,39 @@ export function useSession(): UseSession {
     [],
   );
 
+  const resumeTask = useCallback(() => {
+    const port = portRef.current;
+    const id = sessionIdRef.current;
+    if (!port || !id) return;
+    try {
+      port.postMessage({ type: "resume-task", sessionId: id });
+    } catch {
+      // port may be in the process of closing — non-fatal
+    }
+  }, []);
+
+  const discardTask = useCallback((confirmationId: string) => {
+    const port = portRef.current;
+    const id = sessionIdRef.current;
+    if (!port || !id) return;
+    try {
+      port.postMessage({
+        type: "discard-task",
+        sessionId: id,
+        confirmationId,
+      });
+    } catch {
+      // port may be in the process of closing — non-fatal
+    }
+    setMessages((prev) =>
+      prev.map((m) =>
+        m.role === "session-confirm" && m.confirmationId === confirmationId
+          ? { ...m, resolved: "discarded" as const }
+          : m,
+      ),
+    );
+  }, []);
+
   const clearMessages = useCallback(async () => {
     setMessages([]);
     setError(null);
@@ -450,6 +554,7 @@ export function useSession(): UseSession {
   return {
     sessionId,
     ready,
+    status,
     messages,
     streaming,
     streamingText,
@@ -457,6 +562,8 @@ export function useSession(): UseSession {
     sendMessage,
     abort,
     resolveConfirm,
+    resumeTask,
+    discardTask,
     clearMessages,
     clearError,
   };

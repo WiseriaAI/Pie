@@ -240,6 +240,52 @@ export async function removeSession(id: string): Promise<void> {
 }
 
 /**
+ * M1-U5 — mark a session as `paused`. Used by `detectAndMarkPaused`
+ * (cold-start) when an in-flight task (`stepIndex > 0`) is found
+ * after SW restart.
+ *
+ * Goes through `setSessionMeta` so the `session_index` is updated
+ * atomically (D9). Does NOT bump `lastAccessedAt` — that would
+ * pollute LRU ordering with cold-start churn.
+ *
+ * Returns `false` if the session does not exist.
+ */
+export async function markPaused(id: string): Promise<boolean> {
+  const meta = await getSessionMeta(id);
+  if (!meta) return false;
+  if (meta.status === "paused") return true;
+  await setSessionMeta({ ...meta, status: "paused" });
+  return true;
+}
+
+/**
+ * M1-U5 — mark a session as `failed`. Used when a session has a
+ * `pendingConfirm` record across SW restart (resolver dead, can't
+ * resume) or when the user clicks 'Discard' on an R11 drift card.
+ *
+ * Same atomicity / no-LRU-bump rules as `markPaused`.
+ */
+export async function markFailed(id: string): Promise<boolean> {
+  const meta = await getSessionMeta(id);
+  if (!meta) return false;
+  if (meta.status === "failed") return true;
+  await setSessionMeta({ ...meta, status: "failed" });
+  return true;
+}
+
+/**
+ * M1-U5 — combined helper for the cold-start path: mark a session as
+ * failed AND scrub its pendingConfirm. Order matters (see
+ * `detectAndMarkPaused`'s JSDoc): we mark first so the panel never
+ * observes a state where `status='active'` but pendingConfirm is gone.
+ */
+export async function markFailedAndScrub(id: string): Promise<boolean> {
+  const ok = await markFailed(id);
+  if (ok) await scrubPendingConfirm(id);
+  return ok;
+}
+
+/**
  * M1-U4 — set the pendingConfirm slot on a session's agent state.
  * Called by the SW BEFORE pushing a confirm request to the panel so a
  * panel re-mount that lands during the confirm window can recover. The

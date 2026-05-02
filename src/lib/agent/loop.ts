@@ -93,6 +93,24 @@ export interface AgentLoopContext {
    * pressure; for now we just keep going.
    */
   onStepSnapshot?: (snapshot: SessionAgentState) => Promise<void>;
+  /**
+   * M1-U5 — when resuming a paused task, the prior `agentMessages`
+   * history (full LLM IR from the persisted snapshot) and the step
+   * index reached. Both must be set together (or both undefined).
+   *
+   * When set:
+   *   - `history` is initialized from `resumedAgentMessages` instead of
+   *     the fresh `[system, user(task)]` seed
+   *   - the loop counter starts at `resumedFromStep + 1`
+   *   - **first iteration skips the observation-merge** at the top of
+   *     the loop body — the prior snapshot already includes the
+   *     observation that closes that step; merging again would result
+   *     in double-observation in the user message and confuse the LLM.
+   *     This is the single most-easily-missed correctness invariant
+   *     of the resume path; see plan M1-U5 advisor note.
+   */
+  resumedAgentMessages?: AgentMessage[];
+  resumedFromStep?: number;
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -585,13 +603,27 @@ export async function runAgentLoop(ctx: AgentLoopContext): Promise<void> {
   // Per turn: assistant(tool_use blocks) + user([tool_result blocks..., text(observation)])
   // The observation is MERGED into the same user message as the prior turn's tool_results
   // to avoid adjacent user messages (which Anthropic rejects with 400).
-  const history: AgentMessage[] = [
-    {
-      role: "system",
-      content: buildAgentSystemPrompt(task, keyboardSimEnabledAtStart, /* hasMetaTools */ true),
-    },
-    { role: "user", content: task },
-  ];
+  //
+  // M1-U5 — resume path: when `resumedAgentMessages` is provided, use
+  // it directly instead of seeding fresh. structuredClone defends
+  // against subsequent in-place mutations of the input (the caller
+  // owns it but we want to be defensive). See `isResumedFirstIteration`
+  // below for the related observation-merge skip.
+  const history: AgentMessage[] = ctx.resumedAgentMessages
+    ? structuredClone(ctx.resumedAgentMessages)
+    : [
+        {
+          role: "system",
+          content: buildAgentSystemPrompt(task, keyboardSimEnabledAtStart, /* hasMetaTools */ true),
+        },
+        { role: "user", content: task },
+      ];
+
+  // M1-U5 — flag that the first iteration of the loop should skip the
+  // observation merge. The prior step's snapshot already contains an
+  // observation in the trailing user message; merging again would
+  // produce a duplicate observation and confuse the LLM.
+  let isResumedFirstIteration = !!ctx.resumedAgentMessages;
 
   // First-attach disclosure — true until the first keyboard-tool confirm
   // has been shown. After that, subsequent confirms in the same task
@@ -612,7 +644,11 @@ export async function runAgentLoop(ctx: AgentLoopContext): Promise<void> {
   const CONFIRM_REJECT_THRESHOLD = 3;
 
   try {
-    for (let stepIndex = 1; stepIndex <= MAX_STEPS; stepIndex++) {
+    // M1-U5 — resume path starts the counter at the next step beyond
+    // what was persisted. The MAX_STEPS bound still applies as the
+    // absolute task ceiling; resume does not reset it.
+    const startStepIndex = (ctx.resumedFromStep ?? 0) + 1;
+    for (let stepIndex = startStepIndex; stepIndex <= MAX_STEPS; stepIndex++) {
       lastStepIndex = stepIndex;
       if (signal.aborted) return; // → finally
 
@@ -680,22 +716,35 @@ export async function runAgentLoop(ctx: AgentLoopContext): Promise<void> {
       //    → convert trailing user to array: user([text(task), obs])
       //  Step N>1: history = [..., assistant(tool_use), user([tool_results...])]
       //    → append obs block: user([tool_results..., obs])
-      const lastMsg = history[history.length - 1];
-      if (lastMsg && lastMsg.role === "user") {
-        if (typeof lastMsg.content === "string") {
-          // Convert string content to block array, prepend task text, append observation
-          const taskText = lastMsg.content;
-          lastMsg.content = [
-            { type: "text", text: taskText },
-            observationBlock,
-          ] as ContentBlock[];
-        } else {
-          // Already an array (tool_result blocks from prior step) — append observation
-          (lastMsg.content as ContentBlock[]).push(observationBlock);
-        }
+      //
+      // M1-U5 RESUME EXCEPTION: when this is the first iteration of a
+      // resumed loop, the trailing user message in `history` is the
+      // persisted snapshot — which already contains an observation
+      // block from the step that completed before SW death. Merging
+      // a fresh observation here would produce *two* observations in
+      // the same user turn, confusing the LLM. So skip the merge for
+      // the first iteration of a resume; subsequent iterations behave
+      // normally.
+      if (isResumedFirstIteration) {
+        isResumedFirstIteration = false;
       } else {
-        // Shouldn't happen in normal flow, but guard just in case
-        history.push({ role: "user", content: [observationBlock] });
+        const lastMsg = history[history.length - 1];
+        if (lastMsg && lastMsg.role === "user") {
+          if (typeof lastMsg.content === "string") {
+            // Convert string content to block array, prepend task text, append observation
+            const taskText = lastMsg.content;
+            lastMsg.content = [
+              { type: "text", text: taskText },
+              observationBlock,
+            ] as ContentBlock[];
+          } else {
+            // Already an array (tool_result blocks from prior step) — append observation
+            (lastMsg.content as ContentBlock[]).push(observationBlock);
+          }
+        } else {
+          // Shouldn't happen in normal flow, but guard just in case
+          history.push({ role: "user", content: [observationBlock] });
+        }
       }
 
       // Apply sliding window
