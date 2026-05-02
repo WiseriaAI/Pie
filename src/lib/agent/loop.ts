@@ -11,7 +11,7 @@ import {
 import { previewMetaSkillCall } from "./tools/skill-meta";
 import type { Tool, PreFetchedTabContent } from "./types";
 import { classifyRisk, type RiskClassifyContext } from "./risk";
-import { TAB_TOOL_NAMES } from "./tool-names";
+import { TAB_TOOL_NAMES, getToolClass } from "./tool-names";
 import { escapeUntrustedWrappers } from "./untrusted-wrappers";
 import {
   extractPageContentHardened,
@@ -517,6 +517,52 @@ export function buildSessionAgentTombstone(): SessionAgentState {
     stepIndex: 0,
     skillExecutionScopeStack: [],
   };
+}
+
+/**
+ * M3-U4 — pure helper: collect tab ids that this tool call would write
+ * to AND that are pinned by another active session. Returns an empty
+ * array when the tool is read-class, has no conflicts, or no other
+ * session is pinned.
+ *
+ * Called from the loop dispatch path between tool resolution and
+ * tool.handler invocation. Pure so it can be unit-tested without
+ * spinning up the whole loop.
+ *
+ * `pinnedTabId` is the calling session's pin (= ctx.tabId at handler
+ * time). For Phase 2 / keyboard tools the implicit target is this id;
+ * for Phase 3 tab tools the target is in args. For non-tab write tools
+ * we fold pinnedTabId into the conflict check because the cross-session
+ * registry excludes the calling session, so a hit against pinnedTabId
+ * means another session has independently pinned the same tab.
+ */
+export function collectCrossSessionConflicts(
+  toolName: string,
+  args: Record<string, unknown>,
+  pinnedTabId: number,
+  crossSessionPinnedTabIds: ReadonlySet<number> | undefined,
+): number[] {
+  if (!crossSessionPinnedTabIds || crossSessionPinnedTabIds.size === 0) {
+    return [];
+  }
+  if (getToolClass(toolName) !== "write") return [];
+
+  const conflicts: number[] = [];
+  if (Array.isArray(args.tabIds)) {
+    for (const v of args.tabIds) {
+      if (typeof v === "number" && crossSessionPinnedTabIds.has(v)) {
+        conflicts.push(v);
+      }
+    }
+  }
+  if (typeof args.tabId === "number" && crossSessionPinnedTabIds.has(args.tabId)) {
+    conflicts.push(args.tabId);
+  }
+  const isTabToolName = (TAB_TOOL_NAMES as readonly string[]).includes(toolName);
+  if (!isTabToolName && crossSessionPinnedTabIds.has(pinnedTabId)) {
+    conflicts.push(pinnedTabId);
+  }
+  return Array.from(new Set(conflicts));
 }
 
 /**
@@ -1057,6 +1103,53 @@ export async function runAgentLoop(ctx: AgentLoopContext): Promise<void> {
             });
             continue;
           }
+        }
+
+        // M3-U4 — R7 lock: cross-session pinned-tab conflict guard.
+        //
+        // For write-class tools we collect the tab ids the call would
+        // affect (args.tabIds / args.tabId for tab tools; ctx.tabId
+        // (= pinnedTabId) for Phase 2 DOM + keyboard tools — those
+        // operate on the calling session's pin) and reject if any of
+        // them is in `crossSessionPinnedTabIds` (= tabs pinned by
+        // OTHER active sessions, computed at chat-start by the SW
+        // dispatcher via getCrossSessionPinnedTabIds — which excludes
+        // the calling session's own pin).
+        //
+        // Read-class tools are not gated: the user has already
+        // informed-approved cross-tab read exposure at the confirm
+        // card (P3-S / P3-T), and read concurrency does not corrupt
+        // page state (K2 read/write split).
+        //
+        // Rejection emits an observation (so the LLM sees it and can
+        // re-plan), an agent-step (so the user sees what was blocked),
+        // and continues to the next tool call — does NOT terminate
+        // the task. This matches the partial-completion semantic the
+        // tab tools already use for stale targets.
+        const r7Conflicts = collectCrossSessionConflicts(
+          tc.name,
+          args,
+          pinnedTabId,
+          ctx.crossSessionPinnedTabIds,
+        );
+        if (r7Conflicts.length > 0) {
+          const lockMsg = `Tab(s) ${r7Conflicts.join(", ")} are pinned by another active session (R7 lock); refusing write. Ask the user to close the other session or wait for it to finish.`;
+          toolResultBlocks.push({
+            type: "tool_result",
+            toolUseId: tc.id,
+            content: lockMsg,
+            isError: true,
+          });
+          emitStep({
+            type: "agent-step",
+            stepIndex,
+            tool: tc.name,
+            args: redactArgsForPanel(tc.name, tc.args),
+            status: "error",
+            observation: lockMsg,
+            skillAuthor: skillAuthorForStep,
+          });
+          continue;
         }
 
         // Resolve element for confirmation / display

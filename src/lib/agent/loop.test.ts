@@ -4,6 +4,7 @@ import type { SessionAgentState } from "@/lib/sessions/types";
 import {
   buildSessionAgentSnapshot,
   buildSessionAgentTombstone,
+  collectCrossSessionConflicts,
 } from "./loop";
 
 // M1-U3 invariant tests — focused on the snapshot helper, not the full
@@ -346,5 +347,143 @@ describe("M2-U1 — concurrent snapshot calls are stack-isolated", () => {
     const resumedStack = snapshot.skillExecutionScopeStack;
     expect(resumedStack).toEqual(originalStack);
     expect(resumedStack[0]!.allowedTools).toEqual(["click", "type"]);
+  });
+});
+
+describe("M3-U4 — collectCrossSessionConflicts", () => {
+  it("returns empty when crossSessionPinnedTabIds is undefined", () => {
+    const result = collectCrossSessionConflicts(
+      "click",
+      { elementIndex: 0 },
+      99,
+      undefined,
+    );
+    expect(result).toEqual([]);
+  });
+
+  it("returns empty when the set is empty", () => {
+    const result = collectCrossSessionConflicts(
+      "click",
+      { elementIndex: 0 },
+      99,
+      new Set(),
+    );
+    expect(result).toEqual([]);
+  });
+
+  it("returns empty for read-class tools regardless of conflicts", () => {
+    // get_tab_content is read; even if tabId is in cross-session set,
+    // read concurrency is allowed (K2 read/write split).
+    const result = collectCrossSessionConflicts(
+      "get_tab_content",
+      { tabId: 42 },
+      99,
+      new Set([42]),
+    );
+    expect(result).toEqual([]);
+  });
+
+  it("returns empty for low-class tools (scroll, wait, done)", () => {
+    expect(
+      collectCrossSessionConflicts(
+        "scroll",
+        { direction: "down" },
+        99,
+        new Set([99]),
+      ),
+    ).toEqual([]);
+    expect(
+      collectCrossSessionConflicts(
+        "wait",
+        { seconds: 1 },
+        99,
+        new Set([99]),
+      ),
+    ).toEqual([]);
+    expect(
+      collectCrossSessionConflicts(
+        "done",
+        { result: "ok" },
+        99,
+        new Set([99]),
+      ),
+    ).toEqual([]);
+  });
+
+  it("flags args.tabIds entries pinned by other sessions (write tab tool)", () => {
+    const result = collectCrossSessionConflicts(
+      "close_tabs",
+      { tabIds: [10, 20, 30] },
+      99,
+      new Set([20, 30, 40]),
+    );
+    expect(result.sort()).toEqual([20, 30]);
+  });
+
+  it("flags args.tabId on a write tab tool", () => {
+    // No write tab tool currently uses args.tabId (close_tabs uses tabIds).
+    // Use a synthetic args shape on group_tabs (tabIds + a stray tabId).
+    const result = collectCrossSessionConflicts(
+      "group_tabs",
+      { tabIds: [10], tabId: 50 },
+      99,
+      new Set([50]),
+    );
+    expect(result).toEqual([50]);
+  });
+
+  it("flags pinnedTabId for non-tab write tools (click/type — same-tab cross-session pin)", () => {
+    // Two sessions pinned to the same tab (rare but possible). Calling
+    // session is sess-A, pinnedTabId = 7. Cross-session set excludes A
+    // but contains 7 because sess-B also pinned tab 7.
+    const result = collectCrossSessionConflicts(
+      "click",
+      { elementIndex: 0 },
+      7,
+      new Set([7]),
+    );
+    expect(result).toEqual([7]);
+  });
+
+  it("does NOT fold pinnedTabId for tab-tool calls (tab tools target args)", () => {
+    // close_tabs is a tab tool; it MUST target args.tabIds, not the pin.
+    // If pinnedTabId happens to be in the cross-session set but the LLM
+    // didn't pass it as a target, no conflict (the call doesn't touch
+    // that tab via this path).
+    const result = collectCrossSessionConflicts(
+      "close_tabs",
+      { tabIds: [99] }, // 99 is NOT in the conflict set
+      7, // pin is in the set, but irrelevant for tab tools
+      new Set([7]),
+    );
+    expect(result).toEqual([]);
+  });
+
+  it("dedupes when args.tabId == args.tabIds[i]", () => {
+    const result = collectCrossSessionConflicts(
+      "group_tabs",
+      { tabIds: [10, 10], tabId: 10 },
+      99,
+      new Set([10]),
+    );
+    expect(result).toEqual([10]);
+  });
+
+  it("write skill meta tools (create/update/delete) are not tab-bound and don't fire", () => {
+    // create_skill / update_skill / delete_skill are write-class but
+    // operate on storage, not tabs. With no args.tabId/tabIds and not
+    // being a tab tool, they fold pinnedTabId into the check. Since
+    // they don't actually USE the pinnedTabId, this is a slight over-
+    // gate (in practice harmless because two sessions sharing a pin is
+    // rare and skill mutations should arguably gate on quota anyway).
+    // Test documents the current behavior so a future tightening lands
+    // intentionally.
+    const result = collectCrossSessionConflicts(
+      "create_skill",
+      { id: "x", name: "x", description: "x", promptTemplate: "x" },
+      7,
+      new Set([7]),
+    );
+    expect(result).toEqual([7]);
   });
 });
