@@ -103,9 +103,10 @@ export interface UseSession {
   setActive: (id: string) => Promise<string | null>;
   /**
    * M2-U2 — create a new session and make it active. Returns the new
-   * session's id.
+   * session's id, or null if refused because streaming is in progress
+   * (P0-1 guard — mirror of setActive).
    */
-  createAndActivate: () => Promise<string>;
+  createAndActivate: () => Promise<string | null>;
 }
 
 export function useSession(): UseSession {
@@ -636,10 +637,26 @@ export function useSession(): UseSession {
 
   /**
    * M2-U2 — create a new session and make it active. Returns the new
-   * session's id. Does not open a new port (M3-U1 concern); reuses the
-   * existing port with a new panel-mounted announce.
+   * session's id, or null if refused (streaming in progress). Does not
+   * open a new port (M3-U1 concern); reuses the existing port with a
+   * new panel-mounted announce.
+   *
+   * P0-1 guard: refuses when streaming=true (mirror of setActive guard).
+   * Without this, messages from a still-running agent loop would route
+   * into the new session's UI (K-1 informed-approval bypass).
    */
-  const createAndActivate = useCallback(async (): Promise<string> => {
+  const createAndActivate = useCallback(async (): Promise<string | null> => {
+    // P0-1 — refuse when a stream is in flight (no per-session port yet;
+    // M3-U1 will allow concurrent sessions with per-session ports).
+    if (streaming) {
+      setToast({ level: "warn", text: "Stop the current task before starting a new session." });
+      return null;
+    }
+    // Defense-in-depth: reset per-stream scratch state. If a prior stream
+    // ended abnormally without flipping these, we start clean.
+    accumulatedRef.current = "";
+    streamFinishedRef.current = true;
+
     const meta = await createSession();
     // Update ref immediately (same reasoning as setActive)
     sessionIdRef.current = meta.id;

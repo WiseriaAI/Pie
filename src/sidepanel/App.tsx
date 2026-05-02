@@ -123,7 +123,8 @@ export default function App() {
     // dispatching the slash command so the user doesn't type into a dead session.
     const activeEntry = sessions.find((s) => s.id === session.sessionId);
     if (activeEntry?.status === "archived") {
-      await session.createAndActivate();
+      const newId = await session.createAndActivate();
+      if (newId == null) return; // streaming guard blocked creation
     }
 
     setChatPrefill(prefill);
@@ -149,10 +150,11 @@ export default function App() {
   }
 
   // ── New session ───────────────────────────────────────────────────────────
-  async function handleNewSession() {
-    await session.createAndActivate();
-    // Don't open the drawer — just switch active session
-  }
+  const handleNewSession = useCallback(async () => {
+    const newId = await session.createAndActivate();
+    if (newId == null) return; // refused due to streaming — toast already emitted
+    setDrawerOpen(false);
+  }, [session]);
 
   // ── Session title for top bar ─────────────────────────────────────────────
   const activeSessionEntry = sessions.find((s) => s.id === session.sessionId);
