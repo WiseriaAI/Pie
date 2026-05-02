@@ -17,11 +17,13 @@ import {
 interface DebuggerMockState {
   attached: Set<number>;
   __nextAttachError: string | null;
+  __detachInFlight: Set<number>;
 }
 
 const debuggerState: DebuggerMockState = {
   attached: new Set(),
   __nextAttachError: null,
+  __detachInFlight: new Set(),
 };
 
 const debuggerMock = {
@@ -49,13 +51,43 @@ const debuggerMock = {
         ).chrome.runtime.lastError;
         return;
       }
+      // M3-U3 ADV-9 simulation — when a chromeDetach is in flight on the
+      // same tabId, a concurrent chromeAttach hits the real Chrome failure
+      // mode "Another debugger is already attached". The queueTabOp lock
+      // is supposed to serialize these so this code path is unreachable
+      // under M3; without the lock it fires and the test's race-handover
+      // case rejects loudly.
+      if (debuggerState.__detachInFlight.has(target.tabId)) {
+        (
+          globalThis as unknown as {
+            chrome: { runtime: { lastError?: { message: string } } };
+          }
+        ).chrome.runtime.lastError = {
+          message: "Another debugger is already attached to this tab.",
+        };
+        cb();
+        delete (
+          globalThis as unknown as {
+            chrome: { runtime: { lastError?: { message: string } } };
+          }
+        ).chrome.runtime.lastError;
+        return;
+      }
       debuggerState.attached.add(target.tabId);
       cb();
     },
   ),
   detach: vi.fn((target: { tabId: number }, cb: () => void) => {
+    // Mark the tab as "detach-in-flight" until the next macrotask so any
+    // concurrent attach that races us sees the busy state. Mirrors the
+    // real Chrome behavior where chrome.debugger.detach is async at the
+    // protocol layer.
+    debuggerState.__detachInFlight.add(target.tabId);
     debuggerState.attached.delete(target.tabId);
-    cb();
+    setTimeout(() => {
+      debuggerState.__detachInFlight.delete(target.tabId);
+      cb();
+    }, 0);
   }),
   sendCommand: vi.fn(
     (
@@ -73,6 +105,7 @@ const debuggerMock = {
 beforeEach(() => {
   debuggerState.attached.clear();
   debuggerState.__nextAttachError = null;
+  debuggerState.__detachInFlight.clear();
   debuggerMock.attach.mockClear();
   debuggerMock.detach.mockClear();
   debuggerMock.sendCommand.mockClear();
@@ -171,10 +204,15 @@ describe("cdp-session — M3-U3 ownerToken (sessionId, tabId)", () => {
     await b.detach();
   });
 
-  it("attach handover race — sequential acquire-after-detach on same tab works", async () => {
+  it("attach handover race — sequential acquire-after-detach on same tab works (ADV-9 with realistic mock)", async () => {
     // ADV-9: session A finally-detach interleaves with session B acquire on
     // the same tab. With the M3-U3 per-tabId attach lock, B's chromeAttach
-    // always sees a clean Chrome state.
+    // is queued behind A's chromeDetach so it sees a clean Chrome state.
+    //
+    // The mock now simulates the real Chrome failure: while a detach is
+    // in flight on tabId X, any concurrent attach on the same X rejects
+    // with "Another debugger is already attached." If the queueTabOp
+    // serialization were removed, B's acquire would hit that rejection.
     const ac = new AbortController();
     const a = await acquireCdpSession(12, {
       signal: ac.signal,
@@ -192,5 +230,54 @@ describe("cdp-session — M3-U3 ownerToken (sessionId, tabId)", () => {
     expect(b.isAlive).toBe(true);
     await detachPromise;
     await b.detach();
+  });
+
+  it("queueTabOp isolates per-tabId chains — slow attach on tab X does not block tab Y", async () => {
+    // Reliability + adversarial review concern: if queueTabOp keyed on
+    // anything other than tabId, a hung attach on tab X would starve
+    // tab Y. Test isolates that contract by acquiring on Y while X's
+    // chain is in flight.
+    const ac = new AbortController();
+    // Trigger an in-flight detach on tab 13 by acquiring then detaching;
+    // we don't await, so for the next macrotask tab 13 is "detach in flight".
+    const a = await acquireCdpSession(13, {
+      signal: ac.signal,
+      ownerToken: { sessionId: "sess-A", tabId: 13 },
+      onExternalDetach: () => {},
+    });
+    const detachPromise = a.detach();
+    // Tab 14 acquire should NOT be blocked by tab 13's chain.
+    const b = await acquireCdpSession(14, {
+      signal: ac.signal,
+      ownerToken: { sessionId: "sess-A", tabId: 14 },
+      onExternalDetach: () => {},
+    });
+    expect(b.tabId).toBe(14);
+    expect(b.isAlive).toBe(true);
+    await detachPromise;
+    await b.detach();
+  });
+
+  it("queueTabOp tolerates a failed prior attach — next acquire on same tab still runs", async () => {
+    // queueTabOp uses `prev.then(op, op)` so a failed prior op does not
+    // deadlock the chain. Force the first attach to fail; verify the
+    // second acquire on the same tab proceeds.
+    debuggerState.__nextAttachError = "synthetic attach failure for test";
+    const ac = new AbortController();
+    await expect(
+      acquireCdpSession(15, {
+        signal: ac.signal,
+        ownerToken: { sessionId: "sess-A", tabId: 15 },
+        onExternalDetach: () => {},
+      }),
+    ).rejects.toThrow();
+    // Next acquire on same tab — should proceed cleanly.
+    const ok = await acquireCdpSession(15, {
+      signal: ac.signal,
+      ownerToken: { sessionId: "sess-A", tabId: 15 },
+      onExternalDetach: () => {},
+    });
+    expect(ok.isAlive).toBe(true);
+    await ok.detach();
   });
 });

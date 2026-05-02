@@ -124,30 +124,18 @@ export const TOOL_CLASSES: Readonly<Record<string, ToolClass>> = {
 // declared. If a future PR adds a tool to KNOWN_BUILT_IN_TOOL_NAMES or
 // KNOWN_KEYBOARD_TOOL_NAMES without classifying it here, module load
 // throws with a pointer to this section so the omission can never ship.
-const _ALL_KNOWN_TOOL_NAMES = [
+//
+// Derived directly from the canonical constants (no hand-maintained
+// duplicate list). Adding a tool name to KNOWN_*_TOOL_NAMES without a
+// matching TOOL_CLASSES entry trips the throw; adding it to TOOL_CLASSES
+// without registering the name is also caught (unknown classified
+// names would still pass this check, but tooling — agent loop dispatch
+// — would never call getToolClass with a non-registered name, so the
+// over-classification path is harmless).
+for (const name of [
+  ...KNOWN_BUILT_IN_TOOL_NAMES,
   ...KNOWN_KEYBOARD_TOOL_NAMES,
-  // Inline KNOWN_BUILT_IN_TOOL_NAMES contents to break a hypothetical
-  // future ordering dependency where someone re-orders these consts.
-  "click",
-  "type",
-  "scroll",
-  "select",
-  "wait",
-  "done",
-  "fail",
-  "create_skill",
-  "update_skill",
-  "delete_skill",
-  "list_skills",
-  "list_tabs",
-  "get_tab_content",
-  "close_tabs",
-  "activate_tab",
-  "group_tabs",
-  "ungroup_tabs",
-  "move_tabs",
-];
-for (const name of _ALL_KNOWN_TOOL_NAMES) {
+]) {
   if (!(name in TOOL_CLASSES)) {
     throw new Error(
       `[M3-U4] tool "${name}" is in KNOWN_*_TOOL_NAMES but not classified in ` +

@@ -55,14 +55,38 @@ import { deriveTitleFromMessages } from "@/lib/sessions/title";
 // The DisplayMessage type satisfies TitleableMessage (has role + content fields).
 
 /**
+ * Schemes the agent loop refuses to operate on (mirrors `isRestrictedUrl`
+ * in lib/agent/loop.ts). Kept inline here to avoid a panel→agent-runtime
+ * import; if these two lists ever diverge the loop will hard-stop the
+ * task on iteration 1 with "restricted URL" — but the panel UI would
+ * have shown the session as pinnable, which is confusing. Easier to
+ * filter at capture time so a restricted-URL session never gets a pin.
+ */
+const RESTRICTED_PIN_PREFIXES = [
+  "chrome://",
+  "chrome-extension://",
+  "about:",
+  "edge://",
+  "file://",
+  "data:",
+  "javascript:",
+  "blob:",
+];
+
+/**
  * M3-U2 — capture the user's currently-active tab + its origin so a new
  * session can anchor to it at creation time. Returns null when the
  * active tab can't be resolved (no window focused, restricted URL, etc.) —
- * the loop's first-iteration origin check handles that case as today.
+ * the loop's first-iteration origin check would handle a slipped pin
+ * defensively, but filtering here keeps the panel UX honest: a session
+ * that displays as pinned should actually be runnable.
  *
- * Restricted URLs (chrome://, file://, blob:, etc.) parse to a URL whose
- * `origin` is the literal string "null"; treat those as not-pinnable so
- * callers don't persist a pin that can never be resumed cleanly.
+ * Filters two layers:
+ *   1. URL prefix list (chrome://, file://, blob:, etc.) — same as the
+ *      loop's isRestrictedUrl. blob:https://example.com/abc parses to a
+ *      non-"null" origin, so the prefix check (not origin equality) is
+ *      what stops the pin from sneaking through.
+ *   2. URL.origin === "null" — opaque-origin schemes the URL spec gives up on.
  */
 async function captureActivePinned(): Promise<
   { pinnedTabId: number; pinnedOrigin: string } | null
@@ -70,6 +94,7 @@ async function captureActivePinned(): Promise<
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     if (!tab?.id || !tab.url) return null;
+    if (RESTRICTED_PIN_PREFIXES.some((p) => tab.url!.startsWith(p))) return null;
     const origin = new URL(tab.url).origin;
     if (!origin || origin === "null") return null;
     return { pinnedTabId: tab.id, pinnedOrigin: origin };
@@ -496,6 +521,11 @@ export function useSession(): UseSession {
           // missing a pin, so resume / chat-start can anchor cleanly.
           if (meta && (meta.pinnedTabId === undefined || !meta.pinnedOrigin)) {
             const pinned = await captureActivePinned();
+            // Re-check `cancelled` after the captureActivePinned await —
+            // if the panel unmounted during the chrome.tabs.query
+            // roundtrip, drop the migration write rather than persisting
+            // a pin onto a session the user is no longer viewing.
+            if (cancelled) return;
             if (pinned) {
               await setSessionMeta({
                 ...meta,
@@ -802,6 +832,7 @@ export function useSession(): UseSession {
     // Captured once per session — re-activation never overwrites an
     // existing pin (the user's choice survives later tab switches).
     let metaForActivate = meta;
+    let didMigrate = false;
     if (meta.pinnedTabId === undefined || !meta.pinnedOrigin) {
       const pinned = await captureActivePinned();
       if (pinned) {
@@ -813,13 +844,17 @@ export function useSession(): UseSession {
         };
         await setSessionMeta(patched);
         metaForActivate = patched;
+        didMigrate = true;
       }
     }
 
     // Bump lastAccessedAt in storage (M2-U1 three-trigger wiring).
-    // No-op if the legacy-pin migration above already wrote a fresh
-    // lastAccessedAt; updateLastAccessed re-reads + re-writes anyway.
-    await updateLastAccessed(id);
+    // Skip when the legacy-pin migration above already wrote a fresh
+    // lastAccessedAt — otherwise this would issue a redundant second
+    // setSessionMeta with another fresh timestamp.
+    if (!didMigrate) {
+      await updateLastAccessed(id);
+    }
 
     // M3-U1 — swap to the new session's port. Disconnect old (its
     // SW-side abortController fires; in-flight task on that session is

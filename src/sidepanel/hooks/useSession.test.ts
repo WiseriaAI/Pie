@@ -555,6 +555,93 @@ describe("useSession — M3-U2 pinned tab capture", () => {
     expect(meta?.pinnedTabId).toBeUndefined();
     expect(meta?.pinnedOrigin).toBeUndefined();
   });
+
+  it("captureActivePinned returns null for blob: URLs (review fix REL-2)", async () => {
+    // blob:https://example.com/abc parses to a non-"null" origin so the
+    // earlier captureActivePinned would have persisted a pin. The loop's
+    // isRestrictedUrl rejects blob: hard, so every chat-start would emit
+    // 'restricted URL' before the first iteration. Fix: filter at the
+    // panel via the prefix list so the panel and loop agree.
+    chromeMock.tabs.__activeTab = {
+      id: 6,
+      url: "blob:https://example.com/abc-123",
+      active: true,
+      windowId: 1,
+    };
+
+    const { result } = renderHook(() => useSession());
+    await waitFor(() => expect(result.current.ready).toBe(true));
+
+    const meta = await getSessionMeta(result.current.sessionId!);
+    expect(meta?.pinnedTabId).toBeUndefined();
+    expect(meta?.pinnedOrigin).toBeUndefined();
+  });
+
+  it("setActive backfills missing pin on activation (review fix testing-gap)", async () => {
+    // The earlier test 'backfills missing pin when activating a legacy
+    // session' actually only exercised bootstrap. This one exercises
+    // setActive's migration branch by bootstrapping onto session A
+    // (with pin), then switching to session B (no pin) while the
+    // active tab differs.
+    const sessionA = await createSession({
+      pinnedTabId: 1,
+      pinnedOrigin: "https://a.example.com",
+      now: 2000,
+    });
+    const sessionB = await createSession({ now: 1000 }); // no pin
+
+    chromeMock.tabs.__activeTab = {
+      id: 77,
+      url: "https://b.example.com/",
+      active: true,
+      windowId: 1,
+    };
+
+    const { result } = renderHook(() => useSession());
+    await waitFor(() => expect(result.current.ready).toBe(true));
+    expect(result.current.sessionId).toBe(sessionA.id); // most-recent
+
+    await act(async () => {
+      await result.current.setActive(sessionB.id);
+    });
+
+    const after = await getSessionMeta(sessionB.id);
+    expect(after?.pinnedTabId).toBe(77);
+    expect(after?.pinnedOrigin).toBe("https://b.example.com");
+  });
+
+  it("setActive does NOT overwrite an existing pin on activation", async () => {
+    const sessionA = await createSession({
+      pinnedTabId: 1,
+      pinnedOrigin: "https://a.example.com",
+      now: 2000,
+    });
+    const sessionB = await createSession({
+      pinnedTabId: 99,
+      pinnedOrigin: "https://original.example.com",
+      now: 1000,
+    });
+    // User has since switched to a different tab — but B already has a
+    // pin, so setActive must NOT overwrite it.
+    chromeMock.tabs.__activeTab = {
+      id: 88,
+      url: "https://other.example.com/",
+      active: true,
+      windowId: 1,
+    };
+
+    const { result } = renderHook(() => useSession());
+    await waitFor(() => expect(result.current.ready).toBe(true));
+    expect(result.current.sessionId).toBe(sessionA.id);
+
+    await act(async () => {
+      await result.current.setActive(sessionB.id);
+    });
+
+    const after = await getSessionMeta(sessionB.id);
+    expect(after?.pinnedTabId).toBe(99);
+    expect(after?.pinnedOrigin).toBe("https://original.example.com");
+  });
 });
 
 describe("useSession — M3-U1 per-session port routing", () => {

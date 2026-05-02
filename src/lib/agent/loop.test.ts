@@ -432,17 +432,24 @@ describe("M3-U4 — collectCrossSessionConflicts", () => {
     expect(result).toEqual([50]);
   });
 
-  it("flags pinnedTabId for non-tab write tools (click/type — same-tab cross-session pin)", () => {
-    // Two sessions pinned to the same tab (rare but possible). Calling
-    // session is sess-A, pinnedTabId = 7. Cross-session set excludes A
-    // but contains 7 because sess-B also pinned tab 7.
+  it("does NOT fold pinnedTabId for non-tab write tools — shared-pin sessions can still operate", () => {
+    // Adversarial-review fix (shared-pin deadlock): the earlier behavior
+    // folded pinnedTabId into the conflict check for non-tab tools, which
+    // deadlocked two sessions sharing the same pin (every click/type/select
+    // call from EITHER session would be R7-rejected by the OTHER session's
+    // pin appearing in the registry). The fold added no offsetting safety —
+    // the loop's per-iteration origin re-check already protects the calling
+    // session's intent — only false positives. This test locks in the
+    // post-fix behavior: when only the calling session's own pin is in the
+    // cross-session set (because another session pins the same tab),
+    // non-tab write tools are NOT blocked.
     const result = collectCrossSessionConflicts(
       "click",
       { elementIndex: 0 },
       7,
       new Set([7]),
     );
-    expect(result).toEqual([7]);
+    expect(result).toEqual([]);
   });
 
   it("does NOT fold pinnedTabId for tab-tool calls (tab tools target args)", () => {
@@ -469,22 +476,19 @@ describe("M3-U4 — collectCrossSessionConflicts", () => {
     expect(result).toEqual([10]);
   });
 
-  it("write skill meta tools (create/update/delete) are not tab-bound and don't fire", () => {
+  it("write skill meta tools (create/update/delete) are not tab-bound — never blocked by R7", () => {
     // create_skill / update_skill / delete_skill are write-class but
-    // operate on storage, not tabs. With no args.tabId/tabIds and not
-    // being a tab tool, they fold pinnedTabId into the check. Since
-    // they don't actually USE the pinnedTabId, this is a slight over-
-    // gate (in practice harmless because two sessions sharing a pin is
-    // rare and skill mutations should arguably gate on quota anyway).
-    // Test documents the current behavior so a future tightening lands
-    // intentionally.
+    // operate on storage, not tabs. The fix-3 cleanup means non-tab
+    // write tools are no longer over-gated when two sessions share a
+    // pin: skill mutations proceed regardless of which sessions own
+    // which tabs.
     const result = collectCrossSessionConflicts(
       "create_skill",
       { id: "x", name: "x", description: "x", promptTemplate: "x" },
       7,
       new Set([7]),
     );
-    expect(result).toEqual([7]);
+    expect(result).toEqual([]);
   });
 });
 
@@ -530,16 +534,16 @@ describe("M3-U5 — multi-session invariant regression", () => {
     expect(snapA.skillExecutionScopeStack).not.toBe(snapB.skillExecutionScopeStack);
   });
 
-  it("collectCrossSessionConflicts — two simulated sessions with overlapping pin produce independent conflict sets", () => {
-    // Scenario: Session A pinned tab 7, Session B pinned tab 7 too
-    // (both happen to share). On A's dispatch, crossSessionPinnedTabIds
-    // = {7} (because the registry excludes A but contains B). A's click
-    // tool would conflict on its own pin — caught.
-    //
-    // From B's perspective the registry for B's call would be {7}
-    // (excludes B, contains A's pin). B's click ALSO conflicts.
-    // Both flag — neither one runs unobserved. This is exactly the
-    // R7 lock semantic.
+  it("collectCrossSessionConflicts — two simulated sessions with overlapping pin BOTH proceed (deadlock fix)", () => {
+    // Adversarial-review scenario: Session A pinned tab 7, Session B
+    // pinned tab 7 too. On A's dispatch crossSessionPinnedTabIds={7}
+    // (excludes A, contains B); on B's dispatch the same set
+    // (excludes B, contains A). Pre-fix: both sides' click was rejected
+    // → symmetric deadlock. Post-fix: non-tab tools no longer fold
+    // pinnedTabId into the conflict check, so both sessions can run
+    // their own click/type/select against tab 7 without blocking each
+    // other. The per-iteration origin re-check still protects each
+    // session's pinned-origin intent.
     const fromA = collectCrossSessionConflicts(
       "click",
       { elementIndex: 0 },
@@ -552,8 +556,8 @@ describe("M3-U5 — multi-session invariant regression", () => {
       7,
       new Set([7]),
     );
-    expect(fromA).toEqual([7]);
-    expect(fromB).toEqual([7]);
+    expect(fromA).toEqual([]);
+    expect(fromB).toEqual([]);
   });
 
   it("collectCrossSessionConflicts — same-session calls (excluded from registry) do not conflict", () => {

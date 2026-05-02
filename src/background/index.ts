@@ -410,9 +410,21 @@ async function handleResumeRequest(
 ): Promise<void> {
   const meta = await getSessionMeta(sessionId);
   if (!meta || meta.status !== "paused") {
+    // Multi-sidepanel scenario: a sibling sidepanel may have already resumed
+    // this session (status=active or finished), so this resume-task is racy.
+    // Emit chat-error so the panel can reset streaming=true (set synchronously
+    // by useSession.resumeTask before posting). Without this the panel is
+    // stuck spinning forever AND M3 setActive/createAndActivate refuse to
+    // switch sessions while streaming=true — locking the user out of the
+    // multi-session UI until manual close/reopen.
     console.warn(
       `[sw] resume-task ignored — session=${sessionId} not in paused state`,
     );
+    port.postMessage({
+      type: "chat-error",
+      error: "Resume rejected — session is no longer paused (it may have been resumed in another sidepanel).",
+      sessionId,
+    });
     return;
   }
   const agent = await getSessionAgent(sessionId);
@@ -420,6 +432,11 @@ async function handleResumeRequest(
     console.warn(
       `[sw] resume-task ignored — session=${sessionId} has no in-flight agent state`,
     );
+    port.postMessage({
+      type: "chat-error",
+      error: "Resume rejected — no in-flight agent state to resume.",
+      sessionId,
+    });
     return;
   }
 
@@ -560,10 +577,10 @@ async function handleResumeRequest(
   // M3-U2 — same pin injection as chat-start path. checkPinnedDrift
   // already validated the pin against current tab state above; the loop
   // itself will re-check on every iteration.
-  // M3-U4 — cross-session pinned-tab registry, computed at resume time.
-  const pinnedTabId = meta.pinnedTabId;
-  const pinnedOrigin = meta.pinnedOrigin;
-  const crossSessionPinnedTabIds = await getCrossSessionPinnedTabIds(sessionId);
+  const pinned =
+    meta.pinnedTabId !== undefined && meta.pinnedOrigin
+      ? { tabId: meta.pinnedTabId, origin: meta.pinnedOrigin }
+      : undefined;
 
   await runAgentLoop({
     port,
@@ -583,9 +600,9 @@ async function handleResumeRequest(
     // M2-U1: restore the skill-scope stack so R2/R3 enforcement picks
     // up where it left off if the task was paused mid-skill.
     resumedSkillScopeStack: agent.skillExecutionScopeStack,
-    pinnedTabId,
-    pinnedOrigin,
-    crossSessionPinnedTabIds,
+    pinned,
+    // M3-U4 (TOCTOU fix) — refresh per dispatch; see chat-start twin.
+    refreshCrossSessionPinnedTabIds: () => getCrossSessionPinnedTabIds(sessionId),
   });
 }
 
@@ -863,12 +880,13 @@ async function handleChatStream(
     // M3-U2 — read the panel-captured pinned tab/origin from meta and
     // inject into the loop context. Legacy sessions without a pin fall
     // through to the loop's active-tab fallback (already handled there).
-    // M3-U4 — compute the cross-session pinned-tab registry once per
-    // chat-start so write tools can refuse cross-session conflicts.
     const sessionMeta = await getSessionMeta(sessionId);
-    const pinnedTabId = sessionMeta?.pinnedTabId;
-    const pinnedOrigin = sessionMeta?.pinnedOrigin;
-    const crossSessionPinnedTabIds = await getCrossSessionPinnedTabIds(sessionId);
+    // M3-U2 — both-or-neither: only construct the pin object when both
+    // fields are present (defends against partially-corrupted meta).
+    const pinned =
+      sessionMeta?.pinnedTabId !== undefined && sessionMeta.pinnedOrigin
+        ? { tabId: sessionMeta.pinnedTabId, origin: sessionMeta.pinnedOrigin }
+        : undefined;
 
     await runAgentLoop({
       port,
@@ -886,9 +904,11 @@ async function handleChatStream(
       // (see makeStepSnapshotHandler). Errors caught + logged inside
       // runAgentLoop; this wrapper only does the storage calls.
       onStepSnapshot: makeStepSnapshotHandler(sessionId),
-      pinnedTabId,
-      pinnedOrigin,
-      crossSessionPinnedTabIds,
+      pinned,
+      // M3-U4 (TOCTOU fix) — refresh the cross-session pinned-tab
+      // registry per tool dispatch. The frozen snapshot here would miss
+      // sessions created mid-loop.
+      refreshCrossSessionPinnedTabIds: () => getCrossSessionPinnedTabIds(sessionId),
     });
   } catch (e) {
     if (signal.aborted) return;

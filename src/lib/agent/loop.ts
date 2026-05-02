@@ -129,35 +129,46 @@ export interface AgentLoopContext {
   resumedSkillScopeStack?: Array<{ skillId: string; allowedTools: string[] | null }>;
   /**
    * M3-U2 — pre-anchored pinned tab + origin. Captured by the panel at
-   * session creation / activation and stored on the session meta; the SW
-   * dispatcher (`handleChatStream` / `handleResumeRequest`) reads them
-   * and injects them here. When both are present the loop SKIPS the
-   * legacy `chrome.tabs.query({active:true,currentWindow:true})` anchor
-   * step — sessions are pinned to "what the user was looking at when
-   * they created the session", not to "whatever happens to be active
-   * the moment chat-start arrives" (which would race the user's tab
-   * switches and produce surprising cross-origin pins).
+   * session creation / activation and stored on the session meta; the
+   * SW dispatcher (`handleChatStream` / `handleResumeRequest`) reads
+   * the meta fields and constructs this object. When present the loop
+   * SKIPS the legacy `chrome.tabs.query({active:true,currentWindow:true})`
+   * anchor step — sessions are pinned to "what the user was looking at
+   * when they created the session", not to "whatever happens to be
+   * active the moment chat-start arrives" (which would race the user's
+   * tab switches and produce surprising cross-origin pins).
    *
-   * Both undefined OR both set. When undefined (legacy M1 / M2 sessions
-   * whose meta was written before this field existed), the loop falls
-   * back to the legacy active-tab anchor — backward compatible. The
-   * panel's setActive / bootstrap migration backfills missing pins on
-   * the first activation under M3 so the legacy path is rarely hit.
+   * Single object so the both-or-neither contract is enforced at the
+   * type level (the previous design used two independent optionals,
+   * relying on JSDoc + runtime truthiness for what the type system
+   * could express directly).
+   *
+   * Undefined (legacy M1 / M2 sessions whose meta was written before
+   * this field existed): the loop falls back to the active-tab anchor —
+   * backward compatible. The panel's setActive / bootstrap migration
+   * backfills missing pins on the first activation under M3 so the
+   * legacy path is rarely hit.
    */
-  pinnedTabId?: number;
-  pinnedOrigin?: string;
+  pinned?: { tabId: number; origin: string };
   /**
-   * M3-U4 — set of tab ids that are pinned by OTHER active sessions in
-   * the cross-session pinned-tab registry (`session_index` derived).
-   * Computed by the SW dispatcher from listSessionIndex() and passed
-   * verbatim into the tool dispatch ctx so write-class handlers can
-   * refuse to operate on a tab another session owns (R7 lock; K2).
+   * M3-U4 — fetch the current set of tab ids pinned by OTHER active
+   * sessions in the cross-session pinned-tab registry (`session_index`
+   * derived). Called per iteration (NOT per task) so a session created
+   * mid-loop is observed by the R7 lock on the very next dispatch — the
+   * frozen-snapshot design (capture once at chat-start) had a TOCTOU
+   * window where a sibling session that opened mid-task was invisible
+   * to the lock.
    *
-   * undefined means "no other session is pinned" (which is the common
-   * case in single-window single-session use). The set excludes the
-   * caller's own pinnedTabId; check against it directly with `.has(id)`.
+   * Returns an empty set when no other session is pinned (common
+   * single-window case). The set excludes the caller's own pinnedTabId.
+   * Implementation reads session_index — one storage round-trip,
+   * negligible cost vs the LLM round-trip the loop is doing anyway.
+   *
+   * undefined means "no registry plumbed" (test harness, legacy code
+   * paths) — equivalent to a permanently-empty set; the lock simply
+   * doesn't fire.
    */
-  crossSessionPinnedTabIds?: Set<number>;
+  refreshCrossSessionPinnedTabIds?: () => Promise<Set<number>>;
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -522,24 +533,37 @@ export function buildSessionAgentTombstone(): SessionAgentState {
 /**
  * M3-U4 — pure helper: collect tab ids that this tool call would write
  * to AND that are pinned by another active session. Returns an empty
- * array when the tool is read-class, has no conflicts, or no other
- * session is pinned.
+ * array when the tool is read-class, has no explicit cross-session
+ * targets, or no other session is pinned.
  *
  * Called from the loop dispatch path between tool resolution and
  * tool.handler invocation. Pure so it can be unit-tested without
  * spinning up the whole loop.
  *
- * `pinnedTabId` is the calling session's pin (= ctx.tabId at handler
- * time). For Phase 2 / keyboard tools the implicit target is this id;
- * for Phase 3 tab tools the target is in args. For non-tab write tools
- * we fold pinnedTabId into the conflict check because the cross-session
- * registry excludes the calling session, so a hit against pinnedTabId
- * means another session has independently pinned the same tab.
+ * Scope: ONLY explicit args.tabIds / args.tabId targets are checked.
+ * The earlier design folded `pinnedTabId` (= ctx.tabId at handler time,
+ * the calling session's own pin) into the conflict check whenever the
+ * tool wasn't a tab tool — so two sessions that happened to share a
+ * pinned tab would deadlock symmetrically: every click / type / select
+ * / keyboard / skill-meta call from EITHER session would be R7-rejected
+ * because the OTHER session's pin matched their own. That collapsed
+ * the entire M3 multi-session feature into "no operations possible
+ * when sessions share a pin" — a regression with no offsetting safety
+ * benefit, since the per-iteration origin re-check (loop body ~line 705)
+ * already catches the case where the calling session's pin diverges
+ * from the user's intent. Non-tab tools (Phase 2 DOM, keyboard, skill
+ * meta) implicitly target the calling session's own pin, which is
+ * never in the cross-session registry by construction; the fold added
+ * no new safety, only false positives.
+ *
+ * Tab tools (close_tabs / group_tabs / etc.) still check args.tabIds /
+ * args.tabId against the registry — that's the legitimate cross-session
+ * intent the LLM expresses by naming a specific target.
  */
 export function collectCrossSessionConflicts(
   toolName: string,
   args: Record<string, unknown>,
-  pinnedTabId: number,
+  _pinnedTabId: number,
   crossSessionPinnedTabIds: ReadonlySet<number> | undefined,
 ): number[] {
   if (!crossSessionPinnedTabIds || crossSessionPinnedTabIds.size === 0) {
@@ -557,10 +581,6 @@ export function collectCrossSessionConflicts(
   }
   if (typeof args.tabId === "number" && crossSessionPinnedTabIds.has(args.tabId)) {
     conflicts.push(args.tabId);
-  }
-  const isTabToolName = (TAB_TOOL_NAMES as readonly string[]).includes(toolName);
-  if (!isTabToolName && crossSessionPinnedTabIds.has(pinnedTabId)) {
-    conflicts.push(pinnedTabId);
   }
   return Array.from(new Set(conflicts));
 }
@@ -681,9 +701,9 @@ export async function runAgentLoop(ctx: AgentLoopContext): Promise<void> {
   let pinnedTabId: number;
   let pinnedOrigin: string;
 
-  if (ctx.pinnedTabId !== undefined && ctx.pinnedOrigin) {
-    pinnedTabId = ctx.pinnedTabId;
-    pinnedOrigin = ctx.pinnedOrigin;
+  if (ctx.pinned) {
+    pinnedTabId = ctx.pinned.tabId;
+    pinnedOrigin = ctx.pinned.origin;
   } else {
     try {
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -1126,14 +1146,37 @@ export async function runAgentLoop(ctx: AgentLoopContext): Promise<void> {
         // and continues to the next tool call — does NOT terminate
         // the task. This matches the partial-completion semantic the
         // tab tools already use for stale targets.
+        // M3-U4 (TOCTOU fix) — re-read the cross-session registry per
+        // tool dispatch so a sibling session created mid-loop is visible.
+        // One chrome.storage.local.get round-trip, fully amortized by the
+        // surrounding LLM call. Errors degrade to "no conflicts known" so
+        // a transient storage hiccup never falsely blocks a write.
+        let crossSessionPinnedTabIds: Set<number> | undefined;
+        if (ctx.refreshCrossSessionPinnedTabIds) {
+          try {
+            crossSessionPinnedTabIds = await ctx.refreshCrossSessionPinnedTabIds();
+          } catch (e) {
+            console.warn(
+              `[agent] refreshCrossSessionPinnedTabIds failed for session=${ctx.sessionId}; treating as empty:`,
+              e,
+            );
+          }
+        }
         const r7Conflicts = collectCrossSessionConflicts(
           tc.name,
           args,
           pinnedTabId,
-          ctx.crossSessionPinnedTabIds,
+          crossSessionPinnedTabIds,
         );
         if (r7Conflicts.length > 0) {
-          const lockMsg = `Tab(s) ${r7Conflicts.join(", ")} are pinned by another active session (R7 lock); refusing write. Ask the user to close the other session or wait for it to finish.`;
+          // Drop the "or wait for it to finish" suggestion — even with the
+          // per-iteration registry refresh (M3-U4 TOCTOU fix), the LLM has
+          // no autonomous way to know when the other session frees the tab,
+          // and the previous "wait" framing trained agents to retry the
+          // same call against the same tab in a fixed-point loop. Now the
+          // observation has a single deterministic recovery: target a
+          // different tab or stop and explain.
+          const lockMsg = `Tab(s) ${r7Conflicts.join(", ")} are reserved by another active session; this write is refused. Pick a different tab or stop and explain to the user.`;
           toolResultBlocks.push({
             type: "tool_result",
             toolUseId: tc.id,
