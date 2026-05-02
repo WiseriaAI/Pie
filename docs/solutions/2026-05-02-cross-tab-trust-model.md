@@ -84,3 +84,11 @@ This trade-off was accepted by the security-sentinel reviewer (Q10 / SEC-2): the
 ## Predecessor reference
 
 The Phase 2.6 capability-grant invariants — `docs/solutions/2026-05-01-llm-capability-grant-invariants.md` — continue to hold. The R8 trace table in the plan confirms each of P0-A through P1-H is either preserved unchanged (most of them) or touched in a non-regressing way (P1-G now auto-covers `TAB_TOOL_NAMES`).
+
+## Downstream consumers of `escapeUntrustedWrappers`
+
+The shared sanitizer introduced for P3-G / P3-O has gained a third consumer beyond P3 cross-tab tools and the wrapper-tag-escape-attack-families defense in `src/lib/skills/index.ts:91`:
+
+- **Phase 4 / M1 — Session as First-Class Persistent Layer** (`docs/solutions/2026-05-02-session-as-first-class-persistent-layer-m1.md`). M1-U5's R11 "drift card" renders stored task strings, last-known pinned tab title, and origin in a `SessionConfirmRequestMessage` payload after SW restart. All three fields run through `escapeUntrustedWrappers` before persisting + sending so the panel rendering can't be hijacked by content controlled by the page or by the user-typed task. Resume-time replay of stored LLM observations / tab metadata sits on the same trust face as fresh emission, so the same idempotent ASCII-entity defense applies.
+
+Future code paths that replay stored content through the panel UI should add themselves to this list — the helper is the single audit point.
