@@ -491,6 +491,30 @@ describe("getPendingConfirmCount", () => {
     expect(await getPendingConfirmCount()).toBe(0);
   });
 
+  it("P1-10 — drift-card pendingConfirm (kind=pinned-tab-drift) does not count toward flood limit", async () => {
+    // If getPendingConfirmCount counted drift-card confirms, a user who
+    // retried Resume on 6 drifted-paused sessions over time would permanently
+    // DoS every confirm in every session (count always > FLOOD_LIMIT).
+    // Fix (c): only kind='agent-tool' counts.
+    const sessions = await Promise.all([
+      createSession(), createSession(), createSession(),
+      createSession(), createSession(), createSession(),
+    ]);
+    // Write 6 drift-card pendingConfirms (kind='pinned-tab-drift')
+    await Promise.all(
+      sessions.map((s, i) =>
+        setPendingConfirm(s.id, {
+          confirmationId: `drift-${i}`,
+          kind: "pinned-tab-drift",
+          payload: { reason: "tab-closed", originalTask: "test", lastPinnedTabTitle: "", pinnedOrigin: "https://example.com", lastStepIndex: 0 },
+        }),
+      ),
+    );
+    // None of these should count toward the flood limit
+    expect(await getPendingConfirmCount()).toBe(0);
+    expect(await isPendingConfirmFloodLimited()).toBe(false);
+  });
+
   it("returns 0 when sessions exist but none have pendingConfirm", async () => {
     await createSession();
     await createSession();

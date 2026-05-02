@@ -374,7 +374,15 @@ export async function getPendingConfirmCount(): Promise<number> {
     // Key shape: `session_${id}_agent`
     if (!key.startsWith("session_")) continue;
     const agentState = value as SessionAgentState | null | undefined;
-    if (agentState?.pendingConfirm != null) {
+    // P1-10 — only count agent-tool confirms toward the flood limit.
+    // Drift-card pendingConfirm (kind='pinned-tab-drift') is written by
+    // handleResumeRequest and persists as long as a session is paused-with-
+    // drift (status='paused'). Cold-start scrub skips paused sessions, so
+    // after ~6 Resume+drift cycles getPendingConfirmCount would return >5
+    // forever, permanently DoSing every confirm in every session.
+    // Fix (c): filter on kind='agent-tool' — only live agent-tool confirms
+    // should count toward D6 storage pressure / SEC-PLAN-009 flood limit.
+    if (agentState?.pendingConfirm?.kind === "agent-tool") {
       count++;
     }
   }
