@@ -77,16 +77,64 @@ const local = {
   },
 };
 
+// chrome.runtime.connect mock — returns a FakePort whose onMessage /
+// onDisconnect listeners can be triggered by test code via `port.__emit(...)`
+// / `port.__triggerDisconnect()`. Each connect() pushes the new port onto
+// __ports so tests can inspect the most recent one.
+
+type Listener<T> = (value: T) => void;
+
+export interface FakePort {
+  name: string;
+  postMessage: ReturnType<typeof vi.fn>;
+  disconnect: ReturnType<typeof vi.fn>;
+  onMessage: { addListener: (l: Listener<unknown>) => void };
+  onDisconnect: { addListener: (l: Listener<unknown>) => void };
+  /** Test-only: fire all registered onMessage listeners. */
+  __emit: (msg: unknown) => void;
+  /** Test-only: fire all registered onDisconnect listeners. */
+  __triggerDisconnect: () => void;
+}
+
+function createFakePort(name: string): FakePort {
+  const messageListeners: Array<Listener<unknown>> = [];
+  const disconnectListeners: Array<Listener<unknown>> = [];
+
+  return {
+    name,
+    postMessage: vi.fn(),
+    disconnect: vi.fn(),
+    onMessage: {
+      addListener: (l) => messageListeners.push(l),
+    },
+    onDisconnect: {
+      addListener: (l) => disconnectListeners.push(l),
+    },
+    __emit: (msg) => {
+      for (const l of messageListeners) l(msg);
+    },
+    __triggerDisconnect: () => {
+      for (const l of disconnectListeners) l(undefined);
+    },
+  };
+}
+
+const runtime = {
+  __ports: [] as FakePort[],
+  connect: vi.fn((info: { name: string }) => {
+    const port = createFakePort(info.name);
+    runtime.__ports.push(port);
+    return port;
+  }),
+  getPlatformInfo: vi.fn().mockResolvedValue({ os: "mac" }),
+  onStartup: { addListener: vi.fn() },
+  onInstalled: { addListener: vi.fn() },
+  onConnect: { addListener: vi.fn() },
+};
+
 const chromeMock = {
   storage: { local },
-  runtime: {
-    // Stubs for surfaces that storage.ts doesn't touch but other M1+ code might
-    // pull in transitively. Tests that need real behavior should override.
-    getPlatformInfo: vi.fn().mockResolvedValue({ os: "mac" }),
-    onStartup: { addListener: vi.fn() },
-    onInstalled: { addListener: vi.fn() },
-    onConnect: { addListener: vi.fn() },
-  },
+  runtime,
 };
 
 // Install on globalThis so `chrome.storage.local.get(...)` works in src code.
@@ -95,6 +143,8 @@ const chromeMock = {
 
 beforeEach(() => {
   local.__store = {};
+  runtime.__ports = [];
+  runtime.connect.mockClear();
 });
 
 export { chromeMock };

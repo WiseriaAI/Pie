@@ -12,7 +12,10 @@ export default defineConfig({
   },
   test: {
     globals: false,
-    environment: "node",
+    // happy-dom is required for React hook / component tests (M1-U2+).
+    // Pure storage tests (M1-U1) are environment-agnostic and run fine
+    // here too. Cost: ~5ms boot per file vs node.
+    environment: "happy-dom",
     setupFiles: ["./src/test/setup.ts"],
     include: ["src/**/*.test.ts", "src/**/*.test.tsx"],
   },
