@@ -5,6 +5,8 @@ import {
   getSessionAgent,
   getSessionMeta,
   getTotalBytes,
+  getPendingConfirmCount,
+  isPendingConfirmFloodLimited,
   listSessionIndex,
   markFailed,
   markFailedAndScrub,
@@ -21,6 +23,9 @@ import type {
   SessionAgentState,
   SessionMeta,
 } from "./types";
+
+// Re-used dummy PendingConfirmRecord shape for SEC-PLAN-009 tests (defined
+// near usage at the bottom, but TypeScript needs the import at the top).
 
 // `chrome.storage.local` is mocked in src/test/setup.ts. The mock auto-resets
 // between tests via the `beforeEach` defined there; tests that need to seed
@@ -468,5 +473,121 @@ describe("getTotalBytes", () => {
 
   it("is 0 for an empty store", async () => {
     expect(await getTotalBytes()).toBe(0);
+  });
+});
+
+// ── SEC-PLAN-009 flood-limit helpers ──────────────────────────────────────────
+// These tests verify the boundary conditions for the pending-confirm flood
+// protection. The PENDING_CONFIRM_FLOOD_LIMIT is 5.
+
+const MOCK_PENDING: PendingConfirmRecord = {
+  confirmationId: "flood-test",
+  kind: "agent-tool",
+  payload: { tool: "click", args: {}, resolvedElement: { text: "", tag: "" }, riskReason: "x" },
+};
+
+describe("getPendingConfirmCount", () => {
+  it("returns 0 when no sessions exist", async () => {
+    expect(await getPendingConfirmCount()).toBe(0);
+  });
+
+  it("P1-10 — drift-card pendingConfirm (kind=pinned-tab-drift) does not count toward flood limit", async () => {
+    // If getPendingConfirmCount counted drift-card confirms, a user who
+    // retried Resume on 6 drifted-paused sessions over time would permanently
+    // DoS every confirm in every session (count always > FLOOD_LIMIT).
+    // Fix (c): only kind='agent-tool' counts.
+    const sessions = await Promise.all([
+      createSession(), createSession(), createSession(),
+      createSession(), createSession(), createSession(),
+    ]);
+    // Write 6 drift-card pendingConfirms (kind='pinned-tab-drift')
+    await Promise.all(
+      sessions.map((s, i) =>
+        setPendingConfirm(s.id, {
+          confirmationId: `drift-${i}`,
+          kind: "pinned-tab-drift",
+          payload: { reason: "tab-closed", originalTask: "test", lastPinnedTabTitle: "", pinnedOrigin: "https://example.com", lastStepIndex: 0 },
+        }),
+      ),
+    );
+    // None of these should count toward the flood limit
+    expect(await getPendingConfirmCount()).toBe(0);
+    expect(await isPendingConfirmFloodLimited()).toBe(false);
+  });
+
+  it("returns 0 when sessions exist but none have pendingConfirm", async () => {
+    await createSession();
+    await createSession();
+    expect(await getPendingConfirmCount()).toBe(0);
+  });
+
+  it("counts only sessions with pendingConfirm set", async () => {
+    const s1 = await createSession();
+    const s2 = await createSession();
+    const s3 = await createSession();
+    await setPendingConfirm(s1.id, { ...MOCK_PENDING, confirmationId: "c1" });
+    await setPendingConfirm(s3.id, { ...MOCK_PENDING, confirmationId: "c3" });
+    // s2 has no pendingConfirm
+    expect(await getPendingConfirmCount()).toBe(2);
+    void s2; // used
+  });
+
+  it("count decreases after scrubbing a pendingConfirm", async () => {
+    const s1 = await createSession();
+    const s2 = await createSession();
+    await setPendingConfirm(s1.id, { ...MOCK_PENDING, confirmationId: "c1" });
+    await setPendingConfirm(s2.id, { ...MOCK_PENDING, confirmationId: "c2" });
+    expect(await getPendingConfirmCount()).toBe(2);
+    await scrubPendingConfirm(s1.id);
+    expect(await getPendingConfirmCount()).toBe(1);
+  });
+});
+
+describe("isPendingConfirmFloodLimited (boundary = 5)", () => {
+  it("returns false when 0 sessions have pendingConfirm", async () => {
+    await createSession();
+    expect(await isPendingConfirmFloodLimited()).toBe(false);
+  });
+
+  it("returns false when exactly 5 sessions have pendingConfirm", async () => {
+    const sessions = await Promise.all([
+      createSession(), createSession(), createSession(),
+      createSession(), createSession(),
+    ]);
+    await Promise.all(
+      sessions.map((s, i) =>
+        setPendingConfirm(s.id, { ...MOCK_PENDING, confirmationId: `c${i}` }),
+      ),
+    );
+    expect(await isPendingConfirmFloodLimited()).toBe(false);
+  });
+
+  it("returns true when 6 sessions have pendingConfirm", async () => {
+    const sessions = await Promise.all([
+      createSession(), createSession(), createSession(),
+      createSession(), createSession(), createSession(),
+    ]);
+    await Promise.all(
+      sessions.map((s, i) =>
+        setPendingConfirm(s.id, { ...MOCK_PENDING, confirmationId: `c${i}` }),
+      ),
+    );
+    expect(await isPendingConfirmFloodLimited()).toBe(true);
+  });
+
+  it("returns false again after scrubbing one confirm back to 5", async () => {
+    const sessions = await Promise.all([
+      createSession(), createSession(), createSession(),
+      createSession(), createSession(), createSession(),
+    ]);
+    await Promise.all(
+      sessions.map((s, i) =>
+        setPendingConfirm(s.id, { ...MOCK_PENDING, confirmationId: `c${i}` }),
+      ),
+    );
+    expect(await isPendingConfirmFloodLimited()).toBe(true);
+    // Scrub one session → count drops to 5 → no longer flood-limited
+    await scrubPendingConfirm(sessions[0]!.id);
+    expect(await isPendingConfirmFloodLimited()).toBe(false);
   });
 });

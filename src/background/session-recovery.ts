@@ -118,3 +118,50 @@ export async function detectAndMarkPaused(
 
   return stats;
 }
+
+/**
+ * Bug-fix-E — panel-disconnect recovery (per-port subset of detectAndMarkPaused).
+ *
+ * Walks the supplied session ids (= the inFlightSessionIds set kept inside
+ * the onConnect closure for one sidepanel port) and applies the same
+ * step-1 + step-2 transitions detectAndMarkPaused does on cold-start, but
+ * scoped to ONLY this port's sessions. Multi-sidepanel safety: a sibling
+ * port running its own tasks must not be touched when this port closes.
+ *
+ * Step ordering matches detectAndMarkPaused (SEC-PLAN-002):
+ *   1. pendingConfirm present → markFailedAndScrub (resolver gone with
+ *      the closing port; the request is unhonorable post-disconnect).
+ *   2. else stepIndex > 0 → markPaused (in-flight, user-resumable via R10).
+ *   3. else (tombstone, stepIndex===0) → no-op (task finished cleanly).
+ *
+ * No 30s guard: this is a user-driven event, not an idempotent SW wake-up
+ * trigger; multiple panel close+reopen cycles must always re-mark.
+ *
+ * Errors are caught + logged per-session so a single bad agent record
+ * does not abort the cleanup of remaining sessions.
+ */
+export async function transitionPortInFlightSessionsToPaused(
+  sessionIds: Iterable<string>,
+): Promise<{ paused: number; failed: number }> {
+  const stats = { paused: 0, failed: 0 };
+  for (const sid of sessionIds) {
+    try {
+      const agent = await getSessionAgent(sid);
+      if (!agent) continue;
+      if (agent.pendingConfirm) {
+        const ok = await markFailedAndScrub(sid);
+        if (ok) stats.failed += 1;
+      } else if (agent.stepIndex > 0) {
+        const ok = await markPaused(sid);
+        if (ok) stats.paused += 1;
+      }
+      // stepIndex === 0 → tombstone, task finished cleanly; leave it alone.
+    } catch (e) {
+      console.warn(
+        `[sw] panel-disconnect transition failed for session=${sid}:`,
+        e,
+      );
+    }
+  }
+  return stats;
+}

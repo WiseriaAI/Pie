@@ -11,6 +11,15 @@ import { useSession } from "./useSession";
 // useSession lifecycle is async (it bootstraps a session on mount).
 // `waitFor` lets tests synchronize with the resulting state flips.
 
+// M2-U2 P1-11 — helper to emit a port message with the correct sessionId
+// injected. All SW→panel messages now carry sessionId; the hook filter drops
+// messages whose sessionId doesn't match the active session.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type FakePort = { __emit: (msg: any) => void; [key: string]: unknown };
+function emitWithSession(port: FakePort, msg: Record<string, unknown>, sessionId: string) {
+  port.__emit({ ...msg, sessionId });
+}
+
 describe("useSession — bootstrap", () => {
   it("creates a session when index is empty and starts ready=false", async () => {
     const { result } = renderHook(() => useSession());
@@ -152,8 +161,8 @@ describe("useSession — sendMessage / streaming", () => {
 
     // First sendMessage → finish → second sendMessage on same port.
     act(() => result.current.sendMessage({ content: "first" }));
-    act(() => port.__emit({ type: "chat-chunk", text: "ok" }));
-    act(() => port.__emit({ type: "chat-done" }));
+    act(() => emitWithSession(port, { type: "chat-chunk", text: "ok" }, result.current.sessionId!));
+    act(() => emitWithSession(port, { type: "chat-done" }, result.current.sessionId!));
     await waitFor(() => expect(result.current.streaming).toBe(false));
 
     act(() => result.current.sendMessage({ content: "second" }));
@@ -190,9 +199,10 @@ describe("useSession — sendMessage / streaming", () => {
 
     act(() => result.current.sendMessage({ content: "hi" }));
     const port = chromeMock.runtime.__ports[0]!;
+    const sid = result.current.sessionId!;
 
-    act(() => port.__emit({ type: "chat-chunk", text: "Hel" }));
-    act(() => port.__emit({ type: "chat-chunk", text: "lo!" }));
+    act(() => emitWithSession(port, { type: "chat-chunk", text: "Hel" }, sid));
+    act(() => emitWithSession(port, { type: "chat-chunk", text: "lo!" }, sid));
 
     expect(result.current.streamingText).toBe("Hello!");
     expect(result.current.streaming).toBe(true);
@@ -206,8 +216,9 @@ describe("useSession — persistence boundaries", () => {
 
     act(() => result.current.sendMessage({ content: "ping" }));
     const port = chromeMock.runtime.__ports[0]!;
-    act(() => port.__emit({ type: "chat-chunk", text: "pong" }));
-    act(() => port.__emit({ type: "chat-done" }));
+    const sid = result.current.sessionId!;
+    act(() => emitWithSession(port, { type: "chat-chunk", text: "pong" }, sid));
+    act(() => emitWithSession(port, { type: "chat-done" }, sid));
 
     await waitFor(() => expect(result.current.streaming).toBe(false));
 
@@ -231,8 +242,9 @@ describe("useSession — persistence boundaries", () => {
 
     act(() => result.current.sendMessage({ content: "ping" }));
     const port = chromeMock.runtime.__ports[0]!;
-    act(() => port.__emit({ type: "chat-chunk", text: "partial" }));
-    act(() => port.__emit({ type: "chat-error", error: "rate limited" }));
+    const sid = result.current.sessionId!;
+    act(() => emitWithSession(port, { type: "chat-chunk", text: "partial" }, sid));
+    act(() => emitWithSession(port, { type: "chat-error", error: "rate limited" }, sid));
 
     await waitFor(() => expect(result.current.streaming).toBe(false));
 
@@ -252,13 +264,14 @@ describe("useSession — persistence boundaries", () => {
 
     act(() => result.current.sendMessage({ content: "go" }));
     const port = chromeMock.runtime.__ports[0]!;
+    const sid = result.current.sessionId!;
     act(() =>
-      port.__emit({
+      emitWithSession(port, {
         type: "agent-done-task",
         success: true,
         summary: "Done.",
         stepCount: 3,
-      }),
+      }, sid),
     );
 
     await waitFor(() => expect(result.current.streaming).toBe(false));
@@ -283,7 +296,8 @@ describe("useSession — persistence boundaries", () => {
 
     act(() => result.current.sendMessage({ content: "ping" }));
     const port = chromeMock.runtime.__ports[0]!;
-    act(() => port.__emit({ type: "chat-chunk", text: "halfway" }));
+    const sid = result.current.sessionId!;
+    act(() => emitWithSession(port, { type: "chat-chunk", text: "halfway" }, sid));
     act(() => port.__triggerDisconnect());
 
     await waitFor(() => expect(result.current.streaming).toBe(false));
@@ -302,8 +316,9 @@ describe("useSession — persistence boundaries", () => {
 
     act(() => result.current.sendMessage({ content: "ping" }));
     const port = chromeMock.runtime.__ports[0]!;
-    act(() => port.__emit({ type: "chat-chunk", text: "Hel" }));
-    act(() => port.__emit({ type: "chat-chunk", text: "lo" }));
+    const sid = result.current.sessionId!;
+    act(() => emitWithSession(port, { type: "chat-chunk", text: "Hel" }, sid));
+    act(() => emitWithSession(port, { type: "chat-chunk", text: "lo" }, sid));
 
     // Storage is still at the seed state — sendMessage does not persist
     // mid-flow, and chat-chunk events don't either. Only done boundaries
@@ -328,8 +343,9 @@ describe("useSession — clearMessages", () => {
     // Seed messages via a chat-done flow.
     act(() => result.current.sendMessage({ content: "ping" }));
     const port = chromeMock.runtime.__ports[0]!;
-    act(() => port.__emit({ type: "chat-chunk", text: "pong" }));
-    act(() => port.__emit({ type: "chat-done" }));
+    const sid = result.current.sessionId!;
+    act(() => emitWithSession(port, { type: "chat-chunk", text: "pong" }, sid));
+    act(() => emitWithSession(port, { type: "chat-done" }, sid));
     await waitFor(() => expect(result.current.streaming).toBe(false));
 
     expect(result.current.messages).toHaveLength(2);
@@ -357,14 +373,14 @@ describe("useSession — R4 confirm card recovery (M1-U4)", () => {
     // R4 use-case is "user reopened the side panel and immediately
     // sees the pending card".
     act(() =>
-      port.__emit({
+      emitWithSession(port, {
         type: "agent-confirm-request",
         confirmationId: "c1",
         tool: "click",
         args: { elementIndex: 7 },
         resolvedElement: { text: "Submit", tag: "button" },
         riskReason: "submit button",
-      }),
+      }, result.current.sessionId!),
     );
 
     expect(result.current.messages).toEqual([
@@ -382,6 +398,7 @@ describe("useSession — R4 confirm card recovery (M1-U4)", () => {
     await waitFor(() => expect(result.current.ready).toBe(true));
 
     const port = chromeMock.runtime.__ports[0]!;
+    const sid = result.current.sessionId!;
     const payload = {
       type: "agent-confirm-request" as const,
       confirmationId: "c1",
@@ -389,6 +406,7 @@ describe("useSession — R4 confirm card recovery (M1-U4)", () => {
       args: {},
       resolvedElement: { text: "Submit", tag: "button" },
       riskReason: "submit button",
+      sessionId: sid,
     };
 
     // First emit — message added.
@@ -410,16 +428,17 @@ describe("useSession — resolveConfirm", () => {
 
     act(() => result.current.sendMessage({ content: "do something risky" }));
     const port = chromeMock.runtime.__ports[0]!;
+    const sid = result.current.sessionId!;
 
     act(() =>
-      port.__emit({
+      emitWithSession(port, {
         type: "agent-confirm-request",
         confirmationId: "c1",
         tool: "click",
         args: {},
         resolvedElement: { text: "Submit", tag: "button" },
         riskReason: "submit button",
-      }),
+      }, sid),
     );
 
     expect(result.current.messages.at(-1)).toMatchObject({
@@ -430,10 +449,12 @@ describe("useSession — resolveConfirm", () => {
 
     act(() => result.current.resolveConfirm("c1", true));
 
+    // M2-U2 P1-4 — resolveConfirm now includes sessionId in the response.
     expect(port.postMessage).toHaveBeenCalledWith({
       type: "agent-confirm-response",
       confirmationId: "c1",
       approved: true,
+      sessionId: sid,
     });
     expect(result.current.messages.at(-1)).toMatchObject({
       role: "agent-confirm",

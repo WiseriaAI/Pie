@@ -8,7 +8,10 @@ import {
   setSessionAgent,
   setSessionMeta,
 } from "@/lib/sessions/storage";
-import { detectAndMarkPaused } from "./session-recovery";
+import {
+  detectAndMarkPaused,
+  transitionPortInFlightSessionsToPaused,
+} from "./session-recovery";
 
 // detectAndMarkPaused is the SW-side cold-start recovery routine.
 // Its three-step ordering (markFailed-then-scrub for sessions with
@@ -176,5 +179,113 @@ describe("detectAndMarkPaused — guard storage", () => {
     await detectAndMarkPaused({ now: 12345, skipGuard: true });
     const guard = chromeMock.storage.local.__store.recovery_guard;
     expect(guard).toBe(12345);
+  });
+});
+
+// ── Bug-fix-E: per-port panel-disconnect transition ───────────────────────────
+//
+// The on-disconnect path uses a per-port set of in-flight session ids
+// (NOT a global scan) so a sibling sidepanel's running tasks are unaffected
+// when this port closes. transitionPortInFlightSessionsToPaused mirrors
+// detectAndMarkPaused's step-1 + step-2 transitions but scoped to the
+// supplied id list.
+
+describe("transitionPortInFlightSessionsToPaused — per-port subset", () => {
+  it("marks an in-flight session paused (stepIndex>0, no pendingConfirm)", async () => {
+    const meta = await createSession();
+    await setSessionAgent(meta.id, {
+      agentMessages: [{ role: "user", content: "task" }],
+      stepIndex: 4,
+      skillExecutionScopeStack: [],
+    });
+
+    const stats = await transitionPortInFlightSessionsToPaused([meta.id]);
+
+    expect(stats.paused).toBe(1);
+    expect(stats.failed).toBe(0);
+    expect((await getSessionMeta(meta.id))!.status).toBe("paused");
+  });
+
+  it("marks a session with pendingConfirm failed + scrubs the record", async () => {
+    const meta = await createSession();
+    await setSessionAgent(meta.id, {
+      agentMessages: [{ role: "user", content: "task" }],
+      stepIndex: 2,
+      skillExecutionScopeStack: [],
+    });
+    await setPendingConfirm(meta.id, samplePending);
+
+    const stats = await transitionPortInFlightSessionsToPaused([meta.id]);
+
+    expect(stats.failed).toBe(1);
+    expect(stats.paused).toBe(0);
+    expect((await getSessionMeta(meta.id))!.status).toBe("failed");
+    expect((await getSessionAgent(meta.id))!.pendingConfirm).toBeUndefined();
+  });
+
+  it("leaves a tombstone session (stepIndex=0) alone", async () => {
+    const meta = await createSession();
+    // Default agent state has stepIndex=0 — task already finished cleanly.
+
+    const stats = await transitionPortInFlightSessionsToPaused([meta.id]);
+
+    expect(stats.paused).toBe(0);
+    expect(stats.failed).toBe(0);
+    expect((await getSessionMeta(meta.id))!.status).toBe("active");
+  });
+
+  it("does NOT touch sessions outside the supplied id set (multi-port isolation)", async () => {
+    // Simulates: Port A holds sessions [a1, a2]. Port B holds [b1].
+    // Port A disconnects → its helper call should leave b1 untouched
+    // even though b1 is also in-flight.
+    const a1 = await createSession();
+    const b1 = await createSession();
+    await setSessionAgent(a1.id, {
+      agentMessages: [{ role: "user", content: "a1" }],
+      stepIndex: 3,
+      skillExecutionScopeStack: [],
+    });
+    await setSessionAgent(b1.id, {
+      agentMessages: [{ role: "user", content: "b1" }],
+      stepIndex: 7,
+      skillExecutionScopeStack: [],
+    });
+
+    const stats = await transitionPortInFlightSessionsToPaused([a1.id]);
+
+    expect(stats.paused).toBe(1);
+    expect((await getSessionMeta(a1.id))!.status).toBe("paused");
+    expect((await getSessionMeta(b1.id))!.status).toBe("active");
+  });
+
+  it("handles a missing session id (deleted) without aborting the rest", async () => {
+    const real = await createSession();
+    await setSessionAgent(real.id, {
+      agentMessages: [{ role: "user", content: "task" }],
+      stepIndex: 1,
+      skillExecutionScopeStack: [],
+    });
+
+    const stats = await transitionPortInFlightSessionsToPaused([
+      "missing-id-not-in-storage",
+      real.id,
+    ]);
+
+    expect(stats.paused).toBe(1);
+    expect((await getSessionMeta(real.id))!.status).toBe("paused");
+  });
+
+  it("does NOT bump recovery_guard (panel close is user-driven, not idempotent)", async () => {
+    const meta = await createSession();
+    await setSessionAgent(meta.id, {
+      agentMessages: [{ role: "user", content: "task" }],
+      stepIndex: 2,
+      skillExecutionScopeStack: [],
+    });
+
+    await transitionPortInFlightSessionsToPaused([meta.id]);
+
+    const guard = chromeMock.storage.local.__store.recovery_guard;
+    expect(guard).toBeUndefined();
   });
 });
