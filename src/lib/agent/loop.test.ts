@@ -238,47 +238,53 @@ describe("buildSessionAgentSnapshot", () => {
   });
 });
 
-// ── M2-U2 P1-9: flood-reject does NOT increment confirmRejections ─────────────
+// ── M2-U2 P1-9 + Bug-fix-D: only user-reject increments confirmRejections ──────
 //
-// The K-10 fatigue counter (confirmRejections) should only count user-initiated
-// rejections, not SEC-PLAN-009 flood-limit auto-rejects. To test this without
-// mocking Chrome APIs, we validate the data-contract assumption: sendConfirmRequest
-// returns `{ approved: false, reason: 'flood-limit' }` on flood, and the loop
-// only increments when `reason !== 'flood-limit'`. The loop itself delegates to
-// the sendConfirmRequest callback so we test the contract shape here.
+// The K-10 fatigue counter (confirmRejections) must reflect user intent only.
+// Three non-user paths exist that resolve sendConfirmRequest with
+// approved=false:
+//   - reason='flood-limit'  — SEC-PLAN-009 SW-side cap (P1-9)
+//   - reason='aborted'      — panel disconnect / Stop drained the resolver
+//                             before the user could respond (Bug-fix-D)
+// loop.ts uses a whitelist (reason === 'user-reject'), not a blacklist
+// (reason !== 'flood-limit'), so any future non-user reason defaults to
+// NOT counting unless explicitly opted in.
 
-describe("M2-U2 P1-9 — flood-reject sendConfirmRequest return shape", () => {
-  it("flood-limit result has approved=false and reason='flood-limit'", () => {
-    // This is the shape that handleChatStream / handleResumeRequest
-    // now returns for flood-limited confirms. Loop must NOT increment
-    // confirmRejections for this variant.
-    const floodResult: { approved: boolean; reason?: "flood-limit" | "user-reject" } = {
-      approved: false,
-      reason: "flood-limit",
-    };
-    expect(floodResult.approved).toBe(false);
-    expect(floodResult.reason).toBe("flood-limit");
-    // Guard: loop only counts when reason !== 'flood-limit'
-    const shouldCount = floodResult.reason !== "flood-limit";
-    expect(shouldCount).toBe(false);
+type ConfirmReason = "flood-limit" | "user-reject" | "aborted";
+type ConfirmResult = { approved: boolean; reason?: ConfirmReason };
+
+describe("M2-U2 P1-9 + Bug-fix-D — only user-reject counts toward K-10", () => {
+  it("flood-limit result is approved=false and does NOT count", () => {
+    const r: ConfirmResult = { approved: false, reason: "flood-limit" };
+    expect(r.approved).toBe(false);
+    expect(r.reason === "user-reject").toBe(false);
   });
 
-  it("user-reject result has approved=false and reason='user-reject'", () => {
-    const userReject: { approved: boolean; reason?: "flood-limit" | "user-reject" } = {
-      approved: false,
-      reason: "user-reject",
-    };
-    expect(userReject.approved).toBe(false);
-    const shouldCount = userReject.reason !== "flood-limit";
-    expect(shouldCount).toBe(true);
+  it("aborted result is approved=false and does NOT count (panel close / Stop)", () => {
+    const r: ConfirmResult = { approved: false, reason: "aborted" };
+    expect(r.approved).toBe(false);
+    expect(r.reason === "user-reject").toBe(false);
   });
 
-  it("approve result has approved=true and no reason", () => {
-    const approveResult: { approved: boolean; reason?: "flood-limit" | "user-reject" } = {
-      approved: true,
-    };
-    expect(approveResult.approved).toBe(true);
-    expect(approveResult.reason).toBeUndefined();
+  it("user-reject result is approved=false and DOES count", () => {
+    const r: ConfirmResult = { approved: false, reason: "user-reject" };
+    expect(r.approved).toBe(false);
+    expect(r.reason === "user-reject").toBe(true);
+  });
+
+  it("approve result is approved=true with no reason and never counts", () => {
+    const r: ConfirmResult = { approved: true };
+    expect(r.approved).toBe(true);
+    expect(r.reason).toBeUndefined();
+    expect(r.reason === "user-reject").toBe(false);
+  });
+
+  it("missing reason defaults to NOT counting (whitelist semantics)", () => {
+    // Defends against future code paths that resolve approved=false without
+    // setting reason — they must not silently start incrementing K-10.
+    const r: ConfirmResult = { approved: false };
+    expect(r.approved).toBe(false);
+    expect(r.reason === "user-reject").toBe(false);
   });
 });
 

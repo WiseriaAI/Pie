@@ -31,7 +31,10 @@ import {
   isPendingConfirmFloodLimited,
 } from "@/lib/sessions/storage";
 import { escapeUntrustedWrappers } from "@/lib/agent/untrusted-wrappers";
-import { detectAndMarkPaused } from "./session-recovery";
+import {
+  detectAndMarkPaused,
+  transitionPortInFlightSessionsToPaused,
+} from "./session-recovery";
 import {
   handleExternalDetach,
   detachAllSessions,
@@ -271,7 +274,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 async function handlePanelMounted(
   port: chrome.runtime.Port,
   sessionId: string,
-  pendingConfirmations: Map<string, (approved: boolean) => void>,
+  pendingConfirmations: Map<string, (result: { approved: boolean; reason?: "user-reject" | "aborted" }) => void>,
 ): Promise<void> {
   // M1-U5 — panel mounting is a strong signal that the SW has just
   // woken up (panel open ⇒ SW kept alive ⇒ guaranteed wake-up event).
@@ -399,7 +402,7 @@ async function handleResumeRequest(
   port: chrome.runtime.Port,
   sessionId: string,
   signal: AbortSignal,
-  pendingConfirmations: Map<string, (approved: boolean) => void>,
+  pendingConfirmations: Map<string, (result: { approved: boolean; reason?: "user-reject" | "aborted" }) => void>,
   pendingConfirmationsBySession: Map<string, string>,
 ): Promise<void> {
   const meta = await getSessionMeta(sessionId);
@@ -475,7 +478,10 @@ async function handleResumeRequest(
   const sendConfirmRequest = async (
     confirmationId: string,
     payload: Omit<AgentConfirmRequestMessage, "type" | "confirmationId">,
-  ): Promise<{ approved: boolean; reason?: "flood-limit" | "user-reject" }> => {
+  ): Promise<{
+    approved: boolean;
+    reason?: "flood-limit" | "user-reject" | "aborted";
+  }> => {
     // SEC-PLAN-009 — flood-limit guard (same as chat-stream path)
     const flooded = await isPendingConfirmFloodLimited();
     if (flooded) {
@@ -506,9 +512,17 @@ async function handleResumeRequest(
       },
     });
     try {
-      return await new Promise<{ approved: boolean; reason?: "user-reject" }>((resolve) => {
-        pendingConfirmations.set(confirmationId, (approved) => {
-          resolve(approved ? { approved: true } : { approved: false, reason: "user-reject" });
+      return await new Promise<{
+        approved: boolean;
+        reason?: "user-reject" | "aborted";
+      }>((resolve) => {
+        // Bug-fix-D — resolver receives a structured result so abort drain
+        // can supply reason='aborted' (vs user-reject for a real panel
+        // response). loop.ts only counts reason==='user-reject' toward K-10
+        // fatigue, so a panel close → abort no longer poisons the
+        // "User repeatedly rejected" auto-terminate counter.
+        pendingConfirmations.set(confirmationId, (result) => {
+          resolve(result);
         });
         // P1-4 — register session ownership for response verification.
         pendingConfirmationsBySession.set(confirmationId, sessionId);
@@ -575,13 +589,15 @@ async function handleDiscardRequest(
   port: chrome.runtime.Port,
   sessionId: string,
   confirmationId: string,
-  pendingConfirmations: Map<string, (approved: boolean) => void>,
+  pendingConfirmations: Map<string, (result: { approved: boolean; reason?: "user-reject" | "aborted" }) => void>,
 ): Promise<void> {
   // Resolve the matching pending resolver (drift card had a no-op
   // resolver registered; clear the Map entry).
   const resolver = pendingConfirmations.get(confirmationId);
   if (resolver) {
-    resolver(false);
+    // Discard is a user action ("I gave up on this task"); treat as a
+    // user-reject so any in-flight confirm fatigue counters reflect intent.
+    resolver({ approved: false, reason: "user-reject" });
     pendingConfirmations.delete(confirmationId);
   }
 
@@ -676,7 +692,7 @@ async function handleChatStream(
   messages: ChatMessage[],
   sessionId: string,
   signal: AbortSignal,
-  pendingConfirmations: Map<string, (approved: boolean) => void>,
+  pendingConfirmations: Map<string, (result: { approved: boolean; reason?: "user-reject" | "aborted" }) => void>,
   pendingConfirmationsBySession: Map<string, string>,
 ) {
   try {
@@ -769,9 +785,13 @@ async function handleChatStream(
       });
 
       try {
-        return await new Promise<{ approved: boolean; reason?: "user-reject" }>((resolve) => {
-          pendingConfirmations.set(confirmationId, (approved) => {
-            resolve(approved ? { approved: true } : { approved: false, reason: "user-reject" });
+        return await new Promise<{
+          approved: boolean;
+          reason?: "user-reject" | "aborted";
+        }>((resolve) => {
+          // Bug-fix-D — see resume-path twin for rationale.
+          pendingConfirmations.set(confirmationId, (result) => {
+            resolve(result);
           });
           // P1-4 — register session ownership so agent-confirm-response
           // handler can verify the approval came from the right session.
@@ -827,12 +847,30 @@ chrome.runtime.onConnect.addListener((port) => {
   const abortController = new AbortController();
 
   // Per-port pending confirmation map
-  const pendingConfirmations = new Map<string, (approved: boolean) => void>();
+  const pendingConfirmations = new Map<string, (result: { approved: boolean; reason?: "user-reject" | "aborted" }) => void>();
   // P1-4 — tracks which session owns each pending confirmationId. Used to
   // verify that an agent-confirm-response came from the session whose confirm
   // card was displayed, preventing wrong-session approval (defense-in-depth
   // behind the P0-1/P0-2 streaming guards).
   const pendingConfirmationsBySession = new Map<string, string>();
+
+  // Bug-fix-E — per-port set of session ids the SW dispatched a chat-start
+  // / resume-task for through THIS port. On port.onDisconnect we use this
+  // (not detectAndMarkPaused's global scan) to mark only this port's
+  // abandoned in-flight sessions as paused. Global scan would mistakenly
+  // mark sessions running on a sibling sidepanel as paused, breaking the
+  // multi-sidepanel isolation invariant (cf. CDP owner-token / generationId
+  // pattern in Phase 2.5).
+  //
+  // We never delete on done boundaries because:
+  //   (a) chat-done / agent-done-task are emitted from inside loop.ts,
+  //       so the SW would need a callback hook to observe them; and
+  //   (b) the on-disconnect handler reads agent.stepIndex anyway —
+  //       stepIndex===0 (tombstone, written by emitDone) means the task
+  //       finished cleanly, so it's safely a no-op even if the id is
+  //       still in this set. The set only grows for the lifetime of one
+  //       port (=one sidepanel session) which is bounded by user behaviour.
+  const inFlightSessionIds = new Set<string>();
 
   // Drain any pending high-risk confirm prompts when the task is aborted
   // (Stop button, kill-switch, or programmatic abort from inside the
@@ -844,8 +882,13 @@ chrome.runtime.onConnect.addListener((port) => {
   abortController.signal.addEventListener(
     "abort",
     () => {
+      // Bug-fix-D — drain with reason='aborted'. Without this, the resolver
+      // would receive the structural-default and loop.ts would treat the
+      // hanging confirm as a user-reject, polluting the K-10 fatigue counter
+      // (3 panel-close-mid-confirm events would auto-terminate the task with
+      // "User repeatedly rejected").
       for (const [, resolve] of pendingConfirmations) {
-        resolve(false);
+        resolve({ approved: false, reason: "aborted" });
       }
       pendingConfirmations.clear();
       pendingConfirmationsBySession.clear();
@@ -860,6 +903,7 @@ chrome.runtime.onConnect.addListener((port) => {
 
   port.onMessage.addListener((message: PortMessageToWorker) => {
     if (message.type === "chat-start") {
+      inFlightSessionIds.add(message.sessionId);
       handleChatStream(
         port,
         message.messages,
@@ -889,7 +933,11 @@ chrome.runtime.onConnect.addListener((port) => {
       }
       const resolver = pendingConfirmations.get(message.confirmationId);
       if (resolver) {
-        resolver(message.approved);
+        resolver(
+          message.approved
+            ? { approved: true }
+            : { approved: false, reason: "user-reject" },
+        );
         pendingConfirmations.delete(message.confirmationId);
       }
     } else if (message.type === "panel-mounted") {
@@ -904,6 +952,7 @@ chrome.runtime.onConnect.addListener((port) => {
         },
       );
     } else if (message.type === "resume-task") {
+      inFlightSessionIds.add(message.sessionId);
       handleResumeRequest(
         port,
         message.sessionId,
@@ -942,12 +991,35 @@ chrome.runtime.onConnect.addListener((port) => {
   port.onDisconnect.addListener(() => {
     abortController.abort();
     clearInterval(keepAliveInterval);
-    // Drain pending confirmations to prevent hanging promises
+    // Drain pending confirmations with reason='aborted' (Bug-fix-D — see
+    // abort-listener twin above for why this matters for K-10 fatigue).
     for (const [, resolve] of pendingConfirmations) {
-      resolve(false);
+      resolve({ approved: false, reason: "aborted" });
     }
     pendingConfirmations.clear();
     pendingConfirmationsBySession.clear();
+
+    // Bug-fix-E — panel closed mid-task. The abort above kills the running
+    // loop; before it dies the agent state is at stepIndex>0 (no tombstone
+    // since emitDone never runs on abort). Walk the per-port set and
+    // transition each abandoned in-flight session so the next panel mount
+    // sees the R10 paused affordance instead of a silently-dead "active"
+    // session. Only THIS port's sessions are touched (see inFlightSessionIds
+    // JSDoc) so a sibling sidepanel running its own tasks is unaffected.
+    //
+    // Step ordering mirrors detectAndMarkPaused (SEC-PLAN-002):
+    //   1. pendingConfirm present → markFailedAndScrub (the resolver is
+    //      gone; the request is unhonorable).
+    //   2. else stepIndex>0 → markPaused (in-flight, resumable).
+    //   3. else (tombstone) → no-op (task finished cleanly).
+    //
+    // Fire-and-forget: MV3 SW stays alive for pending storage promises so
+    // the markPaused write completes before the SW idles out.
+    const sessionsToClose = Array.from(inFlightSessionIds);
+    inFlightSessionIds.clear();
+    transitionPortInFlightSessionsToPaused(sessionsToClose).catch((e) => {
+      console.warn("[sw] panel-disconnect cleanup failed:", e);
+    });
   });
 });
 

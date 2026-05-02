@@ -65,7 +65,10 @@ export interface AgentLoopContext {
   sendConfirmRequest: (
     confirmationId: string,
     payload: Omit<AgentConfirmRequestMessage, "type" | "confirmationId">,
-  ) => Promise<{ approved: boolean; reason?: "flood-limit" | "user-reject" }>;
+  ) => Promise<{
+    approved: boolean;
+    reason?: "flood-limit" | "user-reject" | "aborted";
+  }>;
   getEnabledSkillTools?: () => Promise<Tool[]>;
   /**
    * M1-U3 — session this task is bound to. Required so step-boundary
@@ -1129,14 +1132,19 @@ export async function runAgentLoop(ctx: AgentLoopContext): Promise<void> {
           });
 
           if (!confirmResult.approved) {
-            // P1-9 — only count user-initiated rejects toward K-10 fatigue
-            // counter. flood-limit auto-rejects are a SW-side policy
-            // (SEC-PLAN-009) not a user decision, so they must NOT
-            // poison confirmRejections (which would self-terminate the task
-            // after 3 flood-limit rejections with a factually incorrect
-            // "User repeatedly rejected X" message).
-            // P1-9: only user-reject increments the fatigue counter
-            if (confirmResult.reason !== "flood-limit") {
+            // P1-9 + Bug-fix-D — only count user-initiated rejects toward
+            // K-10 fatigue counter. Two non-user paths must be excluded:
+            //   - reason='flood-limit': SEC-PLAN-009 auto-reject from the
+            //     SW-side concurrent-confirm cap (not a user decision).
+            //   - reason='aborted': panel disconnected / Stop button drained
+            //     the resolver before the user could respond. Counting these
+            //     would let "user closes panel 3 times mid-confirm" auto-
+            //     terminate the task with the factually wrong "User
+            //     repeatedly rejected X" message on next resume.
+            //
+            // Whitelist (===), not blacklist (!==), so any future reason
+            // defaults to NOT counting unless we explicitly opt it in.
+            if (confirmResult.reason === "user-reject") {
               const prevRejects = confirmRejections.get(tc.name) ?? 0;
               const nextRejects = prevRejects + 1;
               confirmRejections.set(tc.name, nextRejects);
@@ -1171,9 +1179,12 @@ export async function runAgentLoop(ctx: AgentLoopContext): Promise<void> {
               }
             }
 
-            const rejectionMsg = confirmResult.reason === "flood-limit"
-              ? "Confirm queue full — please resolve other sessions first."
-              : "User rejected";
+            const rejectionMsg =
+              confirmResult.reason === "flood-limit"
+                ? "Confirm queue full — please resolve other sessions first."
+                : confirmResult.reason === "aborted"
+                  ? "Confirm aborted (panel closed or task stopped)."
+                  : "User rejected";
             toolResultBlocks.push({
               type: "tool_result",
               toolUseId: tc.id,
