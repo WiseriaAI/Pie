@@ -70,11 +70,13 @@ export default function Chat({
     streaming,
     streamingText,
     error,
+    toast,
     sendMessage: sessionSendMessage,
     abort,
     resolveConfirm,
     clearMessages,
     clearError,
+    clearToast,
   } = session;
   const [input, setInput] = useState("");
   const [hasConfig, setHasConfig] = useState<boolean | null>(null);
@@ -422,6 +424,34 @@ export default function Chat({
             {error && (
               <div className="rounded-lg border border-warning-line bg-warning-tint px-3 py-2 text-[12px] text-warning">
                 {error}
+              </div>
+            )}
+
+            {/* SEC-PLAN-009 — transient toast from SW (flood-limit warning, etc.) */}
+            {toast && (
+              <div
+                role="alert"
+                aria-live="polite"
+                className="rounded-lg border border-warning-line bg-warning-tint px-3 py-2 text-[12px] text-warning flex items-start gap-2"
+              >
+                <span style={{ flex: 1 }}>{toast.text}</span>
+                <button
+                  type="button"
+                  onClick={clearToast}
+                  aria-label="Dismiss notification"
+                  style={{
+                    background: "none",
+                    border: "none",
+                    cursor: "pointer",
+                    color: "inherit",
+                    padding: 0,
+                    fontSize: 12,
+                    lineHeight: 1,
+                    flexShrink: 0,
+                  }}
+                >
+                  ✕
+                </button>
               </div>
             )}
 
