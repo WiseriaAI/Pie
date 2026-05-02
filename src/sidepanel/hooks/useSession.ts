@@ -9,6 +9,7 @@ import {
   updateLastAccessed,
 } from "@/lib/sessions/storage";
 import type { SessionStatus } from "@/lib/sessions/types";
+import { deriveTitleFromMessages } from "@/lib/sessions/title";
 
 /**
  * useSession — single-source-of-truth for the active session's messages,
@@ -49,26 +50,9 @@ import type { SessionStatus } from "@/lib/sessions/types";
  *                       the storage write happens on the SW side)
  */
 
-/**
- * Bug-fix-C — fallback title derivation. M2-U3 will replace this with an
- * LLM-generated short title; until then we mirror the JSDoc on
- * SessionMeta.title and use the first user message's prefix.
- *
- * Returns undefined when no user message has landed yet (so the SessionMeta
- * title patch is skipped — the existing default "New Session" stays).
- */
-function deriveTitleFromMessages(
-  msgs: DisplayMessage[],
-): string | undefined {
-  for (const m of msgs) {
-    if (m.role !== "user") continue;
-    const collapsed = m.content.trim().replace(/\s+/g, " ");
-    if (collapsed.length === 0) continue;
-    if (collapsed.length <= 40) return collapsed;
-    return collapsed.slice(0, 40).trimEnd() + "…";
-  }
-  return undefined;
-}
+// deriveTitleFromMessages is imported from @/lib/sessions/title (lifted in M2-U3
+// so the SW side can share the same sentinel string for the LLM title race guard).
+// The DisplayMessage type satisfies TitleableMessage (has role + content fields).
 
 interface SendMessageInput {
   /** What the user typed — rendered in the chat. */
@@ -193,6 +177,13 @@ export function useSession(): UseSession {
       if (!id) return;
       const current = await getSessionMeta(id);
       if (!current) return;
+      // Defense-in-depth: if the session was archived between the panel's
+      // last in-memory snapshot and now (LRU eviction during a streaming
+      // task), do NOT resurrect the meta key — it would leave the session
+      // in BOTH the active meta bucket and the archived bucket, confusing
+      // every downstream reader (SessionDrawer, listSessionIndex, the next
+      // archive call's idempotency check).
+      if (current.status === "archived") return;
       const titlePatch =
         current.title === undefined || current.title === ""
           ? deriveTitleFromMessages(next)

@@ -1,7 +1,7 @@
 ---
 title: "feat: Session as First-Class Persistent Layer (Checkpoint & Resume)"
 type: feat
-status: m1-shipped
+status: m2-shipped
 date: 2026-05-02
 last_updated: 2026-05-03
 origin: docs/brainstorms/2026-05-02-checkpoint-resume-requirements.md
@@ -9,7 +9,7 @@ m1_pr: https://github.com/WiseriaAI/Pie/pull/8
 m1_learnings: docs/solutions/2026-05-02-session-as-first-class-persistent-layer-m1.md
 ---
 
-> **Status note (2026-05-03)**: M1 (units U1-U5) shipped via PR #8 — single-session persistent layer + SW restart recovery + R11 drift card. **M2-U1 shipped via PR #9** — multi-session schema + state machine + skillExecutionScopeStack (76 → 106 tests). **M2-U2 shipped via PR #10** — multi-session sidepanel UI: 4 new components (TopBarListButton ≡ + corner pending dot / TopBarNewSessionButton + / SessionDrawer 296px overlay / SessionRow 5 status SVGs) + SEC-PLAN-009 flood guard + R23 archived auto-create + ce:review pass-2 fix sweep (2 P0 cross-session contamination + 9 P1) + **manual-acceptance fix sweep** (Bug-A user-msg disappear / Bug-B agent-text wipe / Bug-C title fallback / Bug-D K-10 abort-drain pollution / Bug-E panel-close mid-task no-resume / Bug-PINNED active-tab not following) (106 → 143 tests). M2-U3/U4 与 M3 全部 NOT YET STARTED. See `m1_learnings` link for shipped invariants future work must preserve.
+> **Status note (2026-05-03)**: M1 (units U1-U5) shipped via PR #8 — single-session persistent layer + SW restart recovery + R11 drift card. **M2-U1 shipped via PR #9** — multi-session schema + state machine + skillExecutionScopeStack (76 → 106 tests). **M2-U2 shipped via PR #10** — multi-session sidepanel UI: 4 new components (TopBarListButton ≡ + corner pending dot / TopBarNewSessionButton + / SessionDrawer 296px overlay / SessionRow 5 status SVGs) + SEC-PLAN-009 flood guard + R23 archived auto-create + ce:review pass-2 fix sweep (2 P0 cross-session contamination + 9 P1) + **manual-acceptance fix sweep** (Bug-A user-msg disappear / Bug-B agent-text wipe / Bug-C title fallback / Bug-D K-10 abort-drain pollution / Bug-E panel-close mid-task no-resume / Bug-PINNED active-tab not following) (106 → 143 tests). **M2-U3 + M2-U4 完成** (待提交 PR) — M2-U3 LLM async 标题 + `untrusted_user_message` wrapper (双 list lock-step 自动断言) + race-guard via panel-written sentinel (slash-skill 修正); M2-U4 LRU archive + 30-day hard delete + soft delete + storage usage indicator (with 7.5MB 警告高亮) + Show Archived 折叠 + Restore/Delete forever buttons; ce:review 9 reviewer pass 后 8 个 P0/P1 修复 (slash-skill race-guard 真 bug / archived-bucket resurrect / vacuous test assertions 暴露 archive-bytes-grow 真 bug → schema 去冗余 / malformed archive 立即被硬删 / hardDeleteExpired 无 .catch / 死代码 / 重复 inline style key) (143 → 172 tests). M3 NOT YET STARTED. See `m1_learnings` link for shipped invariants future work must preserve.
 
 # feat: Session as First-Class Persistent Layer
 
@@ -611,7 +611,7 @@ stateDiagram-v2
 
 ---
 
-- [ ] **Unit M2-U3: LLM async 标题生成 + R29 sanitize wrapper（双 list lock-step 注册）**
+- [x] **Unit M2-U3: LLM async 标题生成 + R29 sanitize wrapper（双 list lock-step 注册）**
 
 **Goal:** 首条 user message 后异步调 LLM 生成 5-10 字标题；完整 prompt-injection 防御。
 
@@ -657,7 +657,7 @@ stateDiagram-v2
 
 ---
 
-- [ ] **Unit M2-U4: LRU archive (getBytesInUse 总, 实际释放空间) + 30-day hard delete + Show archived + 软删**
+- [x] **Unit M2-U4: LRU archive (getBytesInUse 总, 实际释放空间) + 30-day hard delete + Show archived + 软删**
 
 **Goal:** Storage 生命周期完整闭环。
 

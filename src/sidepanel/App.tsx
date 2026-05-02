@@ -9,6 +9,7 @@ import { getProviderMeta } from "@/lib/model-router";
 import { normalizeSkillSlashKey } from "@/lib/skills";
 import { useSession } from "@/sidepanel/hooks/useSession";
 import { listSessionIndex } from "@/lib/sessions/storage";
+import { hardDeleteExpired } from "@/lib/sessions/lifecycle";
 import type { SessionIndexEntry, SessionAgentState } from "@/lib/sessions/types";
 
 type View = "agent" | "settings";
@@ -61,6 +62,12 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    // M2-U4: opportunistic 30-day hard-delete sweep on sidepanel mount.
+    // Fire-and-forget — does not block mount or session loading.
+    hardDeleteExpired().catch((e) => {
+      console.warn("[panel] hardDeleteExpired sweep failed:", e);
+    });
+
     // Initial load
     void refreshSessionIndex();
     void refreshPendingCount();

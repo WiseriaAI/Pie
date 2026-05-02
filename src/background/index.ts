@@ -41,6 +41,8 @@ import {
 } from "./cdp-session";
 import { KEYBOARD_SIMULATION_STORAGE_KEY } from "@/lib/keyboard-simulation";
 import { runSessionMigrations } from "@/lib/sessions/migration";
+import { chat } from "@/lib/model-router";
+import { generateTitle, maybeUpgradeFallbackTitle } from "@/lib/sessions/title-generator";
 
 // Open side panel when extension icon is clicked
 chrome.action.onClicked.addListener(async (tab) => {
@@ -725,6 +727,38 @@ async function handleChatStream(
         e,
       );
     });
+
+    // M2-U3 — LLM async title generation (R29).
+    // Trigger only on the first user message (messages.length === 1 and role=user).
+    // The race-guard sentinel is whatever title the panel wrote at chat-start
+    // (panel's persistMessages fires before postMessage('chat-start'), so by the
+    // time SW awaits getSessionMeta the fallback string is on disk). Reading
+    // from storage avoids recomputing the fallback in SW with a different
+    // `messages` payload — slash skills, for example, ship the EXPANDED prompt
+    // to SW, so a SW-side deriveTitleFromMessages would produce a different
+    // string than the panel's, breaking the equality race-guard forever.
+    if (messages.length === 1 && messages[0]?.role === "user") {
+      const firstUserContent = messages[0].content;
+      const sentinelMeta = await getSessionMeta(sessionId);
+      const expectedFallback = sentinelMeta?.title;
+      if (expectedFallback !== undefined && expectedFallback !== "") {
+        const callChat = (
+          msgs: Array<{ role: "system" | "user" | "assistant"; content: string }>,
+        ) => chat(config, msgs as ChatMessage[]).then((r) => r.content);
+
+        generateTitle(firstUserContent, callChat)
+          .then((llmTitle) =>
+            maybeUpgradeFallbackTitle(sessionId, expectedFallback, llmTitle),
+          )
+          .catch((e) => {
+            // Fallback title is already in storage — swallow error silently.
+            console.debug(
+              `[sw] M2-U3 title generation failed for session=${sessionId}; keeping fallback:`,
+              e,
+            );
+          });
+      }
+    }
 
     // Extract task from last user message
     const task =

@@ -22,10 +22,12 @@ export function snapshotInteractiveElements(): PageSnapshot {
     // shared escapeUntrustedWrappers helper at src/lib/agent/untrusted-wrappers.ts;
     // both implementations cover the same wrapper-tag set (Phase 3 P3-O).
     // Keep this list in sync with UNTRUSTED_WRAPPER_TAGS in that helper.
+    // M2-U3: added untrusted_user_message (R29 LLM title prompt wrapper).
     cleaned = cleaned
       .replace(/<\/?untrusted_page_content>/gi, "[filtered]")
       .replace(/<\/?untrusted_skill_params>/gi, "[filtered]")
-      .replace(/<\/?untrusted_tab_metadata>/gi, "[filtered]");
+      .replace(/<\/?untrusted_tab_metadata>/gi, "[filtered]")
+      .replace(/<\/?untrusted_user_message>/gi, "[filtered]");
     if (cleaned.length > maxLen) {
       cleaned = cleaned.slice(0, maxLen) + "...";
     }
