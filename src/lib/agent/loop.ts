@@ -422,6 +422,30 @@ export function buildSessionAgentSnapshot(
 }
 
 /**
+ * M1-U3 v2 — "no in-flight task" tombstone marker, written to
+ * `session_${id}_agent` when a task reaches done (success / fail /
+ * abort / max-steps).
+ *
+ * Without this, `stepIndex` from the just-completed task lingers in
+ * storage. M1-U5's cold-start detector reads `stepIndex > 0` as the
+ * signal that a task was running when the SW died — it would see
+ * stale data from a long-completed task and falsely transition the
+ * session to `paused`, presenting the user with a misleading
+ * "Resume task" button.
+ *
+ * The tombstone is just `(agentMessages=[], stepIndex=0,
+ * skillExecutionScopeStack=[])`. Idempotent — re-writing on top of
+ * an existing tombstone is a no-op for any consumer.
+ */
+export function buildSessionAgentTombstone(): SessionAgentState {
+  return {
+    agentMessages: [],
+    stepIndex: 0,
+    skillExecutionScopeStack: [],
+  };
+}
+
+/**
  * Redact `text` from keyboard tool args before emitting via agent-step
  * (event-card path). Confirm-request keeps the raw text — see plan
  * Key Technical Decisions on the redaction split.
@@ -470,10 +494,25 @@ export async function runAgentLoop(ctx: AgentLoopContext): Promise<void> {
 
   // Idempotent done emit — every runAgentLoop exit path (success, abort,
   // error, finally) calls this; first one wins, the rest are no-ops.
+  //
+  // M1-U3 v2: also writes a tombstone snapshot so M1-U5 cold-start can
+  // distinguish "task in flight at SW death" (stepIndex > 0) from "task
+  // already finished, no resume needed" (stepIndex = 0). Without this,
+  // a long-completed task's stepIndex would linger in storage and
+  // M1-U5 would falsely flag the session as paused. Fire-and-forget,
+  // matching the per-step snapshot pattern.
   const emitDone = (msg: AgentDoneTaskMessage): void => {
     if (doneEmitted) return;
     doneEmitted = true;
     sendAgentDone(port, msg);
+    if (ctx.onStepSnapshot) {
+      ctx.onStepSnapshot(buildSessionAgentTombstone()).catch((e) => {
+        console.warn(
+          `[agent] tombstone snapshot failed for session=${ctx.sessionId}:`,
+          e,
+        );
+      });
+    }
   };
 
   // 1. Anchor tab + origin at task start
@@ -754,6 +793,19 @@ export async function runAgentLoop(ctx: AgentLoopContext): Promise<void> {
       if (completedToolCalls.length === 0) {
         port.postMessage({ type: "chat-done" });
         normalTextReply = true;
+        // M1-U3 v2 — pure-text replies don't push history, so no
+        // per-step snapshot has fired this turn. But a prior task's
+        // stale (stepIndex > 0) snapshot might still be in storage.
+        // Write a tombstone here so a chat-only round following a
+        // completed agent task also clears in-flight markers.
+        if (ctx.onStepSnapshot) {
+          ctx.onStepSnapshot(buildSessionAgentTombstone()).catch((e) => {
+            console.warn(
+              `[agent] tombstone (pure-text) failed for session=${ctx.sessionId}:`,
+              e,
+            );
+          });
+        }
         return;
       }
 

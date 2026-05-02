@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import type { AgentMessage, ContentBlock } from "@/lib/model-router";
-import { buildSessionAgentSnapshot } from "./loop";
+import {
+  buildSessionAgentSnapshot,
+  buildSessionAgentTombstone,
+} from "./loop";
 
 // M1-U3 invariant tests — focused on the snapshot helper, not the full
 // agent loop. The full loop is too tightly coupled to Chrome APIs +
@@ -151,6 +154,30 @@ describe("buildSessionAgentSnapshot", () => {
     ];
     const snap = buildSessionAgentSnapshot(history, 1);
     expect(snap.skillExecutionScopeStack).toEqual([]);
+  });
+
+  it("M1-U3 v2 tombstone — empty history + stepIndex 0 + empty scope stack", () => {
+    // Tombstone is the 'no in-flight task' marker written by emitDone.
+    // M1-U5 cold-start reads stepIndex > 0 as the in-flight signal;
+    // without this clear, stale state from a long-completed task
+    // would falsely flag the session as paused on next SW boot.
+    const tombstone = buildSessionAgentTombstone();
+    expect(tombstone).toEqual({
+      agentMessages: [],
+      stepIndex: 0,
+      skillExecutionScopeStack: [],
+    });
+  });
+
+  it("M1-U3 v2 tombstone — independent calls return independent objects", () => {
+    // Defensive: callers shouldn't be able to mutate one tombstone and
+    // accidentally affect the next. The function returns a fresh object
+    // each call.
+    const a = buildSessionAgentTombstone();
+    const b = buildSessionAgentTombstone();
+    expect(a).not.toBe(b);
+    expect(a.agentMessages).not.toBe(b.agentMessages);
+    expect(a.skillExecutionScopeStack).not.toBe(b.skillExecutionScopeStack);
   });
 
   it("does NOT set pendingConfirm on the snapshot", () => {

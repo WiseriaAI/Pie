@@ -93,10 +93,23 @@ export interface SessionMeta {
 }
 
 /**
- * Per-session agent runtime state, persisted at `session_${id}_agent`. This
- * is the LLM-facing IR — the panel does not import this type to render
- * chat (that's `SessionMeta.messages`), it only reads it when the user
- * clicks 'Resume task' on a paused session (M1-U5).
+ * Per-session **in-flight** agent runtime state, persisted at
+ * `session_${id}_agent`. This is the LLM-facing IR — the panel does not
+ * import this type to render chat (that's `SessionMeta.messages`), it
+ * only reads it when the user clicks 'Resume task' on a paused session
+ * (M1-U5).
+ *
+ * **Lifecycle (M1-U3 v2)**: this carries the **current in-flight task**'s
+ * IR, NOT a cross-task accumulation. Each new `runAgentLoop` invocation
+ * starts a fresh `[system, user(task)]` history; persisted snapshots
+ * track that single task only. On task done (success / fail / abort /
+ * max-steps), the loop writes a "tombstone" snapshot
+ * (`agentMessages=[], stepIndex=0`) so a subsequent SW restart can't
+ * mistake leftover state for an in-flight task — see
+ * `buildSessionAgentTombstone` in `loop.ts`.
+ *
+ * Cross-task **display** history (what the user sees in the chat
+ * scrollback) lives separately in `SessionMeta.messages`.
  *
  * `agentMessages` retains raw tool args; redaction is a panel-display
  * concern only (R28 v2 reinterpretation, see plan D7 / M1-U3). Resume
@@ -109,11 +122,14 @@ export interface SessionMeta {
  * `currentSkillScope` in `loop.ts`; the stack here is empty until M2.
  */
 export interface SessionAgentState {
-  /** Full LLM-side conversation including tool_use / tool_result blocks. */
+  /** LLM-side conversation for the **current in-flight task**, including
+   *  tool_use / tool_result blocks. Empty when no task is in flight
+   *  (tombstone state). NOT a cross-task accumulation — see JSDoc. */
   agentMessages: AgentMessage[];
-  /** Monotonic counter incremented per agent step. Equals
-   *  `agentMessages` length minus the seed message count, but persisted
-   *  explicitly so resume doesn't have to recompute. */
+  /** Monotonic counter — number of completed agent steps in the current
+   *  in-flight task. 0 = no in-flight task (tombstone). M1-U5 cold-start
+   *  uses `stepIndex > 0` to detect in-flight tasks that need to be
+   *  transitioned to `paused` after SW restart. */
   stepIndex: number;
   /** Phase 2.6 skill scope stack. Empty in M1; populated by M2-U1. */
   skillExecutionScopeStack: Array<{
