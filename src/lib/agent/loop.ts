@@ -803,7 +803,17 @@ export async function runAgentLoop(ctx: AgentLoopContext): Promise<void> {
     : [
         {
           role: "system",
-          content: buildAgentSystemPrompt(task, keyboardSimEnabledAtStart, /* hasMetaTools */ true),
+          content: buildAgentSystemPrompt(
+            task,
+            keyboardSimEnabledAtStart,
+            /* hasMetaTools */ true,
+            // M3-U2 — pass the authoritative pinned tab id + origin so
+            // the LLM can call get_tab_content({tabId}) directly for
+            // "summarize / read this page" tasks instead of burning a
+            // list_tabs round-trip + a confirm card just to discover
+            // its own tab id.
+            { tabId: pinnedTabId, origin: pinnedOrigin },
+          ),
         },
         { role: "user", content: task },
       ];
