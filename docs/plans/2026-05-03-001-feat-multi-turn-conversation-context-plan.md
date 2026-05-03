@@ -1,9 +1,10 @@
 ---
 title: "feat: Multi-turn conversation context (chat + agent-task continuity)"
 type: feat
-status: active
+status: completed
 date: 2026-05-03
 deepened: 2026-05-03
+completed: 2026-05-03
 origin: docs/ROADMAP.md  # §5 — 用户 2026-05-02 报告，无独立 brainstorm；本 plan 含 Phase 0.4 lightweight bootstrap
 ---
 
@@ -287,7 +288,7 @@ panel 端实质零改动 — 全部 unit 都在 `src/lib/agent/` `src/lib/sessio
 
 ---
 
-- [ ] **Unit U1: applySlidingWindow 多轮 aware (preserved 段识别)**
+- [x] **Unit U1: applySlidingWindow 多轮 aware (preserved 段识别)**
 
 **Goal:** 让 sliding window 在多轮 history（chat prefix + ReAct pair 混合）下保持合理截断行为，不破"system + 当前 task" 的语义不变量。
 
@@ -329,7 +330,7 @@ panel 端实质零改动 — 全部 unit 都在 `src/lib/agent/` `src/lib/sessio
 
 ---
 
-- [ ] **Unit U2: SW handleChatStream 接受 messages 数组 + runAgentLoop history 多轮起手 + lastTaskSynth 注入 (Half A + Half B SW-side)**
+- [x] **Unit U2: SW handleChatStream 接受 messages 数组 + runAgentLoop history 多轮起手 + lastTaskSynth 注入 (Half A + Half B SW-side)**
 
 **Goal:** SW 端不再丢弃 messages 数组；`runAgentLoop` 起手 history 含完整多轮 chat prefix；并在检测到上一轮 agent task 完成后的 follow-up 消息时，从 session meta 注入 `lastTaskSynth` 作为 assistant turn（D2 SW-side synth）。
 
@@ -377,7 +378,7 @@ panel 端实质零改动 — 全部 unit 都在 `src/lib/agent/` `src/lib/sessio
 
 ---
 
-- [ ] **Unit U3: SW emitDone → synthesizeAgentTurnText → 写 session_${id}_meta.lastTaskSynth (Half B SW-side synth)**
+- [x] **Unit U3: SW emitDone → synthesizeAgentTurnText → 写 session_${id}_meta.lastTaskSynth (Half B SW-side synth)**
 
 **Goal:** SW 在 agent task 终止（emitDone 5 路径，pure-text-reply 除外）时合成 assistant turn 文本写到 session meta；下次 chat-start 由 U2 注入 history。**panel 端零 UI 改动 / 零合成代码** — synth 路径完全在 SW 端，pin 关键漏洞（panel-closed-during-task）由此自然消失。
 
@@ -439,7 +440,7 @@ panel 端实质零改动 — 全部 unit 都在 `src/lib/agent/` `src/lib/sessio
 
 ---
 
-- [ ] **Unit U4: SW history 组装后 graceful auto-recovery + 集成测试**
+- [x] **Unit U4: SW history 组装后 graceful auto-recovery + 集成测试**
 
 **Goal:** D4 落地 — SW 在 history 组装好之后、调 modelRouter 之前做 `validateAndRepairAdjacentRoles` 检查。检测到相邻同 role 时**不抛错给用户**，而是自动插入 sentinel `<untrusted_prior_task_summary>[continuing previous conversation]</untrusted_prior_task_summary>` 在两个 user 之间继续请求 + telemetry log。这与 Phase 2.5 / M1 graceful recovery 风格一致
 
@@ -487,7 +488,7 @@ panel 端实质零改动 — 全部 unit 都在 `src/lib/agent/` `src/lib/sessio
 
 ---
 
-- [ ] **Unit U5: Token budget guard + 手动验证多轮场景**
+- [x] **Unit U5: Token budget guard + 手动验证多轮场景**
 
 **Goal:** D5 落地 — 多轮 history char-count 估算超 80% provider context window 时从 chat prefix 段最旧的一对 user/assistant 开始 drop。手动跑 4 个真实场景验证。
 
