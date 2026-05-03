@@ -43,6 +43,7 @@ export const UNTRUSTED_WRAPPER_TAGS = [
   "untrusted_skill_params",
   "untrusted_tab_metadata",
   "untrusted_user_message",
+  "untrusted_prior_task_summary",
 ] as const;
 
 // Zero-width / invisible chars that an attacker might hide inside a tag literal.

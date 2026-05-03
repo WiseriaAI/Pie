@@ -6,6 +6,7 @@ import {
   buildSessionAgentTombstone,
   collectCrossSessionConflicts,
 } from "./loop";
+import { synthesizeAgentTurnText } from "./synthesize-agent-turn";
 
 // M1-U3 invariant tests — focused on the snapshot helper, not the full
 // agent loop. The full loop is too tightly coupled to Chrome APIs +
@@ -571,5 +572,117 @@ describe("M3-U5 — multi-session invariant regression", () => {
       new Set(), // single-session = no cross-session pins
     );
     expect(result).toEqual([]);
+  });
+});
+
+// ── U3 emitDone × synthesizeAgentTurnText integration ────────────────────────
+//
+// emitDone is a closure inside runAgentLoop — too tightly coupled to Chrome
+// APIs to test end-to-end. We instead verify the contract between
+// synthesizeAgentTurnText (the pure function) and the emitDone call sites by
+// exercising the pure function with the exact inputs emitDone provides.
+//
+// Pattern: mirrors M1-U3 buildSessionAgentSnapshot helper-with-test approach.
+
+describe("U3 — emitDone path × synthesizeAgentTurnText", () => {
+  const emptyHistory: AgentMessage[] = [
+    { role: "system", content: "system" },
+    { role: "user", content: "task" },
+  ];
+
+  const historyWithStep: AgentMessage[] = [
+    { role: "system", content: "system" },
+    { role: "user", content: "task" },
+    {
+      role: "assistant",
+      content: [
+        { type: "tool_use", id: "tu_1", name: "click", input: { elementIndex: 0 } } as ContentBlock,
+      ],
+    },
+    {
+      role: "user",
+      content: [{ type: "tool_result", toolUseId: "tu_1", content: "ok" } as ContentBlock],
+    },
+  ];
+
+  // Path 1: success (done tool, terminationResult.success = true)
+  it("success path → synth starts with 已完成: + wrapped in outer tag", () => {
+    const synth = synthesizeAgentTurnText({
+      terminationReason: "success",
+      summary: "已打开飞书",
+      stepCount: 1,
+      history: historyWithStep,
+    });
+    expect(synth).not.toBeNull();
+    expect(synth!).toContain("已完成: 已打开飞书");
+    expect(synth!).toMatch(/^<untrusted_prior_task_summary>/);
+    expect(synth!).toMatch(/<\/untrusted_prior_task_summary>$/);
+  });
+
+  // Path 2: fail (fail tool, terminationResult.success = false)
+  it("fail path → synth contains [任务失败] + step list", () => {
+    const synth = synthesizeAgentTurnText({
+      terminationReason: "fail",
+      summary: "元素未找到",
+      stepCount: 1,
+      history: historyWithStep,
+    });
+    expect(synth).not.toBeNull();
+    expect(synth!).toContain("[任务失败] 元素未找到");
+    expect(synth!).toContain("已执行 1 步");
+    expect(synth!).toContain("click");
+  });
+
+  // Path 3: max-steps
+  it("max-steps path → synth contains [任务超步数]", () => {
+    const synth = synthesizeAgentTurnText({
+      terminationReason: "max-steps",
+      summary: "Max steps reached",
+      stepCount: 30,
+      history: historyWithStep,
+    });
+    expect(synth).not.toBeNull();
+    expect(synth!).toContain("[任务超步数]");
+    expect(synth!).toContain("30");
+  });
+
+  // Path 4: abort (finally block — user cancel, CDP detach, etc.)
+  it("abort path → synth contains [任务中断] + summary", () => {
+    const synth = synthesizeAgentTurnText({
+      terminationReason: "abort",
+      summary: "任务已取消",
+      stepCount: 0,
+      history: emptyHistory,
+    });
+    expect(synth).not.toBeNull();
+    expect(synth!).toContain("[任务中断] 任务已取消");
+  });
+
+  // Path 5: pure-text-reply — returns null, no setLastTaskSynth call
+  it("pure-text-reply path → returns null (no synth write)", () => {
+    const synth = synthesizeAgentTurnText({
+      terminationReason: "pure-text-reply",
+      summary: "",
+      stepCount: 0,
+      history: emptyHistory,
+    });
+    expect(synth).toBeNull();
+  });
+
+  // Wrapper invariant: all non-null outputs must be safely wrapped
+  it("all non-null outputs are wrapped in untrusted_prior_task_summary", () => {
+    const reasons = ["success", "fail", "max-steps", "abort"] as const;
+    for (const r of reasons) {
+      const synth = synthesizeAgentTurnText({
+        terminationReason: r,
+        summary: "test",
+        stepCount: 1,
+        history: emptyHistory,
+      });
+      expect(synth, `reason=${r}`).not.toBeNull();
+      expect(synth!, `reason=${r}`).toMatch(
+        /^<untrusted_prior_task_summary>[\s\S]*<\/untrusted_prior_task_summary>$/,
+      );
+    }
   });
 });

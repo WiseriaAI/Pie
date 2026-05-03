@@ -384,6 +384,48 @@ export async function scrubPendingConfirm(sessionId: string): Promise<void> {
   await setSessionAgent(sessionId, rest);
 }
 
+// ── U3 — lastTaskSynth helpers ────────────────────────────────────────────────
+//
+// lastTaskSynth is a single string field on SessionMeta, written by
+// emitDone in loop.ts and consumed (read + cleared) by handleChatStream.
+// It does NOT touch the session_index — the field is invisible to the
+// drawer and does not affect LRU / messageCount / title / status.
+// We write only `session_${id}_meta` via writeAtomic (single-key, D9
+// atomicity; no index diff needed, mirrors lifecycle.ts pattern).
+
+/**
+ * Write the synthesized assistant turn text into session meta's
+ * `lastTaskSynth` field. The value must already be wrapped in
+ * `<untrusted_prior_task_summary>…</untrusted_prior_task_summary>`
+ * (the caller, `emitDone`, handles the wrap).
+ *
+ * No-op if the session does not exist (defensive; caller has sessionId
+ * from ctx and the session was created before the task started).
+ */
+export async function setLastTaskSynth(
+  sessionId: string,
+  synth: string,
+): Promise<void> {
+  const meta = await getSessionMeta(sessionId);
+  if (!meta) return;
+  await writeAtomic({ [metaKey(sessionId)]: { ...meta, lastTaskSynth: synth } });
+}
+
+/**
+ * Clear the `lastTaskSynth` field on a session meta (one-shot consume).
+ * Called by `handleChatStream` immediately after reading the value so it
+ * is never injected into a second chat's history.
+ *
+ * No-op if the session does not exist or `lastTaskSynth` is already absent.
+ */
+export async function clearLastTaskSynth(sessionId: string): Promise<void> {
+  const meta = await getSessionMeta(sessionId);
+  if (!meta || meta.lastTaskSynth == null) return;
+  const { lastTaskSynth: _drop, ...rest } = meta;
+  void _drop;
+  await writeAtomic({ [metaKey(sessionId)]: rest });
+}
+
 /**
  * Total bytes currently used in chrome.storage.local — across ALL keys,
  * not just session_*. D6 quota guards care about overall storage

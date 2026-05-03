@@ -34,6 +34,8 @@ import type {
   TabContentPreview,
 } from "../../types/messages";
 import type { SessionAgentState } from "../sessions/types";
+import { synthesizeAgentTurnText, type TerminationReason } from "./synthesize-agent-turn";
+import { setLastTaskSynth } from "../sessions/storage";
 
 const MAX_STEPS = 30;
 
@@ -680,10 +682,35 @@ export async function runAgentLoop(ctx: AgentLoopContext): Promise<void> {
   // matching the per-step snapshot pattern.
   // M2-U2 P1-11 — emitDone auto-injects sessionId so every exit path
   // carries the routing field without requiring each call site to repeat it.
-  const emitDone = (msg: Omit<AgentDoneTaskMessage, "sessionId">): void => {
+  //
+  // U3 — each emitDone call site passes `terminationReason` so
+  // synthesizeAgentTurnText can discriminate the 5 paths. The synth is
+  // fired fire-and-forget (no await) after sendAgentDone and before the
+  // tombstone snapshot, matching the step-snapshot fire-and-forget pattern.
+  const emitDone = (
+    msg: Omit<AgentDoneTaskMessage, "sessionId">,
+    terminationReason: TerminationReason = "abort",
+  ): void => {
     if (doneEmitted) return;
     doneEmitted = true;
     sendAgentDone(port, { ...msg, sessionId });
+
+    // U3 — synthesize assistant turn + write to session meta (fire-and-forget)
+    const synth = synthesizeAgentTurnText({
+      terminationReason,
+      summary: msg.summary,
+      stepCount: msg.stepCount,
+      history,
+    });
+    if (synth !== null) {
+      setLastTaskSynth(sessionId, synth).catch((e) => {
+        console.warn(
+          `[agent] setLastTaskSynth failed for session=${ctx.sessionId}:`,
+          e,
+        );
+      });
+    }
+
     if (ctx.onStepSnapshot) {
       ctx.onStepSnapshot(buildSessionAgentTombstone()).catch((e) => {
         console.warn(
@@ -728,7 +755,7 @@ export async function runAgentLoop(ctx: AgentLoopContext): Promise<void> {
           success: false,
           summary: "Cannot run agent on this page type",
           stepCount: 0,
-        });
+        }, "abort");
         return;
       }
       const origin = safeParseOrigin(tab.url);
@@ -738,7 +765,7 @@ export async function runAgentLoop(ctx: AgentLoopContext): Promise<void> {
           success: false,
           summary: "Cannot run agent on this page (unresolvable origin)",
           stepCount: 0,
-        });
+        }, "abort");
         return;
       }
       pinnedTabId = tab.id;
@@ -749,7 +776,7 @@ export async function runAgentLoop(ctx: AgentLoopContext): Promise<void> {
         success: false,
         summary: "Failed to get active tab",
         stepCount: 0,
-      });
+      }, "abort");
       return;
     }
   }
@@ -861,7 +888,7 @@ export async function runAgentLoop(ctx: AgentLoopContext): Promise<void> {
             success: false,
             summary: "Page navigated to a restricted URL, agent stopped",
             stepCount: stepIndex - 1,
-          });
+          }, "abort");
           return;
         }
         const currentOrigin = safeParseOrigin(currentTab.url);
@@ -871,7 +898,7 @@ export async function runAgentLoop(ctx: AgentLoopContext): Promise<void> {
             success: false,
             summary: "Page origin changed, agent stopped for safety",
             stepCount: stepIndex - 1,
-          });
+          }, "abort");
           return;
         }
         currentUrl = currentTab.url;
@@ -881,7 +908,7 @@ export async function runAgentLoop(ctx: AgentLoopContext): Promise<void> {
           success: false,
           summary: "Tab was closed, agent stopped",
           stepCount: stepIndex - 1,
-        });
+        }, "abort");
         return;
       }
 
@@ -899,7 +926,7 @@ export async function runAgentLoop(ctx: AgentLoopContext): Promise<void> {
           success: false,
           summary: "Failed to snapshot page. The page may have navigated.",
           stepCount: stepIndex - 1,
-        });
+        }, "abort");
         return;
       }
 
@@ -1025,7 +1052,7 @@ export async function runAgentLoop(ctx: AgentLoopContext): Promise<void> {
             success: false,
             summary: `LLM stream error: ${event.error}`,
             stepCount: stepIndex,
-          });
+          }, "fail");
           return;
         }
       }
@@ -1396,7 +1423,7 @@ export async function runAgentLoop(ctx: AgentLoopContext): Promise<void> {
                   success: false,
                   summary: fatigueMsg,
                   stepCount: stepIndex,
-                });
+                }, "fail");
                 return;
               }
             }
@@ -1636,7 +1663,7 @@ export async function runAgentLoop(ctx: AgentLoopContext): Promise<void> {
           success: terminationResult.success,
           summary: terminationResult.summary,
           stepCount: stepIndex,
-        });
+        }, terminationResult.success ? "success" : "fail");
         return;
       }
     }
@@ -1647,7 +1674,7 @@ export async function runAgentLoop(ctx: AgentLoopContext): Promise<void> {
       success: false,
       summary: "Max steps reached",
       stepCount: MAX_STEPS,
-    });
+    }, "max-steps");
   } finally {
     // Always tear down any CDP session this task acquired. Idempotent —
     // signal abort listener inside cdp-session.ts may have already done
@@ -1685,7 +1712,7 @@ export async function runAgentLoop(ctx: AgentLoopContext): Promise<void> {
         success: false,
         summary,
         stepCount: lastStepIndex,
-      });
+      }, "abort");
     }
   }
 }
