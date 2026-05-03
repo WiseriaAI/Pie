@@ -94,6 +94,12 @@ async function captureActivePinned(): Promise<
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     if (!tab?.id || !tab.url) return null;
+    // Chrome can return tab.id === -1 for session-restore / detached tabs.
+    // The truthy check above lets that slip through (-1 is truthy). If we
+    // persisted it, a downstream chrome.tabs.get(-1) would synchronously
+    // throw "Value must be at least 0" and crash the agent loop. Filter
+    // explicitly: only pin to a real, addressable tab.
+    if (!Number.isInteger(tab.id) || tab.id < 0) return null;
     if (RESTRICTED_PIN_PREFIXES.some((p) => tab.url!.startsWith(p))) return null;
     const origin = new URL(tab.url).origin;
     if (!origin || origin === "null") return null;

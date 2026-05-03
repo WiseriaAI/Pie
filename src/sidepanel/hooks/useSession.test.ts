@@ -556,6 +556,27 @@ describe("useSession — M3-U2 pinned tab capture", () => {
     expect(meta?.pinnedOrigin).toBeUndefined();
   });
 
+  it("captureActivePinned returns null when tab.id is -1 (session-restore / detached tab)", async () => {
+    // Chrome can return tab.id === -1 for session-restore tabs. The
+    // earlier `if (!tab?.id || !tab.url)` check let -1 through (truthy).
+    // Persisting it would cause a downstream chrome.tabs.get(-1) to
+    // synchronously throw 'Value must be at least 0' and crash the agent
+    // loop with a raw API error in chat-error.
+    chromeMock.tabs.__activeTab = {
+      id: -1,
+      url: "https://example.com/",
+      active: true,
+      windowId: 1,
+    };
+
+    const { result } = renderHook(() => useSession());
+    await waitFor(() => expect(result.current.ready).toBe(true));
+
+    const meta = await getSessionMeta(result.current.sessionId!);
+    expect(meta?.pinnedTabId).toBeUndefined();
+    expect(meta?.pinnedOrigin).toBeUndefined();
+  });
+
   it("captureActivePinned returns null for blob: URLs (review fix REL-2)", async () => {
     // blob:https://example.com/abc parses to a non-"null" origin so the
     // earlier captureActivePinned would have persisted a pin. The loop's

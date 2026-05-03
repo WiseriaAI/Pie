@@ -325,14 +325,29 @@ async function buildTabTargets(
     const ids: number[] = [];
     if (Array.isArray(args.tabIds)) {
       for (const v of args.tabIds) {
-        if (typeof v === "number") ids.push(v);
+        // chrome.tabs.get's API binding throws SYNCHRONOUSLY on negative
+        // ids ("Value must be at least 0"), which would crash the whole
+        // ids.map below before Promise.allSettled could observe it. Filter
+        // here AND require integer + finite so a hallucinated `args.tabIds:
+        // [-1]` from the LLM degrades to a stale-target observation
+        // instead of an unhandled throw that exits the agent loop.
+        if (typeof v === "number" && Number.isInteger(v) && v >= 0) {
+          ids.push(v);
+        }
       }
     }
-    if (typeof args.tabId === "number") {
+    if (
+      typeof args.tabId === "number" &&
+      Number.isInteger(args.tabId) &&
+      args.tabId >= 0
+    ) {
       ids.push(args.tabId);
     }
     if (ids.length === 0) return undefined;
     // Parallel chrome.tabs.get; reject → stale TabTarget placeholder.
+    // The synchronous-throw guard above means every id here is safe to
+    // pass directly; runtime rejects (tab closed since the LLM saw it)
+    // still flow through the .allSettled rejection branch.
     const settled = await Promise.allSettled(ids.map((id) => chrome.tabs.get(id)));
     settled.forEach((r, i) => {
       const id = ids[i];
