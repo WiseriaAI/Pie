@@ -8,7 +8,7 @@ import {
 } from "@/lib/skills";
 import { getActiveProvider, getProviderConfig } from "@/lib/storage";
 import type { UseSession } from "@/sidepanel/hooks/useSession";
-import AgentStepBubble from "./AgentStepBubble";
+import AgentStepGroup, { type AgentStepData } from "./AgentStepGroup";
 import AgentConfirmCard from "./AgentConfirmCard";
 import AgentSummary from "./AgentSummary";
 import SessionConfirmCard from "./SessionConfirmCard";
@@ -367,6 +367,43 @@ export default function Chat({
 
   const stepCount = messages.filter((m) => m.role === "agent-step").length;
 
+  // Group consecutive agent-step messages into a single AgentStepGroup so the
+  // user sees an in-place "正在调用 X..." line + a foldable history of done
+  // steps, rather than one large card per step. Other roles render as before.
+  type RenderSegment =
+    | { kind: "msg"; firstIndex: number; msg: typeof messages[number] }
+    | { kind: "steps"; firstIndex: number; doneSteps: AgentStepData[]; currentStep: AgentStepData };
+  const segments = useMemo<RenderSegment[]>(() => {
+    const out: RenderSegment[] = [];
+    let i = 0;
+    while (i < messages.length) {
+      const m = messages[i]!;
+      if (m.role !== "agent-step") {
+        out.push({ kind: "msg", firstIndex: i, msg: m });
+        i++;
+        continue;
+      }
+      const start = i;
+      const steps: AgentStepData[] = [];
+      while (i < messages.length && messages[i]!.role === "agent-step") {
+        const s = messages[i]! as Extract<typeof messages[number], { role: "agent-step" }>;
+        steps.push({
+          stepIndex: s.stepIndex,
+          tool: s.tool,
+          args: s.args,
+          resolvedElement: s.resolvedElement,
+          status: s.status,
+          observation: s.observation,
+        });
+        i++;
+      }
+      const currentStep = steps[steps.length - 1]!;
+      const doneSteps = steps.slice(0, -1);
+      out.push({ kind: "steps", firstIndex: start, doneSteps, currentStep });
+    }
+    return out;
+  }, [messages]);
+
   return (
     <div className="flex h-full flex-col">
       {/* Pinned origin + provider label info bar */}
@@ -428,34 +465,34 @@ export default function Chat({
               <PageChangedBanner onNewTask={handleNewTask} />
             )}
 
-            {messages.map((msg, i) => {
+            {segments.map((seg) => {
               // M5 motion: bubble-in for content rows, scale-in for confirm
               // cards (focus-pull on actionable surfaces). Wrappers carry the
               // animation class so message components stay layout-agnostic.
-              if (msg.role === "user" || msg.role === "assistant") {
+              // For agent-step groups, the wrapper plays bubble-in once on
+              // group mount; subsequent in-place updates of the active step
+              // don't replay because React reuses the same DOM nodes.
+              if (seg.kind === "steps") {
                 return (
-                  <div key={i} className="bubble-in">
-                    <MessageBubble message={msg} />
+                  <div key={`steps-${seg.firstIndex}`} className="bubble-in">
+                    <AgentStepGroup
+                      doneSteps={seg.doneSteps}
+                      currentStep={seg.currentStep}
+                    />
                   </div>
                 );
               }
-              if (msg.role === "agent-step") {
+              const { msg, firstIndex } = seg;
+              if (msg.role === "user" || msg.role === "assistant") {
                 return (
-                  <div key={i} className="bubble-in">
-                    <AgentStepBubble
-                      stepIndex={msg.stepIndex}
-                      tool={msg.tool}
-                      args={msg.args}
-                      resolvedElement={msg.resolvedElement}
-                      status={msg.status}
-                      observation={msg.observation}
-                    />
+                  <div key={firstIndex} className="bubble-in">
+                    <MessageBubble message={msg} />
                   </div>
                 );
               }
               if (msg.role === "agent-confirm") {
                 return (
-                  <div key={i} className="scale-in">
+                  <div key={firstIndex} className="scale-in">
                     <AgentConfirmCard
                       tool={msg.tool}
                       args={msg.args}
@@ -475,7 +512,7 @@ export default function Chat({
               }
               if (msg.role === "agent-summary") {
                 return (
-                  <div key={i} className="bubble-in">
+                  <div key={firstIndex} className="bubble-in">
                     <AgentSummary
                       success={msg.success}
                       summary={msg.summary}
@@ -486,7 +523,7 @@ export default function Chat({
               }
               if (msg.role === "session-confirm") {
                 return (
-                  <div key={i} className="scale-in">
+                  <div key={firstIndex} className="scale-in">
                     <SessionConfirmCard
                       kind={msg.kind}
                       payload={msg.payload}
