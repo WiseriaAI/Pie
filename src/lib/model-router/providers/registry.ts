@@ -8,6 +8,8 @@ export interface ProviderMeta {
   placeholder: string;
   type: "anthropic" | "openai-compatible";
   supportsTools: boolean;
+  /** Approximate context window size in tokens, used by the token-budget guard (U5). */
+  maxContextTokens: number;
 }
 
 export const PROVIDER_REGISTRY: ProviderMeta[] = [
@@ -19,6 +21,7 @@ export const PROVIDER_REGISTRY: ProviderMeta[] = [
     placeholder: "sk-ant-...",
     type: "anthropic",
     supportsTools: true,
+    maxContextTokens: 200_000,
   },
   {
     id: "openai",
@@ -28,6 +31,7 @@ export const PROVIDER_REGISTRY: ProviderMeta[] = [
     placeholder: "sk-...",
     type: "openai-compatible",
     supportsTools: true,
+    maxContextTokens: 128_000,
   },
   {
     id: "openrouter",
@@ -37,6 +41,9 @@ export const PROVIDER_REGISTRY: ProviderMeta[] = [
     placeholder: "sk-or-...",
     type: "openai-compatible",
     supportsTools: true,
+    // Conservative: OpenRouter routes to many different models; v2 can expose
+    // a Settings UI to let users set the actual routed model's context window.
+    maxContextTokens: 32_000,
   },
   {
     id: "minimax",
@@ -46,6 +53,8 @@ export const PROVIDER_REGISTRY: ProviderMeta[] = [
     placeholder: "eyJ...",
     type: "openai-compatible",
     supportsTools: true,
+    // Conservative default; documented context varies by model.
+    maxContextTokens: 32_000,
   },
   {
     id: "zhipu",
@@ -55,6 +64,8 @@ export const PROVIDER_REGISTRY: ProviderMeta[] = [
     placeholder: "API key",
     type: "openai-compatible",
     supportsTools: true,
+    // Conservative default; documented context varies by model.
+    maxContextTokens: 32_000,
   },
   {
     id: "bailian",
@@ -64,6 +75,8 @@ export const PROVIDER_REGISTRY: ProviderMeta[] = [
     placeholder: "sk-...",
     type: "openai-compatible",
     supportsTools: true,
+    // Conservative default; documented context varies by model.
+    maxContextTokens: 32_000,
   },
 ];
 

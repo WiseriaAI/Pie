@@ -20,6 +20,7 @@ import {
 } from "./tools/tabs";
 import { buildAgentSystemPrompt, buildObservationMessage } from "./prompt";
 import { applySlidingWindow } from "./window";
+import { applyTokenBudget } from "./window-token-budget";
 import {
   validateAndRepairAdjacentRoles,
   type RoleViolation,
@@ -1047,7 +1048,15 @@ export async function runAgentLoop(ctx: AgentLoopContext): Promise<void> {
       }
 
       // Apply sliding window
-      const windowedHistoryRaw = applySlidingWindow(history);
+      const windowedHistorySlid = applySlidingWindow(history);
+
+      // U5 — Token budget guard: drop oldest head pairs if estimated token
+      // count exceeds 80% of the provider's context window. CJK-aware divisor
+      // prevents 4× undercount for Chinese/Japanese/Korean conversations.
+      const windowedHistoryRaw = applyTokenBudget(
+        windowedHistorySlid,
+        modelConfig.provider,
+      );
 
       // U4 — Defense-in-depth: validate role alternation and auto-repair
       // adjacent same-role messages. Normal paths (D2 SW-side synth + U2
