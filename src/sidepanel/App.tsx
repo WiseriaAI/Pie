@@ -64,7 +64,16 @@ export default function App() {
   // session state (status transitions, new sessions, etc.)
   const refreshSessionIndex = useCallback(async () => {
     const list = await listSessionIndex();
-    setSessions(list);
+    // Hide empty active sessions from the drawer — a freshly-mounted panel
+    // creates one of these and the user shouldn't see it until they actually
+    // send a message. Non-active statuses (paused / failed / archived) are
+    // always shown so the user can resume / discard work.
+    // `messageCount` is optional on legacy entries; treat undefined as
+    // non-empty (1) to avoid hiding pre-upgrade sessions.
+    const visible = list.filter(
+      (e) => e.status !== "active" || (e.messageCount ?? 1) > 0,
+    );
+    setSessions(visible);
   }, []);
 
   // ── Compute pendingCount ──────────────────────────────────────────────────
