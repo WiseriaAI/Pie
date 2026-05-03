@@ -1,4 +1,4 @@
-// Service Worker — background script for Chrome AI Agent
+// Service Worker — background script for Pie
 
 import type {
   PageContent,
@@ -1218,4 +1218,4 @@ chrome.runtime.onConnect.addListener((port) => {
   });
 });
 
-console.log("[Chrome AI Agent] Service worker started");
+console.log("[Pie] Service worker started");

@@ -1,8 +1,8 @@
 {
-  "name": "chrome-ai-agent",
-  "version": "0.4.0",
+  "name": "pie-extension",
+  "version": "0.5.0",
   "private": true,
-  "description": "BYOK browser AI — bring your own API key for page understanding, agent automation, and smart tab management.",
+  "description": "BYOK Chrome Extension Agent — bring your own API key for page understanding, multi-step task automation, and smart tab management.",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -11,7 +11,7 @@
     "test": "vitest run",
     "test:watch": "vitest"
   },
-  "license": "MIT",
+  "license": "Apache-2.0",
   "packageManager": "pnpm@10.33.0",
   "dependencies": {
     "react": "^19.2.5",

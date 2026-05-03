@@ -2,4 +2,4 @@
 
 export {};
 
-console.log("[Chrome AI Agent] Content script loaded");
+console.log("[Pie] Content script loaded");
