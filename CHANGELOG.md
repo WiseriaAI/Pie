@@ -35,6 +35,11 @@ First MVP pre-release under the **Pie** brand.
   DOM attributes (`data-chrome-ai-agent-idx`) are unchanged in this release
   to avoid a structural refactor; they will move to `data-pie-idx` in a
   follow-up.
+- **License switched from MIT to Apache License 2.0.** Apache 2.0 adds an
+  explicit patent grant and a "modification notice" requirement on
+  redistributions, both of which are healthier defaults for a project that
+  expects external contributions. `package.json` SPDX identifier updated to
+  `Apache-2.0`.
 
 ### Notes
 - No new Chrome permissions are introduced in 0.5.0; the rebrand and

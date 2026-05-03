@@ -173,4 +173,4 @@ in [CHANGELOG.md](CHANGELOG.md).
 
 ## License
 
-[MIT](LICENSE) © 2026 Pie Project Contributors
+Licensed under the [Apache License, Version 2.0](LICENSE) — © 2026 Pie Project Contributors.

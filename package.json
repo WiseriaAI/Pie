@@ -11,7 +11,7 @@
     "test": "vitest run",
     "test:watch": "vitest"
   },
-  "license": "MIT",
+  "license": "Apache-2.0",
   "packageManager": "pnpm@10.33.0",
   "dependencies": {
     "react": "^19.2.5",
