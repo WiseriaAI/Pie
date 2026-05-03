@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "Chrome AI Agent",
-  "version": "0.4.0",
-  "description": "BYOK browser AI — bring your own API key for page understanding, agent automation, and smart tab management.",
+  "name": "Pie",
+  "version": "0.5.0",
+  "description": "BYOK Chrome Extension Agent — bring your own API key for page understanding, multi-step task automation, and smart tab management.",
   "permissions": ["activeTab", "sidePanel", "storage", "tabs", "tabGroups", "scripting", "debugger"],
   "host_permissions": [
     "<all_urls>",
@@ -21,7 +21,7 @@
     "default_path": "src/sidepanel/index.html"
   },
   "action": {
-    "default_title": "Open Chrome AI Agent"
+    "default_title": "Open Pie"
   },
   "icons": {
     "16": "public/icons/icon-16.svg",
