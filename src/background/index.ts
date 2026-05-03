@@ -18,6 +18,7 @@ import type {
 } from "@/lib/model-router";
 import { getActiveProvider, getProviderConfig } from "@/lib/storage";
 import { runAgentLoop, safeParseOrigin } from "@/lib/agent/loop";
+import type { RoleViolation } from "@/lib/agent/history-validation";
 import { getEnabledSkills, resolveSkillToTools } from "@/lib/skills";
 import {
   setSessionAgent,
@@ -29,6 +30,7 @@ import {
   markFailedAndScrub,
   updateLastAccessed,
   isPendingConfirmFloodLimited,
+  clearLastTaskSynth,
 } from "@/lib/sessions/storage";
 import { escapeUntrustedWrappers } from "@/lib/agent/untrusted-wrappers";
 import {
@@ -44,6 +46,50 @@ import { runSessionMigrations } from "@/lib/sessions/migration";
 import { getCrossSessionPinnedTabIds } from "@/lib/sessions/pinned-tab-registry";
 import { chat } from "@/lib/model-router";
 import { generateTitle, maybeUpgradeFallbackTitle } from "@/lib/sessions/title-generator";
+
+// ── U4 — History-repair telemetry ────────────────────────────────────────────
+
+/**
+ * U4 — Emit a console.warn when validateAndRepairAdjacentRoles auto-repairs
+ * adjacent same-role messages in the windowed LLM history. Content is NOT
+ * logged (privacy); only content-length + a SHA-256 hex prefix are included
+ * so violations can be correlated in DevTools without leaking user data.
+ *
+ * Uses the Web Crypto API available in Service Worker context.
+ */
+async function logHistoryRepaired(violations: RoleViolation[], messages: AgentMessage[]): Promise<void> {
+  try {
+    const payloads = await Promise.all(
+      violations.map(async ({ idx, role }) => {
+        const msg = messages[idx];
+        const raw = msg
+          ? typeof msg.content === "string"
+            ? msg.content
+            : JSON.stringify(msg.content)
+          : "";
+        const contentLength = raw.length;
+        let contentSha256First8 = "n/a";
+        try {
+          const buf = await crypto.subtle.digest(
+            "SHA-256",
+            new TextEncoder().encode(raw),
+          );
+          const hex = Array.from(new Uint8Array(buf))
+            .map((b) => b.toString(16).padStart(2, "0"))
+            .join("");
+          contentSha256First8 = hex.slice(0, 8);
+        } catch {
+          // Web Crypto unavailable (test context) — keep "n/a".
+        }
+        return { idx, role, contentLength, contentSha256First8 };
+      }),
+    );
+    console.warn("[agent] multi-turn-history-repaired", { violations: payloads });
+  } catch (e) {
+    // Telemetry must never crash the caller.
+    console.warn("[agent] multi-turn-history-repaired (telemetry error)", e);
+  }
+}
 
 // Open side panel when extension icon is clicked
 chrome.action.onClicked.addListener(async (tab) => {
@@ -603,6 +649,12 @@ async function handleResumeRequest(
     pinned,
     // M3-U4 (TOCTOU fix) — refresh per dispatch; see chat-start twin.
     refreshCrossSessionPinnedTabIds: () => getCrossSessionPinnedTabIds(sessionId),
+    // U4 — same telemetry hook as chat-start path.
+    onHistoryRepaired: (violations, rawMessages) => {
+      logHistoryRepaired(violations, rawMessages).catch((e) => {
+        console.warn("[agent] logHistoryRepaired error:", e);
+      });
+    },
   });
 }
 
@@ -789,9 +841,53 @@ async function handleChatStream(
       }
     }
 
-    // Extract task from last user message
-    const task =
-      [...messages].reverse().find((m) => m.role === "user")?.content ?? "";
+    // U2 — validate messages array is non-empty (panel always sends at
+    // least the current user message; empty array is a wire bug).
+    if (messages.length === 0) {
+      port.postMessage({
+        type: "chat-error",
+        error: "对话历史为空，请重新发送",
+        sessionId,
+      });
+      return;
+    }
+
+    // U2 — task is always the last message (panel sendMessage puts the
+    // current user prompt last; this replaces the old reverse-find).
+    const task = messages[messages.length - 1]!.content;
+
+    // U2 — lastTaskSynth injection (Half B SW-side synth).
+    // Read session meta for any synthesized assistant turn written by
+    // emitDone after the previous agent task finished. If present,
+    // insert it as an assistant turn immediately before the final user
+    // message, then clear it (one-shot consume) so it is never injected
+    // into a second chat-start.
+    //
+    // Note: title generation (above) uses messages.length === 1 which
+    // is evaluated BEFORE this injection, so the injected synth never
+    // accidentally counts as a second message for title-gen purposes.
+    // sessionMeta is re-read below for the pinned tab fields; we
+    // perform a single early read here and share it.
+    const synthMeta = await getSessionMeta(sessionId);
+    const lastTaskSynth = synthMeta?.lastTaskSynth ?? null;
+
+    let effectiveMessages = messages;
+    if (lastTaskSynth) {
+      // Insert the synth assistant turn before the last user message.
+      // Build a new array — never mutate the input.
+      effectiveMessages = [
+        ...messages.slice(0, -1),
+        { role: "assistant" as const, content: lastTaskSynth },
+        messages[messages.length - 1]!,
+      ];
+      // One-shot consume: clear so the next chat-start starts fresh.
+      clearLastTaskSynth(sessionId).catch((e) => {
+        console.warn(
+          `[sw] clearLastTaskSynth failed for session=${sessionId}:`,
+          e,
+        );
+      });
+    }
 
     const modelConfig: ModelConfig = config;
 
@@ -880,7 +976,9 @@ async function handleChatStream(
     // M3-U2 — read the panel-captured pinned tab/origin from meta and
     // inject into the loop context. Legacy sessions without a pin fall
     // through to the loop's active-tab fallback (already handled there).
-    const sessionMeta = await getSessionMeta(sessionId);
+    // U2 — reuse synthMeta already fetched above for lastTaskSynth
+    // (same storage call, avoiding a second round-trip).
+    const sessionMeta = synthMeta;
     // M3-U2 — both-or-neither: only construct the pin object when both
     // fields are present (defends against partially-corrupted meta).
     const pinned =
@@ -909,6 +1007,17 @@ async function handleChatStream(
       // registry per tool dispatch. The frozen snapshot here would miss
       // sessions created mid-loop.
       refreshCrossSessionPinnedTabIds: () => getCrossSessionPinnedTabIds(sessionId),
+      // U2 — pass the full (possibly synth-injected) messages array so
+      // runAgentLoop can seed a proper multi-turn history instead of the
+      // bare [system, user(task)] two-entry seed.
+      messages: effectiveMessages,
+      // U4 — telemetry: fire-and-forget; crypto.subtle may be async but
+      // must not stall the LLM call.
+      onHistoryRepaired: (violations, rawMessages) => {
+        logHistoryRepaired(violations, rawMessages).catch((e) => {
+          console.warn("[agent] logHistoryRepaired error:", e);
+        });
+      },
     });
   } catch (e) {
     if (signal.aborted) return;

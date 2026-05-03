@@ -1,4 +1,5 @@
 import type { ModelConfig, AgentMessage, ContentBlock, ToolDefinition } from "../model-router/types";
+import type { ChatMessage } from "../model-router";
 import { streamChat } from "../model-router";
 import { snapshotInteractiveElements } from "../dom-actions/snapshot";
 import type { PageSnapshot } from "../dom-actions/types";
@@ -19,6 +20,11 @@ import {
 } from "./tools/tabs";
 import { buildAgentSystemPrompt, buildObservationMessage } from "./prompt";
 import { applySlidingWindow } from "./window";
+import { applyTokenBudget } from "./window-token-budget";
+import {
+  validateAndRepairAdjacentRoles,
+  type RoleViolation,
+} from "./history-validation";
 import { isKeyboardSimulationEnabled } from "../keyboard-simulation";
 import { getEnabledSkills, markSkillFirstRun, type SkillDefinition } from "../skills";
 import {
@@ -34,6 +40,8 @@ import type {
   TabContentPreview,
 } from "../../types/messages";
 import type { SessionAgentState } from "../sessions/types";
+import { synthesizeAgentTurnText, type TerminationReason } from "./synthesize-agent-turn";
+import { setLastTaskSynth } from "../sessions/storage";
 
 const MAX_STEPS = 30;
 
@@ -169,9 +177,69 @@ export interface AgentLoopContext {
    * doesn't fire.
    */
   refreshCrossSessionPinnedTabIds?: () => Promise<Set<number>>;
+  /**
+   * U2 — full multi-turn chat history from the panel wire. When present
+   * (new-task path, not resume), the loop seeds its `history` array from
+   * this array instead of the bare `[system, user(task)]` two-entry seed.
+   *
+   * Each user message is individually wrapped in
+   * `<untrusted_user_message>…</untrusted_user_message>` with
+   * `escapeUntrustedWrappers` applied first (D7 idempotent wrap).
+   * Assistant messages (including the `lastTaskSynth`-injected turn,
+   * already wrapped by U3 in `<untrusted_prior_task_summary>`) pass
+   * through verbatim — no double-wrap.
+   *
+   * Optional for backward compatibility: when absent the loop falls back
+   * to the `[system, user(task)]` two-entry seed (test harness + legacy
+   * callers). The resume path (`resumedAgentMessages`) ignores this
+   * field entirely.
+   */
+  messages?: ChatMessage[];
+  /**
+   * U4 — called when `validateAndRepairAdjacentRoles` detects and repairs
+   * one or more adjacent same-role messages in the windowed history before
+   * the LLM call. Fired once per LLM iteration that has violations.
+   *
+   * Receives both the violations list (for routing / counting) and the
+   * pre-repair `windowedHistoryRaw` array (so the handler can compute
+   * content hashes without the loop needing an async crypto call).
+   *
+   * Optional (absent in test harness / legacy callers). Intended for SW
+   * telemetry (console.warn) without importing browser-specific APIs into
+   * the pure loop module.
+   */
+  onHistoryRepaired?: (violations: RoleViolation[], messages: AgentMessage[]) => void;
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
+
+/**
+ * U2 — convert a `ChatMessage` from the panel wire to an `AgentMessage`
+ * suitable for the LLM history.
+ *
+ * - `user` messages are wrapped in
+ *   `<untrusted_user_message>…</untrusted_user_message>` with
+ *   `escapeUntrustedWrappers` applied first (D7 idempotent).
+ * - `assistant` messages pass through verbatim (lastTaskSynth-injected
+ *   turns are already wrapped by U3 in
+ *   `<untrusted_prior_task_summary>`; real chat replies are trusted
+ *   LLM output and do not need additional wrapping).
+ * - `system` messages pass through verbatim (edge case; system role
+ *   appears only as the first entry in the history, built by
+ *   `buildAgentSystemPrompt`).
+ *
+ * Exported for unit testing (D7 wrap invariant).
+ */
+export function chatMessageToAgentMessage(m: ChatMessage): AgentMessage {
+  if (m.role === "user") {
+    const escaped = escapeUntrustedWrappers(m.content);
+    return {
+      role: "user",
+      content: `<untrusted_user_message>${escaped}</untrusted_user_message>`,
+    };
+  }
+  return { role: m.role, content: m.content };
+}
 
 function toolsToDefinitions(tools: Tool[]): ToolDefinition[] {
   return tools.map((t) => ({
@@ -652,6 +720,11 @@ export async function runAgentLoop(ctx: AgentLoopContext): Promise<void> {
   let doneEmitted = false;
   let lastStepIndex = 0;
   let normalTextReply = false; // pure-text reply uses chat-done, not agent-done-task
+  // Pre-initialized to [] so emitDone closures that fire before history is
+  // seeded (legacy fallback paths at lines ~819/829/840 — before the
+  // `history = ctx.resumedAgentMessages…` assignment) read an empty array
+  // instead of hitting a TDZ ReferenceError (Fix 1 / C1).
+  let history: AgentMessage[] = [];
   // Phase 2.6 / M2-U1 — skill-scope stack.
   //
   // Per-call local variable so concurrent runAgentLoop invocations each
@@ -680,10 +753,35 @@ export async function runAgentLoop(ctx: AgentLoopContext): Promise<void> {
   // matching the per-step snapshot pattern.
   // M2-U2 P1-11 — emitDone auto-injects sessionId so every exit path
   // carries the routing field without requiring each call site to repeat it.
-  const emitDone = (msg: Omit<AgentDoneTaskMessage, "sessionId">): void => {
+  //
+  // U3 — each emitDone call site passes `terminationReason` so
+  // synthesizeAgentTurnText can discriminate the 5 paths. The synth is
+  // fired fire-and-forget (no await) after sendAgentDone and before the
+  // tombstone snapshot, matching the step-snapshot fire-and-forget pattern.
+  const emitDone = (
+    msg: Omit<AgentDoneTaskMessage, "sessionId">,
+    terminationReason: TerminationReason = "abort",
+  ): void => {
     if (doneEmitted) return;
     doneEmitted = true;
     sendAgentDone(port, { ...msg, sessionId });
+
+    // U3 — synthesize assistant turn + write to session meta (fire-and-forget)
+    const synth = synthesizeAgentTurnText({
+      terminationReason,
+      summary: msg.summary,
+      stepCount: msg.stepCount,
+      history,
+    });
+    if (synth !== null) {
+      setLastTaskSynth(sessionId, synth).catch((e) => {
+        console.warn(
+          `[agent] setLastTaskSynth failed for session=${ctx.sessionId}:`,
+          e,
+        );
+      });
+    }
+
     if (ctx.onStepSnapshot) {
       ctx.onStepSnapshot(buildSessionAgentTombstone()).catch((e) => {
         console.warn(
@@ -728,7 +826,7 @@ export async function runAgentLoop(ctx: AgentLoopContext): Promise<void> {
           success: false,
           summary: "Cannot run agent on this page type",
           stepCount: 0,
-        });
+        }, "abort");
         return;
       }
       const origin = safeParseOrigin(tab.url);
@@ -738,7 +836,7 @@ export async function runAgentLoop(ctx: AgentLoopContext): Promise<void> {
           success: false,
           summary: "Cannot run agent on this page (unresolvable origin)",
           stepCount: 0,
-        });
+        }, "abort");
         return;
       }
       pinnedTabId = tab.id;
@@ -749,7 +847,7 @@ export async function runAgentLoop(ctx: AgentLoopContext): Promise<void> {
         success: false,
         summary: "Failed to get active tab",
         stepCount: 0,
-      });
+      }, "abort");
       return;
     }
   }
@@ -798,25 +896,33 @@ export async function runAgentLoop(ctx: AgentLoopContext): Promise<void> {
   // against subsequent in-place mutations of the input (the caller
   // owns it but we want to be defensive). See `isResumedFirstIteration`
   // below for the related observation-merge skip.
-  const history: AgentMessage[] = ctx.resumedAgentMessages
+  //
+  // U2 — multi-turn path: when `ctx.messages` is provided (new task,
+  // not resume), seed history from the full chat prefix. Each user
+  // message is wrapped in <untrusted_user_message>…</untrusted_user_message>
+  // with escapeUntrustedWrappers applied first (D7 idempotent).
+  // Assistant messages pass through verbatim (lastTaskSynth-injected
+  // turns are already wrapped by U3 in <untrusted_prior_task_summary>).
+  const systemMsg: AgentMessage = {
+    role: "system",
+    content: buildAgentSystemPrompt(
+      task,
+      keyboardSimEnabledAtStart,
+      /* hasMetaTools */ true,
+      // M3-U2 — pass the authoritative pinned tab id + origin so
+      // the LLM can call get_tab_content({tabId}) directly for
+      // "summarize / read this page" tasks instead of burning a
+      // list_tabs round-trip + a confirm card just to discover
+      // its own tab id.
+      { tabId: pinnedTabId, origin: pinnedOrigin },
+    ),
+  };
+
+  history = ctx.resumedAgentMessages
     ? structuredClone(ctx.resumedAgentMessages)
-    : [
-        {
-          role: "system",
-          content: buildAgentSystemPrompt(
-            task,
-            keyboardSimEnabledAtStart,
-            /* hasMetaTools */ true,
-            // M3-U2 — pass the authoritative pinned tab id + origin so
-            // the LLM can call get_tab_content({tabId}) directly for
-            // "summarize / read this page" tasks instead of burning a
-            // list_tabs round-trip + a confirm card just to discover
-            // its own tab id.
-            { tabId: pinnedTabId, origin: pinnedOrigin },
-          ),
-        },
-        { role: "user", content: task },
-      ];
+    : ctx.messages && ctx.messages.length > 0
+      ? [systemMsg, ...ctx.messages.map(chatMessageToAgentMessage)]
+      : [systemMsg, { role: "user", content: task }];
 
   // M1-U5 — flag that the first iteration of the loop should skip the
   // observation merge. The prior step's snapshot already contains an
@@ -861,7 +967,7 @@ export async function runAgentLoop(ctx: AgentLoopContext): Promise<void> {
             success: false,
             summary: "Page navigated to a restricted URL, agent stopped",
             stepCount: stepIndex - 1,
-          });
+          }, "abort");
           return;
         }
         const currentOrigin = safeParseOrigin(currentTab.url);
@@ -871,7 +977,7 @@ export async function runAgentLoop(ctx: AgentLoopContext): Promise<void> {
             success: false,
             summary: "Page origin changed, agent stopped for safety",
             stepCount: stepIndex - 1,
-          });
+          }, "abort");
           return;
         }
         currentUrl = currentTab.url;
@@ -881,7 +987,7 @@ export async function runAgentLoop(ctx: AgentLoopContext): Promise<void> {
           success: false,
           summary: "Tab was closed, agent stopped",
           stepCount: stepIndex - 1,
-        });
+        }, "abort");
         return;
       }
 
@@ -899,7 +1005,7 @@ export async function runAgentLoop(ctx: AgentLoopContext): Promise<void> {
           success: false,
           summary: "Failed to snapshot page. The page may have navigated.",
           stepCount: stepIndex - 1,
-        });
+        }, "abort");
         return;
       }
 
@@ -947,7 +1053,27 @@ export async function runAgentLoop(ctx: AgentLoopContext): Promise<void> {
       }
 
       // Apply sliding window
-      const windowedHistory = applySlidingWindow(history);
+      const windowedHistorySlid = applySlidingWindow(history);
+
+      // U5 — Token budget guard: drop oldest head pairs if estimated token
+      // count exceeds 80% of the provider's context window. CJK-aware divisor
+      // prevents 4× undercount for Chinese/Japanese/Korean conversations.
+      const windowedHistoryRaw = applyTokenBudget(
+        windowedHistorySlid,
+        modelConfig.provider,
+      );
+
+      // U4 — Defense-in-depth: validate role alternation and auto-repair
+      // adjacent same-role messages. Normal paths (D2 SW-side synth + U2
+      // wrapping) already ensure alternation; this is the last resort for
+      // wire-format bugs or future refactor gaps. system-system pairs are
+      // not counted (anthropic.ts joins them). Violations are repaired
+      // silently — no error surfaced to the user.
+      const { repaired: windowedHistory, violations: historyViolations } =
+        validateAndRepairAdjacentRoles(windowedHistoryRaw);
+      if (historyViolations.length > 0 && ctx.onHistoryRepaired) {
+        ctx.onHistoryRepaired(historyViolations, windowedHistoryRaw);
+      }
 
       // Resolve tools — re-read keyboard sim flag every iteration so
       // mid-task ON adds tools next round (mid-task OFF is handled by
@@ -1025,7 +1151,7 @@ export async function runAgentLoop(ctx: AgentLoopContext): Promise<void> {
             success: false,
             summary: `LLM stream error: ${event.error}`,
             stepCount: stepIndex,
-          });
+          }, "fail");
           return;
         }
       }
@@ -1396,7 +1522,7 @@ export async function runAgentLoop(ctx: AgentLoopContext): Promise<void> {
                   success: false,
                   summary: fatigueMsg,
                   stepCount: stepIndex,
-                });
+                }, "fail");
                 return;
               }
             }
@@ -1636,7 +1762,7 @@ export async function runAgentLoop(ctx: AgentLoopContext): Promise<void> {
           success: terminationResult.success,
           summary: terminationResult.summary,
           stepCount: stepIndex,
-        });
+        }, terminationResult.success ? "success" : "fail");
         return;
       }
     }
@@ -1647,7 +1773,7 @@ export async function runAgentLoop(ctx: AgentLoopContext): Promise<void> {
       success: false,
       summary: "Max steps reached",
       stepCount: MAX_STEPS,
-    });
+    }, "max-steps");
   } finally {
     // Always tear down any CDP session this task acquired. Idempotent —
     // signal abort listener inside cdp-session.ts may have already done
@@ -1685,7 +1811,7 @@ export async function runAgentLoop(ctx: AgentLoopContext): Promise<void> {
         success: false,
         summary,
         stepCount: lastStepIndex,
-      });
+      }, "abort");
     }
   }
 }

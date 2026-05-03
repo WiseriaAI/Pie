@@ -86,6 +86,18 @@ export interface SessionMeta {
   /** Set when the session is moved to archived storage. M2-U4 also reads
    *  this to drive the 30-day hard-delete sweep. Absence = not archived. */
   archivedAt?: number;
+  /**
+   * U3 (Half B SW-side synth) — synthesized assistant turn from the last
+   * completed agent task. Written by `emitDone` in loop.ts via
+   * `setLastTaskSynth`; consumed (read + cleared) by `handleChatStream`
+   * in U2 before passing history to `runAgentLoop`. One-shot: cleared
+   * immediately after reading so it is never injected twice.
+   *
+   * Already wrapped in `<untrusted_prior_task_summary>…</untrusted_prior_task_summary>`.
+   * Not present (undefined) when no agent task has completed since the
+   * last chat-start, or when the prior round was a pure-text reply.
+   */
+  lastTaskSynth?: string;
   /** Panel-rendered chat history. The SW writes the full array on
    *  chat-done boundaries (M1-U2); panel reads it on mount and re-renders
    *  on storage onChanged. */

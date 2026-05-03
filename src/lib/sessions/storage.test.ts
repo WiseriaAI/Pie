@@ -17,6 +17,8 @@ import {
   setSessionAgent,
   setSessionMeta,
   updateLastAccessed,
+  setLastTaskSynth,
+  clearLastTaskSynth,
 } from "./storage";
 import type {
   PendingConfirmRecord,
@@ -589,5 +591,90 @@ describe("isPendingConfirmFloodLimited (boundary = 5)", () => {
     // Scrub one session → count drops to 5 → no longer flood-limited
     await scrubPendingConfirm(sessions[0]!.id);
     expect(await isPendingConfirmFloodLimited()).toBe(false);
+  });
+});
+
+// ── U3 — setLastTaskSynth / clearLastTaskSynth ────────────────────────────────
+
+describe("setLastTaskSynth / clearLastTaskSynth — U3", () => {
+  it("setLastTaskSynth writes lastTaskSynth to session meta", async () => {
+    const meta = await createSession();
+    const synth = "<untrusted_prior_task_summary>已完成: 打开飞书</untrusted_prior_task_summary>";
+    await setLastTaskSynth(meta.id, synth);
+    const updated = await getSessionMeta(meta.id);
+    expect(updated!.lastTaskSynth).toBe(synth);
+  });
+
+  it("setLastTaskSynth writes only the meta key (no index update)", async () => {
+    // lastTaskSynth is not in SessionIndexEntry — the session drawer does
+    // not need it. Writing only meta key keeps the write hot-path minimal.
+    const setSpy = vi.spyOn(chromeMock.storage.local, "set");
+    const meta = await createSession();
+    setSpy.mockClear();
+
+    await setLastTaskSynth(meta.id, "<untrusted_prior_task_summary>x</untrusted_prior_task_summary>");
+
+    expect(setSpy).toHaveBeenCalledTimes(1);
+    const batchKeys = Object.keys(setSpy.mock.calls[0]![0] as object);
+    expect(batchKeys).toEqual([`session_${meta.id}_meta`]);
+    setSpy.mockRestore();
+  });
+
+  it("setLastTaskSynth is a no-op for an unknown session id", async () => {
+    // Should not throw, should not create phantom session meta.
+    await setLastTaskSynth("no-such-session", "any-synth");
+    expect(await getSessionMeta("no-such-session")).toBeNull();
+  });
+
+  it("clearLastTaskSynth removes the field", async () => {
+    const meta = await createSession();
+    await setLastTaskSynth(meta.id, "<untrusted_prior_task_summary>done</untrusted_prior_task_summary>");
+    // Verify it was written
+    expect((await getSessionMeta(meta.id))!.lastTaskSynth).toBeDefined();
+    // Clear
+    await clearLastTaskSynth(meta.id);
+    // Should be gone
+    const after = await getSessionMeta(meta.id);
+    expect(after!.lastTaskSynth).toBeUndefined();
+    expect("lastTaskSynth" in after!).toBe(false);
+  });
+
+  it("clearLastTaskSynth is a no-op when field is already absent", async () => {
+    const meta = await createSession();
+    // Field not set yet
+    expect((await getSessionMeta(meta.id))!.lastTaskSynth).toBeUndefined();
+    // Should not throw
+    await clearLastTaskSynth(meta.id);
+    expect((await getSessionMeta(meta.id))!.lastTaskSynth).toBeUndefined();
+  });
+
+  it("clearLastTaskSynth is a no-op for an unknown session id", async () => {
+    await clearLastTaskSynth("no-such-session");
+    expect(await getSessionMeta("no-such-session")).toBeNull();
+  });
+
+  it("one-shot: set then clear then set again — second write is visible", async () => {
+    const meta = await createSession();
+    const synth1 = "<untrusted_prior_task_summary>first</untrusted_prior_task_summary>";
+    const synth2 = "<untrusted_prior_task_summary>second</untrusted_prior_task_summary>";
+
+    await setLastTaskSynth(meta.id, synth1);
+    expect((await getSessionMeta(meta.id))!.lastTaskSynth).toBe(synth1);
+
+    await clearLastTaskSynth(meta.id);
+    expect((await getSessionMeta(meta.id))!.lastTaskSynth).toBeUndefined();
+
+    await setLastTaskSynth(meta.id, synth2);
+    expect((await getSessionMeta(meta.id))!.lastTaskSynth).toBe(synth2);
+  });
+
+  it("setLastTaskSynth preserves other meta fields unchanged", async () => {
+    const meta = await createSession({ now: 12345 });
+    await setLastTaskSynth(meta.id, "<untrusted_prior_task_summary>x</untrusted_prior_task_summary>");
+    const updated = await getSessionMeta(meta.id);
+    expect(updated!.createdAt).toBe(12345);
+    expect(updated!.lastAccessedAt).toBe(12345);
+    expect(updated!.status).toBe("active");
+    expect(updated!.messages).toEqual([]);
   });
 });

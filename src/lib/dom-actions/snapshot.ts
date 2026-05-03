@@ -23,11 +23,13 @@ export function snapshotInteractiveElements(): PageSnapshot {
     // both implementations cover the same wrapper-tag set (Phase 3 P3-O).
     // Keep this list in sync with UNTRUSTED_WRAPPER_TAGS in that helper.
     // M2-U3: added untrusted_user_message (R29 LLM title prompt wrapper).
+    // U3: added untrusted_prior_task_summary (agent task synth wrapper).
     cleaned = cleaned
       .replace(/<\/?untrusted_page_content>/gi, "[filtered]")
       .replace(/<\/?untrusted_skill_params>/gi, "[filtered]")
       .replace(/<\/?untrusted_tab_metadata>/gi, "[filtered]")
-      .replace(/<\/?untrusted_user_message>/gi, "[filtered]");
+      .replace(/<\/?untrusted_user_message>/gi, "[filtered]")
+      .replace(/<\/?untrusted_prior_task_summary>/gi, "[filtered]");
     if (cleaned.length > maxLen) {
       cleaned = cleaned.slice(0, maxLen) + "...";
     }
