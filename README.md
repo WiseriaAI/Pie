@@ -3,6 +3,10 @@
   <h1>Pie</h1>
   <p><strong>BYOK Chrome Extension Agent — your browser, augmented with the LLM you already pay for.</strong></p>
   <p>
+    <strong>English</strong> ·
+    <a href="README.zh-CN.md">简体中文</a>
+  </p>
+  <p>
     <a href="#install">Install</a> ·
     <a href="#configuration">Configure</a> ·
     <a href="PRIVACY.md">Privacy</a> ·
