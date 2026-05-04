@@ -317,6 +317,80 @@ describe("Chat — attachment count cap", () => {
   });
 });
 
+describe("Chat — ImagePlaceholder rendering (Task 14 / R10)", () => {
+  it("user message with image_placeholder attachment shows '[图已释放]' badge", async () => {
+    // Seed messages with a user message that carries an image_placeholder
+    // attachment — the kind written to storage by the R10 scrub after a
+    // SW restart / session switch / port disconnect (R13 eviction paths).
+    seedProvider("anthropic");
+    const messages: DisplayMessage[] = [
+      {
+        role: "user",
+        content: "what is this?",
+        attachments: [
+          {
+            kind: "image_placeholder",
+            id: "ph-1",
+            mediaType: "image/jpeg",
+            width: 100,
+            height: 200,
+          },
+        ],
+      },
+    ];
+    render(
+      <Chat
+        providerLabel="Anthropic"
+        onOpenSettings={vi.fn()}
+        session={makeSession({ messages })}
+      />,
+    );
+
+    // Wait for render to settle (checkConfig is async).
+    await screen.findByRole("button", { name: /attach image/i });
+
+    // The badge should be present with width×height.
+    const badge = screen.getByText(/图已释放/);
+    expect(badge).toBeTruthy();
+    expect(badge.textContent).toMatch(/100×200/);
+  });
+
+  it("user message with image attachment (still in cache) renders <img>", async () => {
+    seedProvider("anthropic");
+    const messages: DisplayMessage[] = [
+      {
+        role: "user",
+        content: "look at this",
+        attachments: [
+          {
+            kind: "image",
+            id: "img-1",
+            mediaType: "image/jpeg",
+            data: "AAAA",
+            width: 80,
+            height: 60,
+            byteLength: 3,
+          },
+        ],
+      },
+    ];
+    render(
+      <Chat
+        providerLabel="Anthropic"
+        onOpenSettings={vi.fn()}
+        session={makeSession({ messages })}
+      />,
+    );
+
+    await screen.findByRole("button", { name: /attach image/i });
+
+    // <img> with correct src should be present.
+    const img = screen.getByRole("img", { name: /image attachment/i });
+    expect(img).toBeTruthy();
+    expect((img as HTMLImageElement).src).toContain("data:image/jpeg;base64,AAAA");
+  });
+});
+
 // Helper: build a synthetic clipboardData object for paste events.
 // onPaste iterates e.clipboardData?.items checking item.kind==="file" + getAsFile().
 function makeClipboardDT(files: File[]) {

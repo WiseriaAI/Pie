@@ -1,5 +1,6 @@
 import type { ChatMessage } from "@/lib/model-router";
 import type { SkillDefinition } from "@/lib/skills";
+import type { Attachment } from "@/lib/images";
 
 // --- Page Content ---
 
@@ -91,6 +92,10 @@ export type DisplayMessage =
       role: "user";
       content: string;
       expandedForLLM?: string;
+      /** Phase 5 — image attachments for display. `image` kind renders a
+       *  thumbnail; `image_placeholder` kind renders a '[图已释放]' badge
+       *  (bytes stripped by R10 scrub at storage boundary). */
+      attachments?: Attachment[];
     }
   | { role: "assistant"; content: string }
   | {

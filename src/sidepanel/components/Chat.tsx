@@ -916,13 +916,35 @@ function PageChangedBanner({ onNewTask }: { onNewTask: () => void }) {
 function MessageBubble({
   message,
 }: {
-  message: { role: "user" | "assistant"; content: string };
+  message: Extract<DisplayMessage, { role: "user" | "assistant" }>;
 }) {
   if (message.role === "user") {
     return (
       <div className="flex justify-end">
         <div className="max-w-[280px] whitespace-pre-wrap rounded-[10px_10px_2px_10px] border border-line bg-field px-3.5 py-2.5 text-[13px] leading-5 text-fg-1">
           {message.content}
+          {message.attachments?.map((a) =>
+            a.kind === "image" ? (
+              <img
+                key={a.id}
+                src={`data:${a.mediaType};base64,${a.data}`}
+                alt="image attachment"
+                width={Math.min(160, a.width)}
+                className="mt-1 block rounded"
+              />
+            ) : (
+              // R10/R13 — image bytes not persisted; evicted after SW restart,
+              // session switch, or port disconnect. Badge preserved identity so
+              // the user understands the image was here but is no longer cached.
+              <span
+                key={a.id}
+                title="图片不持久化存储 — 切换会话或重启 SW 后释放"
+                className="mt-1 inline-block rounded border border-line bg-field px-2 py-0.5 font-mono text-[11px] text-fg-3"
+              >
+                {`[图已释放] ${a.width}×${a.height}`}
+              </span>
+            ),
+          )}
         </div>
       </div>
     );

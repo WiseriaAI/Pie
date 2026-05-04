@@ -664,6 +664,13 @@ export function useSession(): UseSession {
         ...(input.expandedForLLM !== undefined
           ? { expandedForLLM: input.expandedForLLM }
           : {}),
+        // Phase 5 — carry attachments on the display message so past turns
+        // can render thumbnails (image kind) or '[图已释放]' badges
+        // (image_placeholder kind after R10 storage scrub). Mirror the
+        // expandedForLLM spread pattern: absent when no attachments.
+        ...(input.attachments?.length
+          ? { attachments: input.attachments }
+          : {}),
       };
       const updated = [...messagesRef.current, userMessage];
       // M3-U2 (post-acceptance) — empty→non-empty is the moment we lock
