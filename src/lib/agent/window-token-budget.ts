@@ -34,14 +34,48 @@ const FALLBACK_MAX_CONTEXT_TOKENS = 32_000;
 const CJK_REGEX = /[一-鿿぀-ヿ㐀-䶿가-힯]/g;
 
 /**
- * Extract the total text content from a message for token estimation.
- * Strings are taken as-is; ContentBlock[] are JSON-stringified so that
- * embedded text/args are counted (though JSON overhead slightly inflates
- * the estimate — acceptable conservatism).
+ * Phase 5 HARD GATE — image blocks must NOT be JSON.stringified into the
+ * extracted text (a 2 MB base64 image inflates by ~3 M chars). Image
+ * surcharge is added separately via `estimateImageSurchargeForMessage`.
+ *
+ * Block-by-block extraction:
+ *   - text → push the text
+ *   - tool_use → JSON.stringify(input) (tool args contribute)
+ *   - tool_result → push the content
+ *   - image → SKIP (surcharge counted elsewhere)
  */
 function extractText(msg: AgentMessage): string {
   if (typeof msg.content === "string") return msg.content;
-  return JSON.stringify(msg.content as ContentBlock[]);
+  const parts: string[] = [];
+  for (const b of msg.content as ContentBlock[]) {
+    if (b.type === "image") continue;
+    if (b.type === "text") parts.push(b.text);
+    else if (b.type === "tool_use") parts.push(JSON.stringify(b.input));
+    else if (b.type === "tool_result") parts.push(b.content);
+  }
+  return parts.join("");
+}
+
+function countImages(msg: AgentMessage): number {
+  if (typeof msg.content === "string") return 0;
+  let n = 0;
+  for (const b of msg.content as ContentBlock[]) if (b.type === "image") n++;
+  return n;
+}
+
+/**
+ * Per-provider image surcharge. Brainstorm note:
+ *   - Anthropic ~1568 tokens per image (Claude vision tier high)
+ *   - OpenAI detail-high ~765 tokens (default tier)
+ *   - OpenRouter inherits OpenAI default
+ *   - others (non-vision providers) — no images should ever reach here in v1, but conservatism: 0
+ */
+function estimateImageSurchargeForMessage(msg: AgentMessage, provider: string): number {
+  const n = countImages(msg);
+  if (n === 0) return 0;
+  if (provider === "anthropic") return n * 1568;
+  if (provider === "openai" || provider === "openrouter") return n * 765;
+  return 0;
 }
 
 /**
@@ -49,21 +83,27 @@ function extractText(msg: AgentMessage): string {
  *
  * CJK detection is computed over the *entire* combined text so that mixed
  * conversations get a single consistent divisor per call.
+ *
+ * @param messages — full message history
+ * @param provider — optional provider id for vision surcharge accounting.
+ *                   When omitted, image blocks are skipped from text count
+ *                   but contribute 0 surcharge tokens (legacy callers).
  */
-export function estimateTokens(messages: AgentMessage[]): number {
+export function estimateTokens(messages: AgentMessage[], provider?: string): number {
   const combined = messages.map(extractText).join("");
   const totalChars = combined.length;
-
-  if (totalChars === 0) return 0;
-
-  const cjkMatches = combined.match(CJK_REGEX);
-  const cjkChars = cjkMatches ? cjkMatches.length : 0;
-  const cjkRatio = cjkChars / totalChars;
-
-  // Strict > 0.5 — exactly 50% stays on the English divisor (4).
-  const divisor = cjkRatio > 0.5 ? 1.5 : 4;
-
-  return Math.ceil(totalChars / divisor);
+  let textTokens = 0;
+  if (totalChars > 0) {
+    const cjkMatches = combined.match(CJK_REGEX);
+    const cjkChars = cjkMatches ? cjkMatches.length : 0;
+    const cjkRatio = cjkChars / totalChars;
+    const divisor = cjkRatio > 0.5 ? 1.5 : 4;
+    textTokens = Math.ceil(totalChars / divisor);
+  }
+  const imageTokens = provider
+    ? messages.reduce((s, m) => s + estimateImageSurchargeForMessage(m, provider), 0)
+    : 0;
+  return textTokens + imageTokens;
 }
 
 /**
@@ -94,7 +134,7 @@ export function applyTokenBudget(
   const threshold = maxContextTokens * 0.8;
 
   // Fast path — within budget.
-  if (estimateTokens(messages) <= threshold) return messages;
+  if (estimateTokens(messages, provider) <= threshold) return messages;
 
   // Find the react segment start (first assistant ContentBlock[] turn).
   const reactStartIdx = findReactStartIdx(messages);
@@ -106,7 +146,7 @@ export function applyTokenBudget(
   let result = [...messages];
 
   // Drop loop: remove oldest droppable (user, assistant) pair from head.
-  while (estimateTokens(result) > threshold) {
+  while (estimateTokens(result, provider) > threshold) {
     const currentHeadEnd = reactStartIdx === -1 ? result.length : findReactStartIdx(result);
 
     // Find the first droppable pair inside the head.
@@ -143,7 +183,7 @@ export function applyTokenBudget(
       console.warn(
         "[window-token-budget] Cannot reduce token count further: " +
           "no droppable user-assistant pairs remain in the head segment. " +
-          `estimatedTokens=${estimateTokens(result)} threshold=${threshold}`,
+          `estimatedTokens=${estimateTokens(result, provider)} threshold=${threshold}`,
       );
       break;
     }

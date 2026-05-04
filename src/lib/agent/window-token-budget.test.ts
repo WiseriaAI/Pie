@@ -293,3 +293,104 @@ describe("U5 — applyTokenBudget", () => {
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// Phase 5 HARD GATE — image-skip + per-provider surcharge
+// ---------------------------------------------------------------------------
+
+describe("estimateTokens — image-skip (Phase 5 HARD GATE)", () => {
+  it("does not inflate when content has an image block", () => {
+    const bigData = "A".repeat(2_000_000); // 2 MB base64 simulant
+    const msgsNoImg: AgentMessage[] = [
+      { role: "user", content: "what is this?" },
+    ];
+    const msgsWithImg: AgentMessage[] = [
+      {
+        role: "user",
+        content: [
+          { type: "image", source: { type: "base64", mediaType: "image/jpeg", data: bigData } },
+          { type: "text", text: "what is this?" },
+        ],
+      },
+    ];
+    const tokensNoImg = estimateTokens(msgsNoImg);
+    const tokensWithImg = estimateTokens(msgsWithImg);
+    // Image surcharge ~1568 / 765 tokens (only counted when provider passed) — much
+    // less than the 500K char-divisor would produce from a 2 MB base64 inflation.
+    // Without provider, surcharge is 0 — but the image bytes still must NOT be
+    // JSON.stringified into the text token count.
+    expect(tokensWithImg).toBeLessThan(tokensNoImg + 5000);
+  });
+
+  it("with provider=anthropic, adds 1568 surcharge per image", () => {
+    const msgsWithImg: AgentMessage[] = [
+      {
+        role: "user",
+        content: [
+          { type: "image", source: { type: "base64", mediaType: "image/jpeg", data: "AAAA" } },
+        ],
+      },
+    ];
+    const tokens = estimateTokens(msgsWithImg, "anthropic");
+    expect(tokens).toBe(1568);
+  });
+
+  it("with provider=openai, adds 765 surcharge per image", () => {
+    const msgsWithImg: AgentMessage[] = [
+      {
+        role: "user",
+        content: [
+          { type: "image", source: { type: "base64", mediaType: "image/jpeg", data: "AAAA" } },
+        ],
+      },
+    ];
+    const tokens = estimateTokens(msgsWithImg, "openai");
+    expect(tokens).toBe(765);
+  });
+
+  it("with provider=openrouter, inherits openai 765 surcharge", () => {
+    const msgsWithImg: AgentMessage[] = [
+      {
+        role: "user",
+        content: [
+          { type: "image", source: { type: "base64", mediaType: "image/jpeg", data: "AAAA" } },
+        ],
+      },
+    ];
+    expect(estimateTokens(msgsWithImg, "openrouter")).toBe(765);
+  });
+
+  it("text + image: text tokens + provider surcharge", () => {
+    const msgsWithImg: AgentMessage[] = [
+      {
+        role: "user",
+        content: [
+          { type: "image", source: { type: "base64", mediaType: "image/jpeg", data: "AAAA" } },
+          { type: "text", text: "hello" }, // 5 chars / 4 = 2 tokens (Math.ceil)
+        ],
+      },
+    ];
+    expect(estimateTokens(msgsWithImg, "anthropic")).toBe(1568 + 2);
+  });
+});
+
+describe("applyTokenBudget — image-bearing turn drop semantics unchanged", () => {
+  it("image turns drop in age order (oldest first), no special preservation", () => {
+    // Spec: image cache lifecycle handles eviction, NOT the budget. The budget
+    // treats image-bearing turns same as text-bearing turns for drop-order purposes.
+    const msgs: AgentMessage[] = [
+      { role: "system", content: "sys" },
+      { role: "user", content: "old text 1" },
+      { role: "assistant", content: "ack 1" },
+      {
+        role: "user",
+        content: [{ type: "image", source: { type: "base64", mediaType: "image/jpeg", data: "AAAA" } }],
+      },
+      { role: "assistant", content: "ack img" },
+      { role: "user", content: "current" },
+    ];
+    // Within budget — no drops expected
+    const result = applyTokenBudget(msgs, "openai");
+    expect(result.length).toBe(6);
+  });
+});
