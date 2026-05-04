@@ -10,6 +10,8 @@ import {
   getSkillStorageBytes,
 } from "@/lib/skills";
 import { ALL_KNOWN_NON_SKILL_TOOL_NAMES } from "@/lib/agent/tool-names";
+import { getActiveProvider } from "@/lib/storage";
+import { getProviderMeta } from "@/lib/model-router/providers/registry";
 
 interface SkillsListProps {
   onRunSkill: (skillId: string, skillName: string) => void;
@@ -159,6 +161,27 @@ export default function SkillsList({ onRunSkill }: SkillsListProps) {
   const [form, setForm] = useState<SkillFormState>(emptyForm());
   const [formError, setFormError] = useState<string | null>(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  // R9 sub-path d — warn when a skill's allowedTools contains screenshot
+  // tools but the current provider doesn't support vision. Loaded once on
+  // mount (same pattern as Chat.tsx checkConfig) and refreshed whenever
+  // chrome.storage changes (provider switch).
+  const [supportsVision, setSupportsVision] = useState<boolean>(true);
+
+  useEffect(() => {
+    async function checkVision() {
+      const active = await getActiveProvider();
+      const meta = active ? getProviderMeta(active) : undefined;
+      setSupportsVision(meta?.supportsVision ?? true);
+    }
+    checkVision();
+    const listener = (changes: Record<string, chrome.storage.StorageChange>) => {
+      if (Object.keys(changes).some((k) => k === "active_provider" || k.startsWith("provider_"))) {
+        checkVision();
+      }
+    };
+    chrome.storage.local.onChanged.addListener(listener);
+    return () => chrome.storage.local.onChanged.removeListener(listener);
+  }, []);
 
   useEffect(() => {
     loadSkills();
@@ -295,6 +318,7 @@ export default function SkillsList({ onRunSkill }: SkillsListProps) {
               key={skill.id}
               skill={skill}
               enabled={isEffectivelyEnabled(skill)}
+              supportsVision={supportsVision}
               onToggle={() => handleToggle(skill)}
               onRun={() => onRunSkill(skill.id, skill.name)}
               onEdit={() => openEditForm(skill)}
@@ -314,6 +338,7 @@ export default function SkillsList({ onRunSkill }: SkillsListProps) {
               key={skill.id}
               skill={skill}
               enabled={isEffectivelyEnabled(skill)}
+              supportsVision={supportsVision}
               onToggle={() => handleToggle(skill)}
               onRun={() => onRunSkill(skill.id, skill.name)}
               onEdit={() => openEditForm(skill)}
@@ -405,6 +430,7 @@ function SkillsSection({
 function SkillRow({
   skill,
   enabled,
+  supportsVision,
   onToggle,
   onRun,
   onEdit,
@@ -415,6 +441,10 @@ function SkillRow({
 }: {
   skill: SkillDefinition;
   enabled: boolean;
+  /** R9 sub-path d — when false and the skill's allowedTools includes a
+   *  screenshot tool, show a warning so the user knows the skill won't work
+   *  with the current provider. */
+  supportsVision: boolean;
   onToggle: () => void;
   onRun: () => void;
   onEdit: () => void;
@@ -427,6 +457,10 @@ function SkillRow({
   const slug = normalizeSlug(skill.name) || skill.id;
   const awaitingFirstRun =
     skill.author === "agent" && skill.firstRunConfirmedAt === undefined;
+  const hasScreenshotTool = (skill.allowedTools ?? []).some(
+    (t) => t === "capture_visible_tab" || t === "capture_fullpage_tab",
+  );
+  const showVisionWarning = hasScreenshotTool && !supportsVision;
 
   return (
     <div
@@ -472,6 +506,12 @@ function SkillRow({
           <span className="text-[11px] leading-[16px] text-accent">
             Will request your approval the first time the agent runs this.
           </span>
+        </div>
+      )}
+
+      {showVisionWarning && (
+        <div className="text-fg-3 text-xs mt-1">
+          Screenshot tools in this skill require a vision-capable provider (anthropic / openai / openrouter). Current provider does not support vision.
         </div>
       )}
 

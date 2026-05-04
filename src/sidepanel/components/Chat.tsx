@@ -154,6 +154,19 @@ export default function Chat({
     checkConfig();
   }, []);
 
+  // R9 sub-path b — clear pending image attachments when the user switches
+  // to a provider that lacks vision support. The dependency array intentionally
+  // contains only supportsVision so this fires on the flip (false→true and
+  // true→false) rather than on every attachments change, which would cause
+  // infinite re-render loops. The initial render value is false (default), so
+  // we guard against clearing on mount by checking attachments.length.
+  useEffect(() => {
+    if (!supportsVision && attachments.length > 0) {
+      showLocalToast("Switched to a non-vision provider — pending images cleared.");
+      setAttachments([]);
+    }
+  }, [supportsVision]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Clear the toast timer on unmount to prevent state-update-on-dead-component.
   useEffect(() => {
     return () => {

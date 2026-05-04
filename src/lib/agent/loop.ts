@@ -22,6 +22,7 @@ import {
   GET_TAB_CONTENT_PREVIEW_BYTES,
 } from "./tools/tabs";
 import { buildAgentSystemPrompt, buildObservationMessage } from "./prompt";
+import { getProviderMeta } from "../model-router/providers/registry";
 import { applySlidingWindow } from "./window";
 import { applyTokenBudget } from "./window-token-budget";
 import {
@@ -1512,6 +1513,34 @@ export async function runAgentLoop(ctx: AgentLoopContext): Promise<void> {
           tc.name === "capture_visible_tab" ||
           tc.name === "capture_fullpage_tab"
         ) {
+          // R9 sub-path c — early-fail when the current provider doesn't
+          // support vision. Avoids wasting a confirm-card flow + pre-capture
+          // budget for a tool whose result (image content) the provider can't
+          // accept. The LLM gets a clear error so it can communicate the
+          // limitation to the user rather than looping on a confirm it can't
+          // process the result of.
+          const providerMeta = getProviderMeta(modelConfig.provider);
+          if (!providerMeta?.supportsVision) {
+            const noVisionObs = `screenshot ${tc.name} unavailable: current provider (${modelConfig.provider}) does not support vision. Switch to anthropic / openai / openrouter or remove the screenshot tool.`;
+            toolResultBlocks.push({
+              type: "tool_result",
+              toolUseId: tc.id,
+              isError: true,
+              content: noVisionObs,
+            });
+            emitStep({
+              type: "agent-step",
+              stepIndex,
+              tool: tc.name,
+              args: redactArgsForPanel(tc.name, tc.args),
+              resolvedElement,
+              status: "error",
+              observation: noVisionObs,
+              skillAuthor: skillAuthorForStep,
+            });
+            continue;
+          }
+
           const screenshotConfirmId = crypto.randomUUID();
           const approval = await sendConfirmRequest(screenshotConfirmId, {
             tool: tc.name,
