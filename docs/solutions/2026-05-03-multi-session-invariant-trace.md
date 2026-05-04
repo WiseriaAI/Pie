@@ -165,3 +165,92 @@ these must update this document before merge.
 The corresponding regression test in `src/lib/agent/loop.test.ts`
 under the “M3-U5 — multi-session invariant regression” describe block
 codifies the three locality guarantees in machine-checked form.
+
+---
+
+## M5 — pinMode state machine (post-M3 follow-up)
+
+Date: 2026-05-04. Three pain points emerged from real-world usage of the
+M3 single-pin-per-session model:
+
+  1. **K-9 too strict** — `close_tabs` refused to close ANY pinned tab,
+     even when the user explicitly approved the high-risk confirm.
+     Multi-tab cleanup tasks dead-ended on the agent's own pin.
+  2. **page-changed false positive** — `Chat.tsx` watched
+     `chrome.tabs.onUpdated` filtered by `tab.active`, not by
+     `tabId === pinnedTabId`. Switching to a different tab mid-task
+     surfaced the "page changed" banner even though the pinned tab itself
+     was idle.
+  3. **Cross-session pin lockout** — the M3 pin survived from
+     first-message until session archive. Other sessions hitting that
+     same tab were R7-locked indefinitely, even after the original
+     task had finished.
+
+M5 introduces a three-mode state machine on `SessionMeta.pinMode`:
+
+| Mode   | Triggered by                       | Persisted | R7 registry | Live-preview     | Drift check | K-9 close refuse |
+| ------ | ---------------------------------- | --------- | ----------- | ---------------- | ----------- | ---------------- |
+| `auto` | Default + emitDone post-task       | ❌        | skip        | ✅ follow active | skip        | ❌ allow         |
+| `task` | SW chat-start auto→task upgrade    | ✅        | include     | ❌ frozen        | include     | ❌ allow         |
+| `user` | User picks via PinnedTabDropdown   | ✅        | include     | ❌ frozen        | skip        | ✅ refuse        |
+
+### Pain-point fixes mapped to invariants
+
+| Pain | Fix unit | Code site | Invariant |
+| --- | --- | --- | --- |
+| K-9 too strict | M5-U4 | `tools/tabs.ts:close_tabs handler` | K-9 fires only when `ctx.pinMode === 'user'`; task/auto allow close + the per-iteration origin check gracefully aborts the task with "page closed" |
+| page-changed FP | M5-U6 | `Chat.tsx:282-310 pageChanged effect` | Listener filters by `tabId === sessionPinnedTabId` AND only registers in `pinMode === 'task'` |
+| Cross-session lockout | M5-U3 | `loop.ts:emitDone → ctx.onTaskDone → clearTaskPinAtSessionEnd` | task-mode pin auto-cleared on every terminal state; sibling sessions are no longer blocked after task end |
+
+### Module shape changes
+
+  - **`src/lib/sessions/pin-state.ts`** (new) — pure-function helpers:
+    `getEffectivePinMode(meta, agent)` (legacy migration inference),
+    `clearTaskPinIfActive(meta)`, `setUserPin(meta, pin)`,
+    `clearUserPin(meta)`. Single source of truth for transitions.
+  - **`src/lib/sessions/storage.ts`** — `setSessionMeta` runs
+    `normalizePinModeForWrite` before persisting (lazy migration of
+    legacy sessions + invariant guard "auto mode never persists pin").
+    New helpers `clearTaskPinAtSessionEnd(sessionId)` (Unit 3 emitDone hook)
+    and `upgradeAutoToTaskAtChatStart(sessionId, captureFn)` (Unit 5 SW
+    chat-start authoritative upgrade).
+  - **`src/lib/agent/loop.ts`** — `AgentLoopContext` adds `pinMode?` and
+    `onTaskDone?` fields. `ToolHandlerContext` (`types.ts`) adds
+    `pinMode?` for K-9.
+  - **`src/sidepanel/hooks/useSession.ts`** — exposes `pinMode`,
+    `pinnedTabId`, `setUserPin(tabId, origin)`, `clearUserPin()`.
+  - **`src/sidepanel/components/Chat.tsx`** — `isLocked` driven by
+    `pinMode !== 'auto'` (was `messages.length > 0`); pageChanged effect
+    rewritten with the tab-id filter.
+  - **`src/sidepanel/components/PinnedTabDropdown.tsx`** (new) — dropdown
+    UI for user-managed pin.
+
+### M3 invariant impact
+
+| M3 invariant | Status under M5 |
+| --- | --- |
+| Per-session sandbox (M3-U1 port routing) | ✅ unchanged |
+| ctx.pinned.{tabId, origin} derived from session meta | ✅ unchanged; SW computes `pinModeAtStart` via `getEffectivePinMode` and passes to AgentLoopContext alongside the existing pinned object |
+| CDP `ownerToken={sessionId, tabId}` | ✅ unchanged |
+| R7 cross-session lock via `getCrossSessionPinnedTabIds` | ✅ logic unchanged; auto-mode sessions are now naturally excluded because they don't carry a pinnedTabId in storage (the index entry omits the field) |
+| `collectCrossSessionConflicts` semantics | ✅ unchanged (still inspects args.tabId/tabIds for write tools only) |
+| K-8 confirm-time origin re-verify | ✅ unchanged |
+| K-9 close pinned-tab refuse | 🔧 narrowed to `pinMode === 'user'` only |
+| checkPinnedDrift on resume | 🔧 only fires when `getEffectivePinMode === 'task'` |
+
+### Migration
+
+Legacy sessions (`pinMode` field undefined) go through lazy
+normalization: `getEffectivePinMode` infers from `meta.pinnedTabId +
+agent.stepIndex`; `setSessionMeta` persists the inferred value on next
+write. No eager migration script — matches the M2-U1 idempotent pattern.
+
+### Test coverage
+
+  - `pin-state.test.ts` — 19 tests on the 4 pure helpers
+  - `storage.test.ts` (M5 sections) — 7 normalize-on-write + 5 clearTaskPinAtSessionEnd + 7 upgradeAutoToTaskAtChatStart
+  - `tabs.test.ts` (M5 sections) — 5 K-9 mode-aware tests
+  - `Chat.test.tsx` (M5 sections) — 5 pinMode-driven listener registration + tab-id filter tests
+  - `PinnedTabDropdown.test.tsx` — 10 UI tests
+
+Total: ~58 new M5 tests; suite goes from 487 → 519 passing.
