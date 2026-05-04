@@ -1,7 +1,7 @@
 import type { ElementInfo, PageSnapshot } from "../dom-actions/types";
 import type { RiskAssessment, RiskLevel } from "./types";
 import { KEYBOARD_TOOL_NAMES } from "./tools/keyboard";
-import { TAB_TOOL_NAMES } from "./tool-names";
+import { TAB_TOOL_NAMES, SCREENSHOT_TOOL_NAMES } from "./tool-names";
 
 /**
  * Phase 3 — context for cross-origin args introspection. Loop dispatch
@@ -167,6 +167,15 @@ export function classifyRisk(
     return { level: "low" };
   }
 
+  // Phase 5 — screenshot tools always high (R5/R6).
+  // Pixel-grain capture cannot be sanitized; each call requires user approval.
+  if (ALWAYS_HIGH_SCREENSHOT_TOOLS.has(toolName)) {
+    return {
+      level: "high",
+      reason: "Screenshot tools require explicit user approval per capture (R5/R6) — pixel data cannot be sanitized.",
+    };
+  }
+
   // Terminal / always-low tools
   if (
     toolName === "done" ||
@@ -316,6 +325,26 @@ export function riskOfAllowedTools(names: string[]): RiskLevel {
     if (ALWAYS_HIGH_RISK_TOOL_NAMES.has(n)) return "high";
   }
   return "low";
+}
+
+// ── Phase 5 screenshot tools — always-high constant + build-time check ──────
+//
+// ALWAYS_HIGH_SCREENSHOT_TOOLS mirrors the G-1 pattern: every name in
+// SCREENSHOT_TOOL_NAMES must appear here. Pixel-grain captures cannot be
+// sanitized via extractPageContentHardened-style credential field strip, so
+// every capture must traverse user-explicit confirm (R5/R6).
+const ALWAYS_HIGH_SCREENSHOT_TOOLS = new Set<string>(SCREENSHOT_TOOL_NAMES);
+
+// Build-time exhaustive check (mirrors G-1 pattern):
+for (const name of SCREENSHOT_TOOL_NAMES) {
+  if (!ALWAYS_HIGH_SCREENSHOT_TOOLS.has(name)) {
+    throw new Error(
+      `[Phase 5] screenshot tool "${name}" is in SCREENSHOT_TOOL_NAMES ` +
+        `but not in ALWAYS_HIGH_SCREENSHOT_TOOLS. Every screenshot tool ` +
+        `must be high-risk by R5/R6 — no sanitization is possible against ` +
+        `pixel data.`,
+    );
+  }
 }
 
 // ── Phase 3 G-1 acceptance gate — build-time exhaustive check ──────────────
