@@ -65,7 +65,7 @@ export async function dispatchCaptureVisibleTab(
   // for smaller wire payload + matches our resize-sw output mediaType).
   let dataUrl: string;
   try {
-    dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId!, {
+    dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, {
       format: "jpeg",
       quality: 90,
     });

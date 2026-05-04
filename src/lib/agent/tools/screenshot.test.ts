@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { dispatchCaptureVisibleTab, _resetBudgetForTests } from "./screenshot";
+import {
+  dispatchCaptureVisibleTab, _resetBudgetForTests, resetTaskBudget,
+} from "./screenshot";
 
 beforeEach(() => {
   _resetBudgetForTests();
@@ -82,16 +84,41 @@ describe("dispatchCaptureVisibleTab", () => {
     expect(fresh.ok).toBe(true);
   });
 
-  it("rejects 'capture-failed' when chrome.tabs.captureVisibleTab throws", async () => {
+  it("rejects 'capture-failed' when chrome.tabs.captureVisibleTab throws AND does not consume budget", async () => {
     (globalThis as any).chrome.tabs.captureVisibleTab.mockRejectedValueOnce(
       new Error("API call failed"),
     );
     const res = await dispatchCaptureVisibleTab({
-      sessionId: "s1",
-      taskId: "t1",
-      pinnedTabId: 42,
+      sessionId: "s1", taskId: "t1", pinnedTabId: 42,
     });
     expect(res.ok).toBe(false);
     if (!res.ok) expect(res.reason).toBe("capture-failed");
+    // After the failed capture, the LLM still has all 5 captures available
+    // (failed captures must NOT consume quota).
+    for (let i = 0; i < 5; i++) {
+      const r = await dispatchCaptureVisibleTab({
+        sessionId: "s1", taskId: "t1", pinnedTabId: 42,
+      });
+      expect(r.ok).toBe(true);
+    }
+  });
+
+  it("resetTaskBudget frees per-task quota mid-budget-exhaustion", async () => {
+    for (let i = 0; i < 5; i++) {
+      await dispatchCaptureVisibleTab({ sessionId: "s1", taskId: "t1", pinnedTabId: 42 });
+    }
+    // Budget exhausted on t1
+    const exhausted = await dispatchCaptureVisibleTab({
+      sessionId: "s1", taskId: "t1", pinnedTabId: 42,
+    });
+    expect(exhausted.ok).toBe(false);
+    if (!exhausted.ok) expect(exhausted.reason).toBe("screenshot-budget-exceeded");
+
+    // resetTaskBudget releases t1
+    resetTaskBudget("t1");
+    const fresh = await dispatchCaptureVisibleTab({
+      sessionId: "s1", taskId: "t1", pinnedTabId: 42,
+    });
+    expect(fresh.ok).toBe(true);
   });
 });
