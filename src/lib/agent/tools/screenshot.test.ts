@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import {
   dispatchCaptureVisibleTab, _resetBudgetForTests, resetTaskBudget,
+  dispatchCaptureFullPageTab,
 } from "./screenshot";
 
 beforeEach(() => {
@@ -120,5 +121,101 @@ describe("dispatchCaptureVisibleTab", () => {
       sessionId: "s1", taskId: "t1", pinnedTabId: 42,
     });
     expect(fresh.ok).toBe(true);
+  });
+});
+
+describe("dispatchCaptureFullPageTab", () => {
+  it("acquires CDP, calls Page.captureScreenshot with captureBeyondViewport+jpeg+q85, returns ImageAttachment", async () => {
+    const sendMock = vi.fn(async (method: string) => {
+      if (method === "Page.captureScreenshot") {
+        return { data: "A".repeat(8) }; // CDP returns raw base64
+      }
+      return {};
+    });
+    const acquireMock = vi.fn(async () => ({
+      tabId: 42,
+      ownerToken: { sessionId: "s1", tabId: 42 },
+      generationId: 1,
+      isAlive: true,
+      detachedReason: null,
+      send: sendMock,
+      detach: vi.fn(async () => {}),
+    } as never));
+    const res = await dispatchCaptureFullPageTab(
+      { sessionId: "s1", taskId: "t1", pinnedTabId: 42 },
+      { acquireSession: acquireMock },
+    );
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      expect(res.value.kind).toBe("image");
+      expect(res.value.mediaType).toBe("image/jpeg");
+    }
+    expect(sendMock).toHaveBeenCalledWith("Page.captureScreenshot", expect.objectContaining({
+      captureBeyondViewport: true,
+      format: "jpeg",
+      quality: 85,
+    }));
+  });
+
+  it("returns capture-failed when acquireSession throws", async () => {
+    const acquireMock = vi.fn(async () => {
+      throw new Error("cdp attach failed");
+    });
+    const res = await dispatchCaptureFullPageTab(
+      { sessionId: "s1", taskId: "t1", pinnedTabId: 42 },
+      { acquireSession: acquireMock },
+    );
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.reason).toBe("capture-failed");
+  });
+
+  it("returns capture-failed when Page.captureScreenshot throws", async () => {
+    const acquireMock = vi.fn(async () => ({
+      tabId: 42, ownerToken: { sessionId: "s1", tabId: 42 },
+      generationId: 1, isAlive: true, detachedReason: null,
+      send: vi.fn(async () => { throw new Error("cdp send failed"); }),
+      detach: vi.fn(async () => {}),
+    } as never));
+    const res = await dispatchCaptureFullPageTab(
+      { sessionId: "s1", taskId: "t1", pinnedTabId: 42 },
+      { acquireSession: acquireMock },
+    );
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.reason).toBe("capture-failed");
+  });
+
+  it("returns capture-failed when CDP returns empty data", async () => {
+    const acquireMock = vi.fn(async () => ({
+      tabId: 42, ownerToken: { sessionId: "s1", tabId: 42 },
+      generationId: 1, isAlive: true, detachedReason: null,
+      send: vi.fn(async () => ({})), // no `data` field
+      detach: vi.fn(async () => {}),
+    } as never));
+    const res = await dispatchCaptureFullPageTab(
+      { sessionId: "s1", taskId: "t1", pinnedTabId: 42 },
+      { acquireSession: acquireMock },
+    );
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.reason).toBe("capture-failed");
+  });
+
+  it("shares the per-task budget with capture_visible_tab", async () => {
+    // 5 visible captures consume budget — full-page now exceeds.
+    for (let i = 0; i < 5; i++) {
+      await dispatchCaptureVisibleTab({ sessionId: "s1", taskId: "t1", pinnedTabId: 42 });
+    }
+    const acquireMock = vi.fn(async () => ({
+      send: vi.fn(), detach: vi.fn(),
+      ownerToken: { sessionId: "s1", tabId: 42 },
+      tabId: 42, generationId: 1, isAlive: true, detachedReason: null,
+    } as never));
+    const res = await dispatchCaptureFullPageTab(
+      { sessionId: "s1", taskId: "t1", pinnedTabId: 42 },
+      { acquireSession: acquireMock },
+    );
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.reason).toBe("screenshot-budget-exceeded");
+    // acquireMock should NOT have been called when budget is exhausted
+    expect(acquireMock).not.toHaveBeenCalled();
   });
 });

@@ -1,5 +1,6 @@
 import { resizeSW } from "@/lib/images/resize-sw";
 import type { ImageAttachment } from "@/lib/images";
+import type { CdpSession } from "@/background/cdp-session";
 
 const SCREENSHOT_BUDGET_PER_TASK = 5;
 
@@ -113,4 +114,90 @@ function dataUrlToBlob(dataUrl: string): Blob {
   const arr = new Uint8Array(bytes.length);
   for (let i = 0; i < bytes.length; i++) arr[i] = bytes.charCodeAt(i);
   return new Blob([arr], { type: mime });
+}
+
+/**
+ * DI for CDP session acquisition. Task 11 wires this against the real
+ * `acquireCdpSession` from `@/background/cdp-session`. Tests mock the
+ * shape directly. Keeps screenshot.ts free of @/background/* imports
+ * so it stays unit-testable without the SW lifecycle.
+ */
+export interface CdpAcquirer {
+  acquireSession: (token: {
+    sessionId: string;
+    tabId: number;
+    abortSignal?: AbortSignal;
+  }) => Promise<CdpSession>;
+}
+
+/**
+ * R6 — capture_fullpage_tab handler via CDP.
+ *
+ * Task-scope attach: first call within a task triggers acquireSession,
+ * subsequent calls reuse the live session (the real acquireCdpSession
+ * is idempotent for the same ownerToken). emitDone (Task 11) detaches.
+ *
+ * 1. Budget check (shared with capture_visible_tab — same 5/task limit)
+ * 2. Acquire CDP via DI — failure → capture-failed
+ * 3. Page.captureScreenshot { captureBeyondViewport, format: 'jpeg', quality: 85 }
+ *    captureBeyondViewport=true is the load-bearing flag — without it CDP
+ *    only captures the visible region (degenerates to capture_visible_tab).
+ * 4. Decode raw base64 → Blob → resize via SW path (Task 3)
+ * 5. Return ImageAttachment with stable id
+ */
+export async function dispatchCaptureFullPageTab(
+  ctx: CaptureContext,
+  cdp: CdpAcquirer,
+): Promise<CaptureOutcome> {
+  const used = budgetByTask.get(ctx.taskId) ?? 0;
+  if (used >= SCREENSHOT_BUDGET_PER_TASK) {
+    return { ok: false, reason: "screenshot-budget-exceeded" };
+  }
+
+  let session: CdpSession;
+  try {
+    session = await cdp.acquireSession({
+      sessionId: ctx.sessionId,
+      tabId: ctx.pinnedTabId,
+    });
+  } catch {
+    return { ok: false, reason: "capture-failed" };
+  }
+
+  let result: { data: string } | undefined;
+  try {
+    result = (await session.send("Page.captureScreenshot", {
+      captureBeyondViewport: true,
+      format: "jpeg",
+      quality: 85,
+    })) as { data: string };
+  } catch {
+    return { ok: false, reason: "capture-failed" };
+  }
+  if (!result?.data) return { ok: false, reason: "capture-failed" };
+
+  // CDP returns raw base64 (no data: prefix). Decode → Blob for resize-sw.
+  const bytes = atob(result.data);
+  const arr = new Uint8Array(bytes.length);
+  for (let i = 0; i < bytes.length; i++) arr[i] = bytes.charCodeAt(i);
+  const blob = new Blob([arr], { type: "image/jpeg" });
+
+  const resized = await resizeSW(blob);
+  if (!resized.ok) return { ok: false, reason: resized.reason };
+
+  budgetByTask.set(ctx.taskId, used + 1);
+
+  const id = `img_screenshot_${crypto.randomUUID()}`;
+  return {
+    ok: true,
+    value: {
+      kind: "image",
+      id,
+      mediaType: "image/jpeg",
+      data: resized.value.data,
+      width: resized.value.width,
+      height: resized.value.height,
+      byteLength: resized.value.byteLength,
+    },
+  };
 }
