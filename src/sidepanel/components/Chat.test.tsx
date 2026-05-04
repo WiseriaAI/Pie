@@ -513,6 +513,69 @@ describe("Chat — behavioral image flows (Phase 5)", () => {
 
     expect(screen.queryByAltText(/uploaded image preview/i)).toBeNull();
   });
+
+  it("paste of image with non-vision provider shows toast (no silent fail)", async () => {
+    seedProvider("minimax");
+    render(
+      <Chat
+        providerLabel="MiniMax"
+        onOpenSettings={vi.fn()}
+        session={makeSession()}
+      />,
+    );
+
+    // Wait until provider load completes — supportsVision flips to false
+    await screen.findByRole("button", { name: /attach image/i });
+    const textarea = screen.getByPlaceholderText(/Tell the agent/i);
+    const file = new File([new Uint8Array(100)], "p.png", { type: "image/png" });
+
+    await act(async () => {
+      fireEvent.paste(textarea, { clipboardData: makeClipboardDT([file]) });
+    });
+
+    // Toast must surface — user reported "no response" was the prior bug.
+    expect(
+      await screen.findByText(/does not support image input/i),
+    ).toBeTruthy();
+    // No thumbnail attached
+    expect(screen.queryByAltText(/uploaded image preview/i)).toBeNull();
+  });
+
+  it("paste of image-only-as-URL (kind=string) shows distinct toast", async () => {
+    seedProvider("anthropic");
+    render(
+      <Chat
+        providerLabel="Anthropic"
+        onOpenSettings={vi.fn()}
+        session={makeSession()}
+      />,
+    );
+
+    await screen.findByRole("button", { name: /attach image/i });
+    const textarea = screen.getByPlaceholderText(/Tell the agent/i);
+
+    // Synthesize a clipboard whose only image item has kind="string" (web
+    // page right-click "Copy image" → text/uri-list, no File). Composer's
+    // hasImageInClipboard detection should still fire (item.type starts
+    // with "image/"), then files extracted to [] → addFiles distinct toast.
+    const stringOnlyClipboard = {
+      items: [
+        {
+          kind: "string",
+          type: "image/png",
+          getAsFile: () => null,
+        },
+      ] as unknown as DataTransferItemList,
+    };
+
+    await act(async () => {
+      fireEvent.paste(textarea, { clipboardData: stringOnlyClipboard });
+    });
+
+    expect(
+      await screen.findByText(/Couldn't read image from clipboard/i),
+    ).toBeTruthy();
+  });
 });
 
 describe("Chat — send clears attachments", () => {

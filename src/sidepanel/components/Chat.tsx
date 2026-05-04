@@ -336,6 +336,16 @@ export default function Chat({
       showLocalToast("Current provider does not support image input.");
       return;
     }
+    if (files.length === 0) {
+      // Composer detected image data in the paste/drop event but no File
+      // object was extractable (e.g. user copied an <img> from a web page —
+      // clipboard carries text/uri-list / text/html, not a binary File).
+      // User has to save the image to disk first and use the file picker.
+      showLocalToast(
+        "Couldn't read image from clipboard. Save the image to disk and use the attach button.",
+      );
+      return;
+    }
     const room = MAX_IMAGES_PER_TURN - attachments.length;
     if (room <= 0) {
       showLocalToast(`Max ${MAX_IMAGES_PER_TURN} images per message.`);
@@ -1049,9 +1059,18 @@ function Composer({
             disabled={streaming}
             className="flex-1 resize-none bg-transparent text-[13px] leading-5 text-fg-1 placeholder:text-fg-3 disabled:opacity-50"
             onPaste={(e) => {
-              if (!supportsVision) return;
               const items = e.clipboardData?.items;
               if (!items) return;
+              // Detect ANY image in clipboard (file OR string-typed image
+              // data like text/uri-list of an image URL). Without this
+              // detection, paste would silently no-op when (a) provider
+              // lacks vision OR (b) clipboard has image-as-URL (common
+              // when copying from web pages) — user reports "no response".
+              const hasImageInClipboard = Array.from(items).some((item) =>
+                item.type.startsWith("image/"),
+              );
+              if (!hasImageInClipboard) return; // normal text paste, fall through
+              e.preventDefault();
               const files: File[] = [];
               for (const item of items) {
                 if (item.kind === "file" && item.type.startsWith("image/")) {
@@ -1059,17 +1078,17 @@ function Composer({
                   if (f) files.push(f);
                 }
               }
-              if (files.length > 0) {
-                e.preventDefault();
-                onPasteFiles(files);
-              }
+              // Always invoke — addFiles surfaces a toast for every reason
+              // (no-vision-provider / cap-exceeded / empty-files / resize-fail).
+              onPasteFiles(files);
             }}
             onDrop={(e) => {
+              const dropped = [...(e.dataTransfer?.files ?? [])];
+              const hasImageInDrop = dropped.some((f) => f.type.startsWith("image/"));
+              if (!hasImageInDrop) return; // non-image drop, leave to default
               e.preventDefault();
-              const files = [...(e.dataTransfer?.files ?? [])].filter((f) =>
-                f.type.startsWith("image/"),
-              );
-              if (files.length > 0) onDropFiles(files);
+              const files = dropped.filter((f) => f.type.startsWith("image/"));
+              onDropFiles(files);
             }}
             onDragOver={(e) => {
               e.preventDefault();
