@@ -70,6 +70,8 @@ function makeSession(overrides?: Partial<UseSession>): UseSession {
     clearToast: vi.fn(),
     setActive: vi.fn().mockResolvedValue(null),
     createAndActivate: vi.fn().mockResolvedValue(null),
+    setUserPin: vi.fn().mockResolvedValue(undefined),
+    clearUserPin: vi.fn().mockResolvedValue(undefined),
     sessions: [],
     ...overrides,
   } as unknown as UseSession;

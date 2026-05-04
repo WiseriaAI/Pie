@@ -187,6 +187,16 @@ export interface UseSession {
    * (P0-1 guard — mirror of setActive).
    */
   createAndActivate: () => Promise<string | null>;
+  /**
+   * M5 — user picks a tab from the PinnedTabDropdown. Writes pinMode='user'
+   * + pinnedTabId/Origin to active session's meta. Persists across task end.
+   * No-op when no active session. */
+  setUserPin: (tabId: number, origin: string) => Promise<void>;
+  /**
+   * M5 — user clicks "Auto" in dropdown. Reverts pinMode='user' to 'auto'
+   * and removes pinnedTabId/Origin. No-op for 'task' mode (loop-managed)
+   * or already-auto sessions. */
+  clearUserPin: () => Promise<void>;
 }
 
 export function useSession(): UseSession {
@@ -1077,6 +1087,49 @@ export function useSession(): UseSession {
     return meta.id;
   }, [connectPortFor]);
 
+  // M5 — PinnedTabDropdown actions. Direct storage writes (panel can write
+  // session_${id}_meta) — no need to round-trip through SW. The storage
+  // onChanged listener in this same hook picks up the change and updates
+  // local state, mirroring the user's choice instantly.
+  const setUserPin = useCallback(
+    async (tabId: number, origin: string): Promise<void> => {
+      const id = sessionIdRef.current;
+      if (!id) return;
+      const meta = await getSessionMeta(id);
+      if (!meta) return;
+      await setSessionMeta({
+        ...meta,
+        pinMode: "user",
+        pinnedTabId: tabId,
+        pinnedOrigin: origin,
+      });
+      // Mirror in local state immediately so UI reflects the choice without
+      // waiting for storage onChanged round-trip.
+      setPinModeState("user");
+      setPinnedTabIdState(tabId);
+      setPinnedOriginState(origin);
+    },
+    [],
+  );
+
+  const clearUserPin = useCallback(async (): Promise<void> => {
+    const id = sessionIdRef.current;
+    if (!id) return;
+    const meta = await getSessionMeta(id);
+    if (!meta) return;
+    if (meta.pinMode !== "user") return; // only user mode is user-clearable
+    // Strip pin and revert mode. Storage normalize-on-write enforces the
+    // auto-mode-no-pin invariant, so passing an explicit pinMode='auto' is
+    // sufficient — but we strip the fields here for clarity.
+    const next = { ...meta, pinMode: "auto" as const };
+    delete (next as { pinnedTabId?: number }).pinnedTabId;
+    delete (next as { pinnedOrigin?: string }).pinnedOrigin;
+    await setSessionMeta(next);
+    setPinModeState("auto");
+    setPinnedTabIdState(null);
+    setPinnedOriginState(null);
+  }, []);
+
   return {
     sessionId,
     ready,
@@ -1099,5 +1152,7 @@ export function useSession(): UseSession {
     clearToast,
     setActive,
     createAndActivate,
+    setUserPin,
+    clearUserPin,
   };
 }

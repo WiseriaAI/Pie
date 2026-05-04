@@ -13,6 +13,7 @@ import type { ImageAttachment } from "@/lib/images";
 import type { UseSession } from "@/sidepanel/hooks/useSession";
 import AgentStepGroup, { type AgentStepData } from "./AgentStepGroup";
 import AgentConfirmCard from "./AgentConfirmCard";
+import PinnedTabDropdown from "./PinnedTabDropdown";
 import type { DisplayMessage } from "@/types";
 
 const MAX_IMAGES_PER_TURN = 3;
@@ -123,6 +124,8 @@ export default function Chat({
     pinnedOrigin: sessionPinnedOrigin,
     pinnedTabId: sessionPinnedTabId,
     pinMode,
+    setUserPin,
+    clearUserPin,
     sendMessage: sessionSendMessage,
     abort,
     resolveConfirm,
@@ -133,6 +136,9 @@ export default function Chat({
   const [input, setInput] = useState("");
   const [hasConfig, setHasConfig] = useState<boolean | null>(null);
   const [pageChanged, setPageChanged] = useState(false);
+  // M5 — PinnedTabDropdown open state. Lives in Chat (not the dropdown
+  // itself) because the dropdown's anchor is the PINNED row in the info bar.
+  const [pinDropdownOpen, setPinDropdownOpen] = useState(false);
   const [enabledSkills, setEnabledSkills] = useState<SkillDefinition[]>([]);
   const [popoverSelected, setPopoverSelected] = useState(0);
   const [dismissedInput, setDismissedInput] = useState<string | null>(null);
@@ -556,13 +562,38 @@ export default function Chat({
     <div className="flex h-full flex-col">
       {/* Pinned origin + provider label info bar */}
       {(displayPinnedOrigin || providerLabel) && (
-        <div className="flex flex-shrink-0 items-center gap-2 border-b border-line bg-canvas px-4 py-1.5">
+        <div className="relative flex flex-shrink-0 items-center gap-2 border-b border-line bg-canvas px-4 py-1.5">
           {displayPinnedOrigin && (
             <>
-              <span className="caps text-fg-3">{isLocked ? "PINNED" : "PIN"}</span>
-              <span className="flex-1 truncate font-mono text-[11px] text-fg-2">
-                {displayPinnedOrigin}
-              </span>
+              <button
+                type="button"
+                onClick={() => setPinDropdownOpen((v) => !v)}
+                aria-label="Open pinned tab selector"
+                aria-expanded={pinDropdownOpen}
+                className="flex flex-1 items-center gap-2 rounded px-1 py-0.5 text-left hover:bg-field"
+              >
+                <span className="caps text-fg-3">
+                  {pinMode === "user" ? "PINNED ★" : isLocked ? "PINNED" : "PIN"}
+                </span>
+                <span className="flex-1 truncate font-mono text-[11px] text-fg-2">
+                  {displayPinnedOrigin}
+                </span>
+                <span className="text-fg-3 text-[10px]" aria-hidden="true">▾</span>
+              </button>
+              {pinDropdownOpen && (
+                <PinnedTabDropdown
+                  pinMode={pinMode}
+                  currentPinnedTabId={sessionPinnedTabId}
+                  streaming={streaming}
+                  onPick={(tabId, origin) => {
+                    void setUserPin(tabId, origin);
+                  }}
+                  onClearPin={() => {
+                    void clearUserPin();
+                  }}
+                  onClose={() => setPinDropdownOpen(false)}
+                />
+              )}
             </>
           )}
           {!displayPinnedOrigin && <div className="flex-1" />}
