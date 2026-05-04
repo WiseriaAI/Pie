@@ -148,9 +148,17 @@ export default function Chat({
   const [supportsVision, setSupportsVision] = useState<boolean>(false);
   const [attachLocalToast, setAttachLocalToast] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     checkConfig();
+  }, []);
+
+  // Clear the toast timer on unmount to prevent state-update-on-dead-component.
+  useEffect(() => {
+    return () => {
+      if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    };
   }, []);
 
   useEffect(() => {
@@ -305,8 +313,9 @@ export default function Chat({
   // than the session toast (that surface is SW→panel wire only, read-only here).
   function showLocalToast(msg: string) {
     setAttachLocalToast(msg);
-    // Auto-dismiss after 4 seconds
-    setTimeout(() => setAttachLocalToast(null), 4000);
+    // Clear any prior pending dismiss before scheduling a fresh one.
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    toastTimerRef.current = setTimeout(() => setAttachLocalToast(null), 4000);
   }
 
   const addFiles = async (files: File[]) => {

@@ -20,6 +20,20 @@ import Chat from "./Chat";
 import type { UseSession } from "@/sidepanel/hooks/useSession";
 import type { DisplayMessage } from "@/types";
 
+// ── Mock @/lib/images/resize-panel so addFiles resolves synchronously ─────────
+vi.mock("@/lib/images/resize-panel", () => ({
+  resizePanel: vi.fn(async (_file: File) => ({
+    ok: true as const,
+    value: {
+      data: "AAAA",
+      mediaType: "image/jpeg" as const,
+      width: 100,
+      height: 100,
+      byteLength: 3,
+    },
+  })),
+}));
+
 // ── Mock @/lib/storage so checkConfig never touches real crypto ──────────────
 vi.mock("@/lib/storage", () => ({
   getActiveProvider: vi.fn().mockResolvedValue("anthropic"),
@@ -300,6 +314,130 @@ describe("Chat — attachment count cap", () => {
     const btn = await screen.findByRole("button", { name: /attach image/i });
     // 0 attachments — not disabled
     expect((btn as HTMLButtonElement).disabled).toBe(false);
+  });
+});
+
+// Helper: build a synthetic clipboardData object for paste events.
+// onPaste iterates e.clipboardData?.items checking item.kind==="file" + getAsFile().
+function makeClipboardDT(files: File[]) {
+  return {
+    items: files.map((f) => ({
+      kind: "file",
+      type: f.type,
+      getAsFile: () => f,
+    })),
+  };
+}
+
+// Helper: build a synthetic dataTransfer object for drop events.
+// onDrop spreads e.dataTransfer?.files and filters by image MIME.
+function makeDropDT(files: File[]) {
+  return {
+    files,
+  };
+}
+
+describe("Chat — behavioral image flows (Phase 5)", () => {
+  it("paste of image triggers attachment add", async () => {
+    seedProvider("anthropic");
+    render(
+      <Chat
+        providerLabel="Anthropic"
+        onOpenSettings={vi.fn()}
+        session={makeSession()}
+      />,
+    );
+
+    await screen.findByRole("button", { name: /attach image/i });
+    const textarea = screen.getByPlaceholderText(/Tell the agent/i);
+    const file = new File([new Uint8Array(100)], "p.png", { type: "image/png" });
+
+    await act(async () => {
+      fireEvent.paste(textarea, { clipboardData: makeClipboardDT([file]) });
+    });
+
+    const thumb = await screen.findByAltText(/uploaded image preview/i);
+    expect(thumb).toBeTruthy();
+  });
+
+  it("drop of image triggers attachment add", async () => {
+    seedProvider("anthropic");
+    render(
+      <Chat
+        providerLabel="Anthropic"
+        onOpenSettings={vi.fn()}
+        session={makeSession()}
+      />,
+    );
+
+    await screen.findByRole("button", { name: /attach image/i });
+    const textarea = screen.getByPlaceholderText(/Tell the agent/i);
+    const file = new File([new Uint8Array(100)], "d.png", { type: "image/png" });
+    const dt = makeDropDT([file]);
+
+    await act(async () => {
+      fireEvent.dragOver(textarea, { dataTransfer: dt });
+      fireEvent.drop(textarea, { dataTransfer: dt });
+    });
+
+    const thumb = await screen.findByAltText(/uploaded image preview/i);
+    expect(thumb).toBeTruthy();
+  });
+
+  it("4th image is dropped silently and only 3 thumbnails appear", async () => {
+    seedProvider("anthropic");
+    render(
+      <Chat
+        providerLabel="Anthropic"
+        onOpenSettings={vi.fn()}
+        session={makeSession()}
+      />,
+    );
+
+    await screen.findByRole("button", { name: /attach image/i });
+    const textarea = screen.getByPlaceholderText(/Tell the agent/i);
+    const files = Array.from({ length: 4 }, (_, i) =>
+      new File([new Uint8Array(100)], `p${i}.png`, { type: "image/png" }),
+    );
+
+    await act(async () => {
+      fireEvent.paste(textarea, { clipboardData: makeClipboardDT(files) });
+    });
+
+    // resizePanel is mocked; all promises resolve synchronously in the microtask queue.
+    // findAllByAltText retries until at least one is present, then we assert the cap.
+    const thumbs = await screen.findAllByAltText(/uploaded image preview/i);
+    expect(thumbs).toHaveLength(3);
+  });
+
+  it("Backspace on focused thumbnail removes the attachment", async () => {
+    seedProvider("anthropic");
+    render(
+      <Chat
+        providerLabel="Anthropic"
+        onOpenSettings={vi.fn()}
+        session={makeSession()}
+      />,
+    );
+
+    await screen.findByRole("button", { name: /attach image/i });
+    const textarea = screen.getByPlaceholderText(/Tell the agent/i);
+    const file = new File([new Uint8Array(100)], "p.png", { type: "image/png" });
+
+    await act(async () => {
+      fireEvent.paste(textarea, { clipboardData: makeClipboardDT([file]) });
+    });
+
+    const thumb = await screen.findByAltText(/uploaded image preview/i);
+    const listitem = thumb.closest('[role="listitem"]') as HTMLElement;
+    expect(listitem).not.toBeNull();
+
+    await act(async () => {
+      listitem.focus();
+      fireEvent.keyDown(listitem, { key: "Backspace" });
+    });
+
+    expect(screen.queryByAltText(/uploaded image preview/i)).toBeNull();
   });
 });
 
