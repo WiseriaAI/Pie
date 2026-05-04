@@ -242,6 +242,16 @@ describe("buildSessionAgentSnapshot", () => {
     const tombstone = buildSessionAgentTombstone();
     expect(tombstone.skillExecutionScopeStack).toEqual([]);
   });
+
+  // Phase 5 — hasImageContent round-trip tests (Task 11)
+  it("accepts hasImageContent as the 4th parameter and round-trips it", () => {
+    const snap = buildSessionAgentSnapshot([], 0, [], true);
+    expect(snap.hasImageContent).toBe(true);
+  });
+  it("defaults hasImageContent to false when omitted", () => {
+    const snap = buildSessionAgentSnapshot([], 0);
+    expect(snap.hasImageContent).toBe(false);
+  });
 });
 
 // ── M2-U2 P1-9 + Bug-fix-D: only user-reject increments confirmRejections ──────
