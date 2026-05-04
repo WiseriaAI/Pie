@@ -99,6 +99,46 @@ describe("createSession", () => {
     expect(list[0]!.id).toBe(meta.id);
     expect(list[0]!.status).toBe("active");
   });
+
+  it("I-1: strips ImageAttachment.data from messages passed to createSession (R10 scrub)", async () => {
+    // Verify createSession applies scrubAttachmentBytes before persisting,
+    // closing the gap where it previously wrote via writeAtomic directly.
+    const messagesWithAttachment = [
+      {
+        role: "user" as const,
+        content: "check this screenshot",
+        // Cast through unknown: DisplayMessage has no static `attachments` field
+        // (Phase 5 is runtime-guarded). The scrub is defensive + runtime-correct.
+        attachments: [
+          {
+            kind: "image",
+            id: "img-1",
+            mediaType: "image/jpeg",
+            data: "AAAA_BASE64_DATA",
+            width: 100,
+            height: 100,
+            byteLength: 3,
+          },
+        ],
+      } as unknown as import("./types").SessionMeta["messages"][number],
+    ];
+
+    const meta = await createSession({ messages: messagesWithAttachment });
+    const stored = await getSessionMeta(meta.id);
+    expect(stored).not.toBeNull();
+
+    // The stored message should have the attachment scrubbed to image_placeholder.
+    const storedMsg = stored!.messages[0] as Record<string, unknown>;
+    const attachments = storedMsg["attachments"] as Array<Record<string, unknown>>;
+    expect(attachments).toBeDefined();
+    expect(attachments[0]!["kind"]).toBe("image_placeholder");
+    // Raw bytes must not be in storage.
+    expect(attachments[0]!["data"]).toBeUndefined();
+    expect(attachments[0]!["byteLength"]).toBeUndefined();
+    // Identity fields are preserved.
+    expect(attachments[0]!["id"]).toBe("img-1");
+    expect(attachments[0]!["mediaType"]).toBe("image/jpeg");
+  });
 });
 
 describe("getSessionMeta / getSessionAgent", () => {

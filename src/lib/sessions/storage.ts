@@ -130,7 +130,7 @@ export async function createSession(
   const id = crypto.randomUUID();
   const now = options.now ?? Date.now();
 
-  const meta: SessionMeta = {
+  const rawMeta: SessionMeta = {
     id,
     createdAt: now,
     lastAccessedAt: now,
@@ -143,6 +143,11 @@ export async function createSession(
       ? { pinnedOrigin: options.pinnedOrigin }
       : {}),
   };
+
+  // I-1 — scrub ImageAttachment.data bytes before persisting, consistent
+  // with setSessionMeta's R10 scrub. Today no caller passes ImageAttachments
+  // to createSession, but the surface is open; this closes it defensively.
+  const meta = scrubAttachmentBytes(rawMeta);
 
   const agent: SessionAgentState = {
     agentMessages: [],

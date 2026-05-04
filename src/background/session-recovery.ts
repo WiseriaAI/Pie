@@ -1,10 +1,9 @@
 import {
   getSessionAgent,
-  getSessionMeta,
   listSessionIndex,
+  markFailed,
   markFailedAndScrub,
   markPaused,
-  setSessionMeta,
 } from "@/lib/sessions/storage";
 
 /**
@@ -118,11 +117,10 @@ export async function detectAndMarkPaused(
     if (agent && agent.stepIndex > 0) {
       if (agent.hasImageContent) {
         // R14 — image cache evicted on SW restart; session is unresumable.
-        const meta = await getSessionMeta(entry.id);
-        if (meta) {
-          await setSessionMeta({ ...meta, status: "failed" });
-          stats.failed += 1;
-        }
+        // Use markFailed helper for symmetry with markPaused (idempotency +
+        // same-status early-return, matching S-1 consistency requirement).
+        const ok = await markFailed(entry.id);
+        if (ok) stats.failed += 1;
       } else {
         const ok = await markPaused(entry.id);
         if (ok) stats.paused += 1;
@@ -175,11 +173,10 @@ export async function transitionPortInFlightSessionsToPaused(
         // evictByInFlightSet which drops image bytes; image-bearing sessions
         // can't be resumed (bytes gone with the port's in-memory cache).
         if (agent.hasImageContent) {
-          const meta = await getSessionMeta(sid);
-          if (meta) {
-            await setSessionMeta({ ...meta, status: "failed" });
-            stats.failed += 1;
-          }
+          // R14 — mirror cold-start logic; use markFailed helper for
+          // symmetry with markPaused (S-1 consistency requirement).
+          const ok = await markFailed(sid);
+          if (ok) stats.failed += 1;
         } else {
           const ok = await markPaused(sid);
           if (ok) stats.paused += 1;

@@ -64,6 +64,7 @@ import {
   dispatchCaptureFullPageTab,
 } from "@/lib/agent/tools/screenshot";
 import { acquireCdpSession } from "./cdp-session";
+import { makeCdpAdapterForScreenshot } from "./cdp-adapter";
 import type { ScreenshotConfirmExtras } from "@/types";
 import type { ImageAttachment } from "@/lib/images";
 
@@ -432,10 +433,11 @@ async function checkPinnedDrift(
 async function handleResumeRequest(
   port: chrome.runtime.Port,
   sessionId: string,
-  signal: AbortSignal,
+  abortController: AbortController,
   pendingConfirmations: Map<string, (result: { approved: boolean; reason?: "user-reject" | "aborted" | "pre-capture-failed"; screenshotResult?: ImageAttachment; stale?: boolean; failureReason?: string }) => void>,
   pendingConfirmationsBySession: Map<string, string>,
 ): Promise<void> {
+  const signal = abortController.signal;
   const meta = await getSessionMeta(sessionId);
   if (!meta || meta.status !== "paused") {
     // Multi-sidepanel scenario: a sibling sidepanel may have already resumed
@@ -565,6 +567,16 @@ async function handleResumeRequest(
     const isScreenshotTool =
       payload.tool === "capture_visible_tab" ||
       payload.tool === "capture_fullpage_tab";
+    // I-4 — if no pinned tab is available (unpinned session), emit a clear
+    // failure shape immediately so the LLM sees an actionable observation
+    // ("no-pinned-tab") rather than a vague resolver failure.
+    if (isScreenshotTool && !pinned) {
+      return {
+        approved: false,
+        reason: "pre-capture-failed",
+        failureReason: "no-pinned-tab",
+      };
+    }
     if (isScreenshotTool && pinned) {
       const captureCtx = {
         sessionId,
@@ -575,13 +587,15 @@ async function handleResumeRequest(
       if (payload.tool === "capture_visible_tab") {
         outcome = await dispatchCaptureVisibleTab(captureCtx);
       } else {
-        outcome = await dispatchCaptureFullPageTab(captureCtx, {
-          acquireSession: (token) =>
-            acquireCdpSession({ ...token, abortSignal: signal }),
-        });
+        outcome = await dispatchCaptureFullPageTab(
+          captureCtx,
+          makeCdpAdapterForScreenshot(abortController),
+        );
       }
-      setPreCapture(confirmationId, outcome);
       if (outcome.ok) {
+        // S-2 — setPreCapture only on success so a failed capture never
+        // enters the cache (removing the redundant discard-after-set pattern).
+        setPreCapture(confirmationId, outcome);
         const img = outcome.value;
         screenshotPreview = {
           thumbnail: img.data,
@@ -592,7 +606,6 @@ async function handleResumeRequest(
         };
       } else {
         // Pre-capture failed — skip the confirm card entirely; return failure.
-        discardPreCapture(confirmationId);
         return {
           approved: false,
           reason: "pre-capture-failed",
@@ -841,10 +854,11 @@ async function handleChatStream(
   port: chrome.runtime.Port,
   messages: ChatMessage[],
   sessionId: string,
-  signal: AbortSignal,
+  abortController: AbortController,
   pendingConfirmations: Map<string, (result: { approved: boolean; reason?: "user-reject" | "aborted" | "pre-capture-failed"; screenshotResult?: ImageAttachment; stale?: boolean; failureReason?: string }) => void>,
   pendingConfirmationsBySession: Map<string, string>,
 ) {
+  const signal = abortController.signal;
   try {
     // Get active provider config
     const activeProvider = await getActiveProvider();
@@ -1039,6 +1053,16 @@ async function handleChatStream(
       const isScreenshotTool =
         payload.tool === "capture_visible_tab" ||
         payload.tool === "capture_fullpage_tab";
+      // I-4 — if no pinned tab is available (unpinned session), emit a clear
+      // failure shape immediately so the LLM sees an actionable observation
+      // ("no-pinned-tab") rather than a vague resolver failure.
+      if (isScreenshotTool && !pinned) {
+        return {
+          approved: false,
+          reason: "pre-capture-failed",
+          failureReason: "no-pinned-tab",
+        };
+      }
       if (isScreenshotTool && pinned) {
         const captureCtx = {
           sessionId,
@@ -1049,13 +1073,15 @@ async function handleChatStream(
         if (payload.tool === "capture_visible_tab") {
           outcome = await dispatchCaptureVisibleTab(captureCtx);
         } else {
-          outcome = await dispatchCaptureFullPageTab(captureCtx, {
-            acquireSession: (token) =>
-              acquireCdpSession({ ...token, abortSignal: signal }),
-          });
+          outcome = await dispatchCaptureFullPageTab(
+            captureCtx,
+            makeCdpAdapterForScreenshot(abortController),
+          );
         }
-        setPreCapture(confirmationId, outcome);
         if (outcome.ok) {
+          // S-2 — setPreCapture only on success so a failed capture never
+          // enters the cache (removing the redundant discard-after-set pattern).
+          setPreCapture(confirmationId, outcome);
           const img = outcome.value;
           screenshotPreview = {
             thumbnail: img.data,
@@ -1066,7 +1092,6 @@ async function handleChatStream(
           };
         } else {
           // Pre-capture failed — skip the confirm card entirely; return failure.
-          discardPreCapture(confirmationId);
           return {
             approved: false,
             reason: "pre-capture-failed",
@@ -1320,7 +1345,7 @@ chrome.runtime.onConnect.addListener((port) => {
         port,
         message.messages,
         message.sessionId,
-        abortController.signal,
+        abortController,
         pendingConfirmations,
         pendingConfirmationsBySession,
       );
@@ -1371,7 +1396,7 @@ chrome.runtime.onConnect.addListener((port) => {
       handleResumeRequest(
         port,
         message.sessionId,
-        abortController.signal,
+        abortController,
         pendingConfirmations,
         pendingConfirmationsBySession,
       ).catch((e) => {
