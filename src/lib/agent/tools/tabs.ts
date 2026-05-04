@@ -391,14 +391,21 @@ const closeTabsTool: Tool = {
       };
     }
 
-    // K-9: never close the pinned tab. The handler refuses up front so the
-    // failure is visible in the observation rather than relying on the
-    // per-round origin re-check to recover from a closed pinnedTabId.
-    if (a.tabIds.includes(ctx.tabId)) {
+    // K-9 (M5 revision): only refuse close on a USER-locked pinned tab.
+    // 'task' mode = the loop captured the pin at chat-start; the user has
+    // already given high-risk confirm consent for this close, and the
+    // per-iteration origin check will gracefully abort the task if the
+    // pinned tab disappears (observation: "Page origin changed").
+    // 'user' mode = the user explicitly pinned this tab via the dropdown;
+    // closing it would yank their explicit choice — refuse upfront.
+    // 'auto' mode = no persistent pin (ctx.tabId is the loop's anchor for
+    // this task only; same logic as 'task').
+    if (ctx.pinMode === "user" && a.tabIds.includes(ctx.tabId)) {
       return {
         success: false,
         error:
-          "close_tabs cannot close the agent's pinned tab. Ask the user to close it manually.",
+          "close_tabs cannot close the user's explicitly pinned tab (pinMode=user). " +
+          "Use the PINNED dropdown to clear or change the pin, then retry.",
       };
     }
 

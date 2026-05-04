@@ -47,6 +47,7 @@ import {
 import { KEYBOARD_SIMULATION_STORAGE_KEY } from "@/lib/keyboard-simulation";
 import { runSessionMigrations } from "@/lib/sessions/migration";
 import { getCrossSessionPinnedTabIds } from "@/lib/sessions/pinned-tab-registry";
+import { getEffectivePinMode } from "@/lib/sessions/pin-state";
 import { chat } from "@/lib/model-router";
 import { generateTitle, maybeUpgradeFallbackTitle } from "@/lib/sessions/title-generator";
 // Phase 5 — image cache lifecycle + pre-capture (Task 12 wiring)
@@ -739,6 +740,9 @@ async function handleResumeRequest(
     taskId: resumeTaskId,
     // M3-U4 (TOCTOU fix) — refresh per dispatch; see chat-start twin.
     refreshCrossSessionPinnedTabIds: () => getCrossSessionPinnedTabIds(sessionId),
+    // M5 — pin mode frozen at chat-start (here: resume start). close_tabs K-9
+    // reads this through ToolHandlerContext to refuse user-locked pin closes.
+    pinMode: getEffectivePinMode(meta, agent),
     // M5 — auto-unpin task-mode pin at task end (resume path).
     onTaskDone: () => clearTaskPinAtSessionEnd(sessionId),
     // U4 — same telemetry hook as chat-start path.
@@ -1008,6 +1012,13 @@ async function handleChatStream(
       sessionMeta?.pinnedTabId !== undefined && sessionMeta.pinnedOrigin
         ? { tabId: sessionMeta.pinnedTabId, origin: sessionMeta.pinnedOrigin }
         : undefined;
+    // M5 — pin mode at chat-start. Frozen for the loop's lifetime; downstream
+    // close_tabs K-9 reads this to refuse user-locked pin closes. Defaults
+    // to 'auto' when meta is missing (M1 cold-start corner cases).
+    const pinModeAtStart =
+      sessionMeta != null
+        ? getEffectivePinMode(sessionMeta, synthAgent ?? null)
+        : ("auto" as const);
 
     // Phase 5 — Task 12: mint a fresh taskId for the per-task screenshot
     // budget and pre-capture keys.
@@ -1218,6 +1229,9 @@ async function handleChatStream(
       // registry per tool dispatch. The frozen snapshot here would miss
       // sessions created mid-loop.
       refreshCrossSessionPinnedTabIds: () => getCrossSessionPinnedTabIds(sessionId),
+      // M5 — pin mode frozen at chat-start. close_tabs K-9 reads this
+      // through ToolHandlerContext to refuse user-locked pin closes.
+      pinMode: pinModeAtStart,
       // M5 — auto-unpin task-mode pin at task end (chat-start path).
       onTaskDone: () => clearTaskPinAtSessionEnd(sessionId),
       // U2 — pass the full (possibly synth-injected) messages array so

@@ -185,6 +185,17 @@ export interface AgentLoopContext {
    */
   pinned?: { tabId: number; origin: string };
   /**
+   * M5 — current session's pin mode at chat-start. SW dispatcher computes
+   * this via getEffectivePinMode(meta, agent) and threads it through to
+   * the tool handler context (close_tabs K-9 reads it). Frozen for the
+   * loop's lifetime — pinMode changes mid-task (e.g. user clicks dropdown)
+   * only take effect on the next chat-start.
+   *
+   * Undefined means "legacy caller without M5 wiring" — defaults to
+   * permissive behavior (treat as 'auto'/'task'; close_tabs K-9 doesn't fire).
+   */
+  pinMode?: "auto" | "task" | "user";
+  /**
    * M3-U4 — fetch the current set of tab ids pinned by OTHER active
    * sessions in the cross-session pinned-tab registry (`session_index`
    * derived). Called per iteration (NOT per task) so a session created
@@ -1912,6 +1923,9 @@ export async function runAgentLoop(ctx: AgentLoopContext): Promise<void> {
             snapshot,
             confirmedTabTargets,
             preFetchedContent,
+            // M5 — frozen at chat-start (passed via AgentLoopContext.pinMode);
+            // close_tabs K-9 reads this to refuse closing user-locked pins.
+            pinMode: ctx.pinMode,
           });
         } catch (e) {
           result = {

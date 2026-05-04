@@ -42,6 +42,19 @@ export interface ToolHandlerContext {
   snapshot: PageSnapshot;
   confirmedTabTargets?: Map<number, ConfirmedTabTarget>;
   preFetchedContent?: Map<number, PreFetchedTabContent>;
+  /**
+   * M5 — current session's pin mode. Frozen at chat-start (SW dispatcher
+   * computes via getEffectivePinMode from meta+agent and passes through
+   * AgentLoopContext.pinMode → ctx.pinMode here).
+   *
+   * Used by close_tabs K-9: only 'user' mode protects the pinned tab from
+   * agent-initiated close (user explicitly chose this tab; we shouldn't
+   * let the agent yank it). 'task' / 'auto' / undefined modes allow close
+   * (high-risk confirm has already gathered explicit user consent; the
+   * loop's per-iteration origin check will gracefully abort if the tab
+   * disappears).
+   */
+  pinMode?: "auto" | "task" | "user";
 }
 
 export interface Tool {
