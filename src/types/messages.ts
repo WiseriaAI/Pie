@@ -176,6 +176,20 @@ export interface TabTarget {
 }
 
 /**
+ * Phase 5 — pre-captured thumbnail embedded in confirm card so user
+ * approves the EXACT image LLM will see (K-1 informed-approval).
+ * capturedAt drives the 5 s stale invalidate (>5 s requires re-capture
+ * + re-confirm).
+ */
+export interface ScreenshotConfirmExtras {
+  thumbnail: string; // base64, post-resize (same bytes the LLM will see)
+  mediaType: string;
+  width: number;
+  height: number;
+  capturedAt: number; // Date.now()
+}
+
+/**
  * Phase 3 — get_tab_content content preview (P3-U / R12 / SEC-2).
  * SW pre-fetches the tab content via executeScript before the confirm
  * request, applies escapeUntrustedWrappers + light strip, and ships the
@@ -246,6 +260,12 @@ export interface AgentConfirmRequestMessage {
    *  credential light-strip, and ships the first chunk to the panel for
    *  informed approval. Handler reuses this cache on dispatch. */
   contentPreview?: TabContentPreview;
+  /** Phase 5 — for screenshot tool confirm cards (capture_visible_tab /
+   *  capture_fullpage_tab). The SW pre-captures the image BEFORE sending the
+   *  confirm request so the user sees the EXACT bytes the LLM will receive
+   *  (K-1 informed-approval). Absent when pre-capture failed or is not
+   *  applicable to the tool. */
+  screenshotPreview?: ScreenshotConfirmExtras;
   /** M2-U2 — session routing. See ChatChunkMessage.sessionId. */
   sessionId: string;
 }
