@@ -64,8 +64,13 @@ import {
   dispatchCaptureFullPageTab,
 } from "@/lib/agent/tools/screenshot";
 import { makeCdpAdapterForScreenshot } from "./cdp-adapter";
+import { makeResolveEffectivePinned } from "./effective-pinned";
 import type { ScreenshotConfirmExtras } from "@/types";
 import type { ImageAttachment } from "@/lib/images";
+
+// Phase 5 follow-up — shared resolver for the screenshot first-task pin race
+// (see effective-pinned.ts for the three-tier fallback rationale).
+const resolveEffectivePinned = makeResolveEffectivePinned(getSessionMeta);
 
 // Open side panel when extension icon is clicked
 chrome.action.onClicked.addListener(async (tab) => {
@@ -566,21 +571,26 @@ async function handleResumeRequest(
     const isScreenshotTool =
       payload.tool === "capture_visible_tab" ||
       payload.tool === "capture_fullpage_tab";
-    // I-4 — if no pinned tab is available (unpinned session), emit a clear
-    // failure shape immediately so the LLM sees an actionable observation
-    // ("no-pinned-tab") rather than a vague resolver failure.
-    if (isScreenshotTool && !pinned) {
-      return {
-        approved: false,
-        reason: "pre-capture-failed",
-        failureReason: "no-pinned-tab",
-      };
-    }
-    if (isScreenshotTool && pinned) {
+    if (isScreenshotTool) {
+      // Phase 5 follow-up — first-task pin race fallback. The panel-side
+      // captureActivePinned + setSessionMeta on first send is fire-and-forget
+      // (useSession.ts:760-790); SW may read sessionMeta before that patch
+      // lands, so closure-captured `pinned` may be undefined on the very first
+      // chat-start. Mirror the loop's active-tab fallback via three-tier
+      // resolveEffectivePinned (closure → re-read meta → active-tab query).
+      const effectivePinned = await resolveEffectivePinned(pinned, sessionId);
+      if (!effectivePinned) {
+        // I-4 — no pinned tab available (e.g. chrome:// or unpinnable session).
+        return {
+          approved: false,
+          reason: "pre-capture-failed",
+          failureReason: "no-pinned-tab",
+        };
+      }
       const captureCtx = {
         sessionId,
         taskId: resumeTaskId,
-        pinnedTabId: pinned.tabId,
+        pinnedTabId: effectivePinned.tabId,
       };
       let outcome;
       if (payload.tool === "capture_visible_tab") {
@@ -1052,21 +1062,26 @@ async function handleChatStream(
       const isScreenshotTool =
         payload.tool === "capture_visible_tab" ||
         payload.tool === "capture_fullpage_tab";
-      // I-4 — if no pinned tab is available (unpinned session), emit a clear
-      // failure shape immediately so the LLM sees an actionable observation
-      // ("no-pinned-tab") rather than a vague resolver failure.
-      if (isScreenshotTool && !pinned) {
-        return {
-          approved: false,
-          reason: "pre-capture-failed",
-          failureReason: "no-pinned-tab",
-        };
-      }
-      if (isScreenshotTool && pinned) {
+      if (isScreenshotTool) {
+        // Phase 5 follow-up — first-task pin race fallback. The panel-side
+        // captureActivePinned + setSessionMeta on first send is fire-and-forget
+        // (useSession.ts:760-790); SW may read sessionMeta before that patch
+        // lands, so closure-captured `pinned` may be undefined on the very first
+        // chat-start. Mirror the loop's active-tab fallback via three-tier
+        // resolveEffectivePinned (closure → re-read meta → active-tab query).
+        const effectivePinned = await resolveEffectivePinned(pinned, sessionId);
+        if (!effectivePinned) {
+          // I-4 — no pinned tab available (e.g. chrome:// or unpinnable session).
+          return {
+            approved: false,
+            reason: "pre-capture-failed",
+            failureReason: "no-pinned-tab",
+          };
+        }
         const captureCtx = {
           sessionId,
           taskId: chatTaskId,
-          pinnedTabId: pinned.tabId,
+          pinnedTabId: effectivePinned.tabId,
         };
         let outcome;
         if (payload.tool === "capture_visible_tab") {

@@ -331,7 +331,7 @@ function withSession<T extends object>(msg: T, sessionId: string): T & { session
   return { ...msg, sessionId };
 }
 
-function isRestrictedUrl(url: string): boolean {
+export function isRestrictedUrl(url: string): boolean {
   // Reject schemes whose origin collapses to the string "null" or that the agent
   // has no sensible way to pin: file://, data:, javascript:, blob:. Without these
   // checks, any subsequent navigation within one of these schemes would pass the
