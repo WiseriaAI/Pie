@@ -125,6 +125,41 @@
 
 ---
 
+## 8. Phase 5 v1.1 follow-ups（multimodal image input ship 后已知 deferred）
+
+来源 `docs/superpowers/plans/2026-05-04-multimodal-image-input.md` "Deferred to v1.1" + final review minor findings + post-acceptance bug doc。
+
+| 项 | 价值 | 备注 |
+|---|---|---|
+| **Anthropic `cache_control: ephemeral` on image content blocks** | 大 | 当前一张图持续 6 round task = ~9.4K 重复 vision token；启用 ephemeral cache 后只算一次。BYOK cost mitigation 头号 |
+| **Settings toggle: 1568 ↔ 1092 max-edge** | 中 | Anthropic 1568 进高价 tier (~2.46MP) / 1092 进低价 tier (~1.19MP)。让 BYOK 用户自选清晰度 vs 成本 |
+| **Archived bundle thumbnail (256 px / ~50 KB per image)** | 中 | 当前 archived session 全显 `[图已释放]` 占位；v1.1 在 archive bundle 内嵌缩略图，可读但不可 LLM 还原 |
+| **Multi-image reorder UI** | 低 | 拖拽重排上传顺序；v1 上传顺序即提交顺序 |
+| **Skill `promptTemplate` 内嵌图片** | 低 | 当前 skill template 纯文本；image embed 需要 skill schema 升级 |
+| **Resume-with-re-upload for image-bearing paused tasks** | 低 | 当前 R14 强制 failed；用户可点 prompt 提示"上传上次的图继续"再 resume，UX 复杂 |
+| **R13 path (e) explicit-clear UI** | 低 | 4 路径自动 evict 已覆盖；显式 "Clear images" 按钮 v1.1 看用户体验数据再决策 |
+| **Pre-existing Anthropic `tool_result.toolUseId` snake_case audit** | 维护 | Phase 5 review 暴露：`toolUseId` (camelCase) 直接送 Anthropic API（应是 `tool_use_id`）。Phase 5 之前就这样、似乎被 API 容忍；单独审计 + 可能配合 Gemini 时一起改 |
+| **Gemini provider vision** | 大 | Gemini provider entry 本身未交付 (§1)；image 需要 `inline_data` 协议 + manifest host_permission，与 §7 Provider 中心化协同 brainstorm |
+| **MiniMax / 智谱 / 百炼 vision** | 中 | 各家协议不同；与 §7 Model list 中心化协同（per-model vision flag 后才能展开） |
+
+## 9. M3 残余 advisory 项（M3 ship 后未实现的可选优化）
+
+ce:review autofix sweep 时已提但未做的项，不影响 R24/R25/R26 acceptance gate；可作为 ad-hoc 维护任务穿插：
+
+| 类别 | 项 | 备注 |
+|---|---|---|
+| **TS 优化** | kt-2: `TOOL_CLASSES` 用 `Record<typeof KNOWN_*_TOOL_NAMES[number], ToolClass>` 在编译期 enforce 完整性 | 现走 module-load throw；编译期 check 更早暴露 |
+| **TS 优化** | kt-4 / kt-5: loop.ts 内 `import("...").CdpOwnerToken` 改为顶部 type 导入 + `let ownerToken` 改为构造点声明 | 风格清理 |
+| **可维护性** | MAINT-M3-1: `CdpOwnerToken.tabId` 字段无 reader 可删 | 死字段；ownerToken 已用 sessionId 唯一标识 |
+| **可维护性** | MAINT-M3-3: `inFlightSessionIds` Set 在 per-port-per-session 模型下退化为 boolean | M3 后 port 与 session 1:1，Set 永远 ≤1 元素 |
+| **agent-native** | W2: R7 lock observation 不附带 offending sessionId | 需要 ctx.crossSessionPinnedTabsByTab 从 Set<tabId> 升级为 Map<tabId, sessionId> |
+| **测试 gap** | `verifyPortSession` 拒绝路径无 SW 端集成测试 | 当前只有单元层 |
+| **测试 gap** | loop.ts pin-resolution 4 分支无 end-to-end 测试 | 单元层有，跨层缺 |
+
+详细 invariant trace 见 `docs/solutions/2026-05-03-multi-session-invariant-trace.md`。
+
+---
+
 ## 推荐推进顺序
 
 按"用户痛感 × 解锁后续能力"性价比（已纳入 §5 4-way 评估结果）：
