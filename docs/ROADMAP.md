@@ -1,6 +1,8 @@
 # Chrome AI Agent — Roadmap
 
-延续 `docs/design.md` 的 Phase 0/1/2/3 终态。当前已交付的 Phase 详见 `CLAUDE.md` 的 Progress 段（Phase 1 / 2 / 2.5 / 2.6 / 3 已 COMPLETED）。
+延续 `docs/design.md` 的 Phase 0/1/2/3 终态。本文件是已交付 phase 状态 + 后续 backlog 的 single source of truth；invariant 级别细节见 `docs/solutions/`。
+
+**已交付**：Phase 0 / 1 / 2 / 2.5 / 2.6 / 3 / 4 (M1 + M2 + M3) / 5 (multimodal v1)。
 
 本文件汇总各 brainstorm / plan 主动 defer 的 milestone，是后续工作的 backlog。每条目标是"够用以决定下一步"，不是 plan，立 plan 时再 `/ce:brainstorm` + `/ce:plan` 走完整链路。
 

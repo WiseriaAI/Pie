@@ -1285,8 +1285,33 @@ export async function runAgentLoop(ctx: AgentLoopContext): Promise<void> {
       // skips its done emit (because normalTextReply gates it).
       if (signal.aborted) return; // → finally with reason-based summary
 
-      // Pure text response (no tool calls) — finish as normal chat
+      // Pure text response (no tool calls) — finish as normal chat.
+      //
+      // M5 fix — pure-text replies skip emitDone (they use chat-done
+      // instead), so the onTaskDone hook would never fire and any
+      // task-mode pin captured at chat-start would persist forever.
+      // The user-reported bug: "任务已经结束了，但是 pinned tab 没有
+      // 释放，并且下拉列表里提示 task is currently running" — exactly
+      // this path. Mirror the emitDone task-pin clear here so every
+      // path that ends a task converges on the same auto-unpin.
+      //
+      // ORDER MATTERS: clear pin BEFORE postMessage(chat-done). The
+      // panel's chat-done handler invokes `persistMessages` which is a
+      // read-modify-write on session meta — if it reads before SW
+      // setSessionMeta(pinMode='auto') lands, it would write back the
+      // stale pinMode='task'. Awaiting onTaskDone first forces the SW
+      // write to land synchronously before panel ever sees chat-done.
       if (completedToolCalls.length === 0) {
+        if (ctx.onTaskDone) {
+          try {
+            await ctx.onTaskDone();
+          } catch (e) {
+            console.warn(
+              `[agent] onTaskDone (pure-text path) failed for session=${ctx.sessionId}:`,
+              e,
+            );
+          }
+        }
         port.postMessage(withSession({ type: "chat-done" }, sessionId));
         normalTextReply = true;
         // M1-U3 v2 — pure-text replies don't push history, so no
