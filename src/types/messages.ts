@@ -119,6 +119,11 @@ export type DisplayMessage =
         existing: SkillDefinition | null;
         effective: SkillDefinition;
       };
+      /** Phase 5 — pre-captured screenshot thumbnail. Wire-only: SW pre-captures
+       *  before posting agent-confirm-request and embeds the bytes here so the
+       *  AgentConfirmCard can render the EXACT image the LLM will receive
+       *  (K-1 informed-approval). NEVER persisted (~MB-class bytes). */
+      screenshotPreview?: ScreenshotConfirmExtras;
     }
   | {
       role: "agent-summary";

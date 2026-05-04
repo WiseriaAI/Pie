@@ -424,6 +424,51 @@ describe("useSession — R4 confirm card recovery (M1-U4)", () => {
     act(() => port.__emit(payload));
     expect(result.current.messages).toHaveLength(1);
   });
+
+  it("threads screenshotPreview from agent-confirm-request to the agent-confirm DisplayMessage (Phase 5)", async () => {
+    const { result } = renderHook(() => useSession());
+    await waitFor(() => expect(result.current.ready).toBe(true));
+
+    const port = chromeMock.runtime.__ports[0]!;
+
+    // SW pushes agent-confirm-request for a screenshot tool with the
+    // pre-captured thumbnail. The wire payload's screenshotPreview must
+    // survive the wire → DisplayMessage hop so AgentConfirmCard renders
+    // the thumbnail (regression: previously dropped at the destructure
+    // in useSession.ts, leaving the confirm card without a preview).
+    act(() =>
+      emitWithSession(port, {
+        type: "agent-confirm-request",
+        confirmationId: "c-screenshot",
+        tool: "capture_visible_tab",
+        args: {},
+        resolvedElement: { text: "", tag: "" },
+        riskReason:
+          "Screenshot tools require explicit user approval per capture (R5/R6) — pixel data cannot be sanitized.",
+        screenshotPreview: {
+          thumbnail: "/9j/4AAQSkZJRg==",
+          mediaType: "image/jpeg",
+          width: 1568,
+          height: 880,
+          capturedAt: Date.now(),
+        },
+      } as never, result.current.sessionId!),
+    );
+
+    expect(result.current.messages).toEqual([
+      expect.objectContaining({
+        role: "agent-confirm",
+        confirmationId: "c-screenshot",
+        tool: "capture_visible_tab",
+        screenshotPreview: expect.objectContaining({
+          thumbnail: "/9j/4AAQSkZJRg==",
+          mediaType: "image/jpeg",
+          width: 1568,
+          height: 880,
+        }),
+      }),
+    ]);
+  });
 });
 
 describe("useSession — resolveConfirm", () => {

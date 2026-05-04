@@ -623,6 +623,7 @@ export default function Chat({
                       riskReason={msg.riskReason}
                       resolved={msg.resolved}
                       metaSkillPreview={msg.metaSkillPreview}
+                      screenshotPreview={msg.screenshotPreview}
                       onApprove={() =>
                         resolveConfirm(msg.confirmationId, true)
                       }

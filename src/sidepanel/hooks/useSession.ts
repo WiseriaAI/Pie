@@ -395,6 +395,7 @@ export function useSession(): UseSession {
           resolvedElement,
           riskReason,
           metaSkillPreview,
+          screenshotPreview,
         } = message;
         setMessages((prev) => {
           // Idempotent — if the same confirmationId is already in
@@ -415,6 +416,9 @@ export function useSession(): UseSession {
               resolvedElement,
               riskReason,
               metaSkillPreview,
+              // Phase 5 — pre-captured thumbnail bytes for screenshot tools.
+              // Wire-only; never persisted (would blow 8 MB chrome.storage quota).
+              ...(screenshotPreview ? { screenshotPreview } : {}),
               resolved: undefined,
             },
           ];
