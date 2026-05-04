@@ -884,6 +884,158 @@ describe("setLastTaskSynth / clearLastTaskSynth — U3 (AD1 fix: agent-state)", 
   });
 });
 
+// ── M5 — pinMode normalize-on-write ────────────────────────────────────────
+
+describe("M5 — pinMode normalize-on-write", () => {
+  it("createSession() with no options defaults pinMode='auto' and writes no pinnedTabId to index", async () => {
+    const meta = await createSession();
+    expect(meta.pinMode).toBe("auto");
+    expect(meta.pinnedTabId).toBeUndefined();
+    expect(meta.pinnedOrigin).toBeUndefined();
+
+    const idx = await listSessionIndex();
+    const entry = idx.find((e) => e.id === meta.id);
+    expect(entry?.pinnedTabId).toBeUndefined();
+  });
+
+  it("createSession({pinnedTabId, pinnedOrigin}) defaults pinMode='user' (registers in cross-session set)", async () => {
+    const meta = await createSession({
+      pinnedTabId: 42,
+      pinnedOrigin: "https://example.com",
+    });
+    expect(meta.pinMode).toBe("user");
+    expect(meta.pinnedTabId).toBe(42);
+
+    const idx = await listSessionIndex();
+    const entry = idx.find((e) => e.id === meta.id);
+    expect(entry?.pinnedTabId).toBe(42);
+  });
+
+  it("createSession({pinMode: 'task', pinnedTabId, pinnedOrigin}) honors explicit task mode", async () => {
+    const meta = await createSession({
+      pinMode: "task",
+      pinnedTabId: 5,
+      pinnedOrigin: "https://x.com",
+    });
+    expect(meta.pinMode).toBe("task");
+    expect(meta.pinnedTabId).toBe(5);
+  });
+
+  it("setSessionMeta({pinMode: 'auto', pinnedTabId: 9}) strips pinnedTabId from meta + index (invariant)", async () => {
+    const meta = await createSession({
+      pinnedTabId: 9,
+      pinnedOrigin: "https://x.com",
+    });
+
+    // Caller mistakenly passes pinMode='auto' while still carrying a stale pin.
+    // Storage must enforce the invariant: auto mode → no persisted pin.
+    await setSessionMeta({
+      ...meta,
+      pinMode: "auto",
+      pinnedTabId: 9,
+      pinnedOrigin: "https://x.com",
+    });
+
+    const back = await getSessionMeta(meta.id);
+    expect(back?.pinMode).toBe("auto");
+    expect(back?.pinnedTabId).toBeUndefined();
+    expect(back?.pinnedOrigin).toBeUndefined();
+
+    const idx = await listSessionIndex();
+    const entry = idx.find((e) => e.id === meta.id);
+    expect(entry?.pinnedTabId).toBeUndefined();
+  });
+
+  it("setSessionMeta() infers pinMode='auto' for legacy session with stale pin and stepIndex=0", async () => {
+    // Set up a legacy session: no pinMode, has pinnedTabId, agent has stepIndex=0.
+    const id = "legacy-session-1";
+    const legacyMeta: SessionMeta = {
+      id,
+      createdAt: 1000,
+      lastAccessedAt: 1000,
+      status: "active",
+      messages: [],
+      pinnedTabId: 7,
+      pinnedOrigin: "https://legacy.com",
+    };
+    const legacyAgent: SessionAgentState = {
+      agentMessages: [],
+      stepIndex: 0,
+      skillExecutionScopeStack: [],
+      hasImageContent: false,
+    };
+    await chromeMock.storage.local.set({
+      [metaKey(id)]: legacyMeta,
+      [agentKey(id)]: legacyAgent,
+      session_index: [
+        { id, lastAccessedAt: 1000, status: "active", pinnedTabId: 7 },
+      ],
+    });
+
+    // Triggering a setSessionMeta (e.g. on chat-done) normalizes the legacy
+    // session. stepIndex=0 means "no in-flight task" → infer 'auto' + clear pin.
+    await setSessionMeta(legacyMeta);
+
+    const back = await getSessionMeta(id);
+    expect(back?.pinMode).toBe("auto");
+    expect(back?.pinnedTabId).toBeUndefined();
+    expect(back?.pinnedOrigin).toBeUndefined();
+
+    const idx = await listSessionIndex();
+    const entry = idx.find((e) => e.id === id);
+    expect(entry?.pinnedTabId).toBeUndefined();
+  });
+
+  it("setSessionMeta() infers pinMode='task' for legacy session with stepIndex>0 (in-flight)", async () => {
+    const id = "legacy-session-2";
+    const legacyMeta: SessionMeta = {
+      id,
+      createdAt: 1000,
+      lastAccessedAt: 1000,
+      status: "active",
+      messages: [],
+      pinnedTabId: 7,
+      pinnedOrigin: "https://legacy.com",
+    };
+    const legacyAgent: SessionAgentState = {
+      agentMessages: [],
+      stepIndex: 5,
+      skillExecutionScopeStack: [],
+      hasImageContent: false,
+    };
+    await chromeMock.storage.local.set({
+      [metaKey(id)]: legacyMeta,
+      [agentKey(id)]: legacyAgent,
+      session_index: [
+        { id, lastAccessedAt: 1000, status: "active", pinnedTabId: 7 },
+      ],
+    });
+
+    await setSessionMeta(legacyMeta);
+
+    const back = await getSessionMeta(id);
+    expect(back?.pinMode).toBe("task");
+    expect(back?.pinnedTabId).toBe(7);
+    expect(back?.pinnedOrigin).toBe("https://legacy.com");
+  });
+
+  it("setSessionMeta() preserves explicit 'user' mode pin", async () => {
+    const meta = await createSession({
+      pinnedTabId: 9,
+      pinnedOrigin: "https://x.com",
+    });
+    expect(meta.pinMode).toBe("user");
+
+    // Subsequent write with new title — pin must survive.
+    await setSessionMeta({ ...meta, title: "renamed" });
+
+    const back = await getSessionMeta(meta.id);
+    expect(back?.pinMode).toBe("user");
+    expect(back?.pinnedTabId).toBe(9);
+    expect(back?.title).toBe("renamed");
+  });
+});
+
 // ── U3 — migrateLastTaskSynthFromMeta (AD1 migration) ────────────────────────
 
 describe("migrateLastTaskSynthFromMeta — AD1 migration", () => {

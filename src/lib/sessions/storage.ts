@@ -6,6 +6,7 @@ import type {
   PendingConfirmRecord,
 } from "./types";
 import type { ImageAttachment } from "@/lib/images";
+import { getEffectivePinMode } from "./pin-state";
 
 // ── Key shape ────────────────────────────────────────────────────────────────
 //
@@ -112,6 +113,11 @@ export interface CreateSessionOptions {
   /** Pinned tab captured at session creation (M3-U2). M1 callers omit. */
   pinnedTabId?: number;
   pinnedOrigin?: string;
+  /** M5 — Explicit pin mode. If omitted: defaults to 'user' when
+   *  pinnedTabId+pinnedOrigin are passed (back-compat for existing tests
+   *  that use createSession to set up a pinned session as a fixture);
+   *  defaults to 'auto' when no pin is passed. */
+  pinMode?: "auto" | "task" | "user";
   /** Initial messages, e.g. for migration scenarios. M1 callers omit. */
   messages?: SessionMeta["messages"];
   /** Override clock for tests. Defaults to Date.now(). */
@@ -130,16 +136,30 @@ export async function createSession(
   const id = crypto.randomUUID();
   const now = options.now ?? Date.now();
 
+  // M5 — pinMode default policy:
+  //   - explicit options.pinMode wins
+  //   - else if pinnedTabId+pinnedOrigin given → 'user' (back-compat: existing
+  //     tests pass a pin to set up a fixture; user is the right default since
+  //     it persists and includes the session in the cross-session registry)
+  //   - else → 'auto' (no pin)
+  const pinMode: "auto" | "task" | "user" =
+    options.pinMode ??
+    (typeof options.pinnedTabId === "number" &&
+    typeof options.pinnedOrigin === "string"
+      ? "user"
+      : "auto");
+
   const rawMeta: SessionMeta = {
     id,
     createdAt: now,
     lastAccessedAt: now,
     status: "active",
     messages: options.messages ?? [],
-    ...(options.pinnedTabId !== undefined
+    pinMode,
+    ...(pinMode !== "auto" && options.pinnedTabId !== undefined
       ? { pinnedTabId: options.pinnedTabId }
       : {}),
-    ...(options.pinnedOrigin !== undefined
+    ...(pinMode !== "auto" && options.pinnedOrigin !== undefined
       ? { pinnedOrigin: options.pinnedOrigin }
       : {}),
   };
@@ -215,6 +235,51 @@ function scrubAttachmentBytes(meta: SessionMeta): SessionMeta {
 }
 
 /**
+ * M5 — pinMode normalize-on-write.
+ *
+ *   - pinMode='auto' → strip pinnedTabId/Origin (invariant: auto never persists pin)
+ *   - pinMode undefined → infer via getEffectivePinMode (reads agent state once);
+ *     'auto' inference also strips pin (lazy migration of legacy session).
+ *   - pinMode='task' or 'user' → pass through unchanged
+ *
+ * Returns the (possibly new) meta and a sentinel indicating whether mutation
+ * happened (callers can skip allocation if not).
+ */
+async function normalizePinModeForWrite(
+  meta: SessionMeta,
+): Promise<SessionMeta> {
+  if (meta.pinMode === undefined) {
+    // Legacy session without explicit pinMode — read agent state and infer.
+    // One extra storage round-trip on the cold path; subsequent writes hit
+    // the explicit-mode branches below and skip this read.
+    const agentRecord = await chrome.storage.local.get(agentKey(meta.id));
+    const agent = (agentRecord[agentKey(meta.id)] as
+      | SessionAgentState
+      | undefined) ?? null;
+    const inferred = getEffectivePinMode(meta, agent);
+    if (inferred === "auto") {
+      const next: SessionMeta = { ...meta, pinMode: "auto" };
+      delete next.pinnedTabId;
+      delete next.pinnedOrigin;
+      return next;
+    }
+    return { ...meta, pinMode: inferred };
+  }
+  if (
+    meta.pinMode === "auto" &&
+    (meta.pinnedTabId !== undefined || meta.pinnedOrigin !== undefined)
+  ) {
+    // Invariant guard — auto mode must never persist a pin. Strip them
+    // even if the caller forgot to.
+    const next: SessionMeta = { ...meta };
+    delete next.pinnedTabId;
+    delete next.pinnedOrigin;
+    return next;
+  }
+  return meta;
+}
+
+/**
  * Persist session meta. If `status`, `pinnedTabId`, `lastAccessedAt`, or
  * `title` differ from what's currently in the index, the index is updated
  * in the same atomic batch (D9). If the session is missing from the index
@@ -223,9 +288,13 @@ function scrubAttachmentBytes(meta: SessionMeta): SessionMeta {
  * R10 — strips `ImageAttachment.data` bytes from `meta.messages` before
  * persisting. Bytes live in the in-memory image cache; placeholders survive
  * in storage so identity is preserved for warm-resume hydration.
+ *
+ * M5 — also normalizes pinMode (lazy migration for legacy sessions; invariant
+ * guard for auto mode never carrying a persisted pin).
  */
 export async function setSessionMeta(meta: SessionMeta): Promise<void> {
-  const scrubbedMeta = scrubAttachmentBytes(meta);
+  const pinNormalizedMeta = await normalizePinModeForWrite(meta);
+  const scrubbedMeta = scrubAttachmentBytes(pinNormalizedMeta);
   const index = await readIndex();
   const nextEntry = indexEntryFromMeta(scrubbedMeta);
   const existingEntry = index.find((e) => e.id === scrubbedMeta.id);
@@ -311,18 +380,36 @@ export async function updateLastAccessed(
     status?: SessionStatus;
     title?: string;
     pinnedTabId?: number;
+    pinnedOrigin?: string;
+    /** M5 — explicit pin mode. When pinnedTabId is patched without a pinMode,
+     *  the effective mode defaults to 'user' (back-compat with M3 first-message
+     *  capture path; the new SW chat-start upgrade path passes 'task' explicitly). */
+    pinMode?: "auto" | "task" | "user";
   } = {},
 ): Promise<boolean> {
   const meta = await getSessionMeta(id);
   if (!meta) return false;
+
+  // M5 — if caller patches pinnedTabId but doesn't pass pinMode, default to
+  // 'user' so the auto-mode invariant guard in setSessionMeta doesn't strip
+  // the patch (auto mode never persists pin). Existing M3-U2 first-message
+  // capture path (panel-side) thus continues working without code change at
+  // call sites; Unit 5's SW chat-start path passes pinMode='task' explicitly.
+  const inferredPinMode =
+    options.pinMode ??
+    (options.pinnedTabId !== undefined ? "user" : undefined);
 
   const updated: SessionMeta = {
     ...meta,
     lastAccessedAt: options.now ?? Date.now(),
     ...(options.status !== undefined ? { status: options.status } : {}),
     ...(options.title !== undefined ? { title: options.title } : {}),
+    ...(inferredPinMode !== undefined ? { pinMode: inferredPinMode } : {}),
     ...(options.pinnedTabId !== undefined
       ? { pinnedTabId: options.pinnedTabId }
+      : {}),
+    ...(options.pinnedOrigin !== undefined
+      ? { pinnedOrigin: options.pinnedOrigin }
       : {}),
   };
 

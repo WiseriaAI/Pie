@@ -782,6 +782,11 @@ export function useSession(): UseSession {
             if (fresh.pinnedTabId !== undefined && fresh.pinnedOrigin) return;
             await setSessionMeta({
               ...fresh,
+              // M5 — first-message capture is the task-mode upgrade. Set
+              // pinMode='task' so the storage normalize-on-write invariant
+              // (auto mode never persists pin) doesn't strip it. Unit 5
+              // will move this capture to the SW chat-start path.
+              pinMode: "task",
               pinnedTabId: pin.pinnedTabId,
               pinnedOrigin: pin.pinnedOrigin,
               lastAccessedAt: Date.now(),
@@ -942,6 +947,11 @@ export function useSession(): UseSession {
       if (pinned) {
         const patched = {
           ...meta,
+          // M5 — legacy session backfill = treat as task-mode pin (the user
+          // is activating a session with content but no pin; the next
+          // resume/send needs an anchor). Without explicit pinMode the
+          // storage normalize-on-write would strip the pin.
+          pinMode: "task" as const,
           pinnedTabId: pinned.pinnedTabId,
           pinnedOrigin: pinned.pinnedOrigin,
           lastAccessedAt: Date.now(),
