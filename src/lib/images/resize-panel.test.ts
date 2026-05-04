@@ -63,4 +63,19 @@ describe("resizePanel", () => {
     expect(res.ok).toBe(false);
     if (!res.ok) expect(res.reason).toBe("byte-too-large");
   });
+  it("returns {ok:false, decode-failed} when FileReader fails", async () => {
+    // Override FakeFileReader for this test only — readAsDataURL fires onerror
+    (globalThis as any).FileReader = class FakeErrorFileReader {
+      onload: (() => void) | null = null;
+      onerror: ((e: unknown) => void) | null = null;
+      result: ArrayBuffer | string | null = null;
+      readAsDataURL(_b: Blob) {
+        Promise.resolve().then(() => this.onerror?.(new Error("boom")));
+      }
+    };
+    const file = new File([new Uint8Array(5_000_000)], "x.jpg", { type: "image/jpeg" });
+    const res = await resizePanel(file);
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.reason).toBe("decode-failed");
+  });
 });

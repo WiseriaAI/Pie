@@ -29,7 +29,12 @@ export async function resizePanel(file: File): Promise<ResizePanelOutcome> {
   });
   if (!v0.ok) return { ok: false, reason: v0.reason };
 
-  const dataUrl = await readAsDataURL(file);
+  let dataUrl: string;
+  try {
+    dataUrl = await readAsDataURL(file);
+  } catch {
+    return { ok: false, reason: "decode-failed" };
+  }
   const img = await decodeImage(dataUrl);
   if (!img) return { ok: false, reason: "decode-failed" };
 
@@ -42,14 +47,19 @@ export async function resizePanel(file: File): Promise<ResizePanelOutcome> {
   canvas.height = target.height;
   const ctx = canvas.getContext("2d");
   if (!ctx) return { ok: false, reason: "decode-failed" };
-  ctx.drawImage(img as unknown as CanvasImageSource, 0, 0, target.width, target.height);
+  ctx.drawImage(img, 0, 0, target.width, target.height);
 
   const blob = await new Promise<Blob | null>((resolve) =>
     canvas.toBlob(resolve, "image/jpeg", JPEG_QUALITY),
   );
   if (!blob) return { ok: false, reason: "decode-failed" };
 
-  const data = await blobToBase64(blob);
+  let data: string;
+  try {
+    data = await blobToBase64(blob);
+  } catch {
+    return { ok: false, reason: "decode-failed" };
+  }
   return {
     ok: true,
     value: {
@@ -81,9 +91,7 @@ function decodeImage(dataUrl: string): Promise<HTMLImageElement | null> {
 }
 
 async function blobToBase64(blob: Blob): Promise<string> {
-  const buf = await blob.arrayBuffer();
-  const bytes = new Uint8Array(buf);
-  let s = "";
-  for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
-  return btoa(s);
+  const dataUrl = await readAsDataURL(blob);
+  const comma = dataUrl.indexOf(",");
+  return comma === -1 ? "" : dataUrl.slice(comma + 1);
 }

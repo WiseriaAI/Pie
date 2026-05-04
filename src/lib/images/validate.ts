@@ -5,6 +5,7 @@ const SUPPORTED_MIME = new Set([
   "image/gif",
 ]);
 
+/** 25 MB decimal — chosen so a 26,000,000-byte file rejects per v1 acceptance. */
 const MAX_INPUT_BYTES = 25_000_000;
 export const MAX_INPUT_EDGE_PX = 12000;
 
