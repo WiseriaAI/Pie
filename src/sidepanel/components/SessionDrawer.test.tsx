@@ -17,7 +17,9 @@ import { render, screen, fireEvent, cleanup } from "@testing-library/react";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { chromeMock } from "@/test/setup";
 import SessionDrawer from "./SessionDrawer";
+import SessionConfirmCard from "./SessionConfirmCard";
 import type { SessionIndexEntry } from "@/lib/sessions/types";
+import type { PinnedTabDriftPayload } from "@/types";
 
 // Helper to build a minimal SessionIndexEntry
 function makeEntry(
@@ -213,5 +215,78 @@ describe("SessionDrawer — header", () => {
     // Count "2" is displayed — find by aria-label on the count span
     const countEl = document.querySelector("[aria-label='2 sessions']");
     expect(countEl).toBeTruthy();
+  });
+});
+
+describe("SessionConfirmCard — R14 drift card (image-bearing failed session)", () => {
+  // R14: when a session that carried image attachments is force-transitioned to
+  // `failed` (R14 path from Task 12), the drift card MUST show only the Discard
+  // button — no Resume button. The existing DriftCard implementation is already
+  // Discard-only (M1 invariant: R11 drift card single 'Discard' button), so this
+  // test is a non-regression guard: we verify the card never shows a Resume
+  // button, regardless of the underlying session status.
+  const driftPayload: PinnedTabDriftPayload = {
+    reason: "tab-closed",
+    originalTask: "analyze this screenshot",
+    lastPinnedTabTitle: "My Tab",
+    pinnedOrigin: "https://example.com",
+    lastStepIndex: 3,
+  };
+
+  it("R14 — pinned-tab-drift card shows Discard button", () => {
+    render(
+      <SessionConfirmCard
+        kind="pinned-tab-drift"
+        payload={driftPayload}
+        onDiscard={vi.fn()}
+      />,
+    );
+    // Discard button must be present
+    expect(screen.getByText(/DISCARD TASK/i)).toBeTruthy();
+  });
+
+  it("R14 — pinned-tab-drift card has no Resume button (Discard-only invariant)", () => {
+    render(
+      <SessionConfirmCard
+        kind="pinned-tab-drift"
+        payload={driftPayload}
+        onDiscard={vi.fn()}
+      />,
+    );
+    // No Resume button — M1/R11/R14 Discard-only invariant.
+    // Note: the card body mentions "Resume isn't safe", so we check
+    // specifically for a button element with a resume label, not text content.
+    expect(screen.queryByRole("button", { name: /^resume/i })).toBeNull();
+    // There should be exactly one button: the Discard button
+    const buttons = screen.getAllByRole("button");
+    expect(buttons).toHaveLength(1);
+    expect(buttons[0]!.textContent).toMatch(/DISCARD/i);
+  });
+
+  it("R14 — Discard button calls onDiscard handler", () => {
+    const onDiscard = vi.fn();
+    render(
+      <SessionConfirmCard
+        kind="pinned-tab-drift"
+        payload={driftPayload}
+        onDiscard={onDiscard}
+      />,
+    );
+    fireEvent.click(screen.getByText(/DISCARD TASK/i));
+    expect(onDiscard).toHaveBeenCalledTimes(1);
+  });
+
+  it("R14 — Discard button disabled after resolved='discarded'", () => {
+    render(
+      <SessionConfirmCard
+        kind="pinned-tab-drift"
+        payload={driftPayload}
+        resolved="discarded"
+        onDiscard={vi.fn()}
+      />,
+    );
+    const btn = screen.getByRole("button", { name: /discard/i });
+    expect((btn as HTMLButtonElement).disabled).toBe(true);
+    expect(btn.textContent).toMatch(/DISCARDED/i);
   });
 });

@@ -5,6 +5,7 @@ import {
   KNOWN_BUILT_IN_TOOL_NAMES,
   KNOWN_KEYBOARD_TOOL_NAMES,
   TAB_TOOL_NAMES,
+  ALL_KNOWN_NON_SKILL_TOOL_NAMES,
 } from "./tool-names";
 
 describe("M3-U4 — TOOL_CLASSES registry", () => {
@@ -63,5 +64,20 @@ describe("M3-U4 — TOOL_CLASSES registry", () => {
     for (const name of TAB_TOOL_NAMES) {
       expect(TOOL_CLASSES[name]).toBeDefined();
     }
+  });
+});
+
+describe("Phase 5 screenshot tools — names + classes", () => {
+  it("capture_visible_tab and capture_fullpage_tab are registered", () => {
+    expect(KNOWN_BUILT_IN_TOOL_NAMES).toContain("capture_visible_tab");
+    expect(KNOWN_BUILT_IN_TOOL_NAMES).toContain("capture_fullpage_tab");
+  });
+  it("screenshot tools are class=read (no tab-state mutation)", () => {
+    expect(getToolClass("capture_visible_tab")).toBe("read");
+    expect(getToolClass("capture_fullpage_tab")).toBe("read");
+  });
+  it("screenshot tools are legal in skill allowedTools", () => {
+    expect(ALL_KNOWN_NON_SKILL_TOOL_NAMES.has("capture_visible_tab")).toBe(true);
+    expect(ALL_KNOWN_NON_SKILL_TOOL_NAMES.has("capture_fullpage_tab")).toBe(true);
   });
 });

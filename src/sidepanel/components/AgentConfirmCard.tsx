@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { ResolvedElement, TabTarget, TabContentPreview } from "@/types";
+import type { ResolvedElement, TabTarget, TabContentPreview, ScreenshotConfirmExtras } from "@/types";
 import type { SkillDefinition } from "@/lib/skills";
 
 interface AgentConfirmCardProps {
@@ -16,6 +16,7 @@ interface AgentConfirmCardProps {
   };
   tabTargets?: TabTarget[];
   contentPreview?: TabContentPreview;
+  screenshotPreview?: ScreenshotConfirmExtras;
 }
 
 function redactArgsForDisplay(tool: string, args: unknown, riskReason: string): unknown {
@@ -307,6 +308,7 @@ export default function AgentConfirmCard({
   metaSkillPreview,
   tabTargets,
   contentPreview,
+  screenshotPreview,
 }: AgentConfirmCardProps) {
   function handleKeyDown(e: React.KeyboardEvent) {
     if (e.key === "Enter") {
@@ -348,6 +350,28 @@ export default function AgentConfirmCard({
 
       {/* Risk reason — one short paragraph, never truncated. */}
       <div className="text-[12px] leading-[18px] text-fg-2">{riskReason}</div>
+
+      {/* Phase 5 — screenshot preview thumbnail (K-1 informed-approval).
+          Rendered BEFORE the foldable details block so the user sees the
+          exact image the LLM will receive without having to expand anything.
+          Absent when pre-capture failed or is not applicable to the tool. */}
+      {screenshotPreview ? (
+        <div className="screenshot-preview" style={{ marginBottom: 12 }}>
+          <img
+            src={`data:${screenshotPreview.mediaType};base64,${screenshotPreview.thumbnail}`}
+            alt="Screenshot preview that the agent will receive"
+            style={{
+              maxWidth: "100%",
+              height: "auto",
+              borderRadius: 4,
+              border: "1px solid var(--c-line)",
+            }}
+          />
+          <p style={{ fontSize: 11, opacity: 0.7, marginTop: 4 }}>
+            Approving sends this exact image to the LLM. Re-prompts if &gt; 5 s elapses.
+          </p>
+        </div>
+      ) : null}
 
       {/* Foldable details. All previously always-visible blocks (resolvedElement
           attributes, args JSON, skill diff, tab list, content preview) live

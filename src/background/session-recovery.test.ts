@@ -32,6 +32,7 @@ describe("detectAndMarkPaused — happy paths", () => {
       agentMessages: [{ role: "user", content: "task" }],
       stepIndex: 3,
       skillExecutionScopeStack: [],
+      hasImageContent: false,
     });
 
     const stats = await detectAndMarkPaused({ now: 5000, skipGuard: true });
@@ -48,6 +49,7 @@ describe("detectAndMarkPaused — happy paths", () => {
       agentMessages: [{ role: "user", content: "task" }],
       stepIndex: 2,
       skillExecutionScopeStack: [],
+      hasImageContent: false,
     });
     await setPendingConfirm(meta.id, samplePending);
 
@@ -86,11 +88,13 @@ describe("detectAndMarkPaused — happy paths", () => {
       agentMessages: [{ role: "user", content: "task-a" }],
       stepIndex: 3,
       skillExecutionScopeStack: [],
+      hasImageContent: false,
     });
     await setSessionAgent(b.id, {
       agentMessages: [{ role: "user", content: "task-b" }],
       stepIndex: 5,
       skillExecutionScopeStack: [],
+      hasImageContent: false,
     });
     await setPendingConfirm(b.id, samplePending);
 
@@ -103,6 +107,58 @@ describe("detectAndMarkPaused — happy paths", () => {
   });
 });
 
+describe("detectAndMarkPaused — R14 image-bearing sessions", () => {
+  it("R14 — image-bearing in-flight session is marked failed (not paused) on SW restart", async () => {
+    const meta = await createSession();
+    await setSessionAgent(meta.id, {
+      agentMessages: [{ role: "user", content: "task" }],
+      stepIndex: 2,
+      skillExecutionScopeStack: [],
+      hasImageContent: true, // R14 trigger
+    });
+
+    const stats = await detectAndMarkPaused({ skipGuard: true });
+
+    expect(stats.failed).toBe(1);
+    expect(stats.paused).toBe(0);
+    expect((await getSessionMeta(meta.id))!.status).toBe("failed");
+  });
+
+  it("R14 — non-image in-flight session is still marked paused on SW restart", async () => {
+    const meta = await createSession();
+    await setSessionAgent(meta.id, {
+      agentMessages: [{ role: "user", content: "task" }],
+      stepIndex: 3,
+      skillExecutionScopeStack: [],
+      hasImageContent: false,
+    });
+
+    const stats = await detectAndMarkPaused({ skipGuard: true });
+
+    expect(stats.paused).toBe(1);
+    expect(stats.failed).toBe(0);
+    expect((await getSessionMeta(meta.id))!.status).toBe("paused");
+  });
+
+  it("R14 — image-bearing session with pendingConfirm is still failed via step 1 (pendingConfirm wins)", async () => {
+    const meta = await createSession();
+    await setSessionAgent(meta.id, {
+      agentMessages: [{ role: "user", content: "task" }],
+      stepIndex: 5,
+      skillExecutionScopeStack: [],
+      hasImageContent: true,
+    });
+    await setPendingConfirm(meta.id, samplePending);
+
+    const stats = await detectAndMarkPaused({ skipGuard: true });
+
+    // Step 1 catches it (pendingConfirm present → markFailedAndScrub),
+    // so step 2 R14 branch never fires.
+    expect(stats.failed).toBe(1);
+    expect((await getSessionMeta(meta.id))!.status).toBe("failed");
+  });
+});
+
 describe("detectAndMarkPaused — recoveryGuard", () => {
   it("skips re-entry within the 30s guard window", async () => {
     const meta = await createSession();
@@ -110,6 +166,7 @@ describe("detectAndMarkPaused — recoveryGuard", () => {
       agentMessages: [{ role: "user", content: "task" }],
       stepIndex: 2,
       skillExecutionScopeStack: [],
+      hasImageContent: false,
     });
 
     const first = await detectAndMarkPaused({ now: 1000 });
@@ -137,6 +194,7 @@ describe("detectAndMarkPaused — recoveryGuard", () => {
       agentMessages: [{ role: "user", content: "task" }],
       stepIndex: 2,
       skillExecutionScopeStack: [],
+      hasImageContent: false,
     });
 
     const first = await detectAndMarkPaused({ now: 1000 });
@@ -160,6 +218,7 @@ describe("detectAndMarkPaused — recoveryGuard", () => {
       agentMessages: [{ role: "user", content: "task" }],
       stepIndex: 2,
       skillExecutionScopeStack: [],
+      hasImageContent: false,
     });
 
     await detectAndMarkPaused({ now: 1000 });
@@ -197,6 +256,7 @@ describe("transitionPortInFlightSessionsToPaused — per-port subset", () => {
       agentMessages: [{ role: "user", content: "task" }],
       stepIndex: 4,
       skillExecutionScopeStack: [],
+      hasImageContent: false,
     });
 
     const stats = await transitionPortInFlightSessionsToPaused([meta.id]);
@@ -212,6 +272,7 @@ describe("transitionPortInFlightSessionsToPaused — per-port subset", () => {
       agentMessages: [{ role: "user", content: "task" }],
       stepIndex: 2,
       skillExecutionScopeStack: [],
+      hasImageContent: false,
     });
     await setPendingConfirm(meta.id, samplePending);
 
@@ -244,11 +305,13 @@ describe("transitionPortInFlightSessionsToPaused — per-port subset", () => {
       agentMessages: [{ role: "user", content: "a1" }],
       stepIndex: 3,
       skillExecutionScopeStack: [],
+      hasImageContent: false,
     });
     await setSessionAgent(b1.id, {
       agentMessages: [{ role: "user", content: "b1" }],
       stepIndex: 7,
       skillExecutionScopeStack: [],
+      hasImageContent: false,
     });
 
     const stats = await transitionPortInFlightSessionsToPaused([a1.id]);
@@ -264,6 +327,7 @@ describe("transitionPortInFlightSessionsToPaused — per-port subset", () => {
       agentMessages: [{ role: "user", content: "task" }],
       stepIndex: 1,
       skillExecutionScopeStack: [],
+      hasImageContent: false,
     });
 
     const stats = await transitionPortInFlightSessionsToPaused([
@@ -281,11 +345,44 @@ describe("transitionPortInFlightSessionsToPaused — per-port subset", () => {
       agentMessages: [{ role: "user", content: "task" }],
       stepIndex: 2,
       skillExecutionScopeStack: [],
+      hasImageContent: false,
     });
 
     await transitionPortInFlightSessionsToPaused([meta.id]);
 
     const guard = chromeMock.storage.local.__store.recovery_guard;
     expect(guard).toBeUndefined();
+  });
+
+  it("R14 — image-bearing in-flight session is marked failed (not paused) on port disconnect", async () => {
+    const meta = await createSession();
+    await setSessionAgent(meta.id, {
+      agentMessages: [{ role: "user", content: "task" }],
+      stepIndex: 3,
+      skillExecutionScopeStack: [],
+      hasImageContent: true, // R14 trigger
+    });
+
+    const stats = await transitionPortInFlightSessionsToPaused([meta.id]);
+
+    expect(stats.failed).toBe(1);
+    expect(stats.paused).toBe(0);
+    expect((await getSessionMeta(meta.id))!.status).toBe("failed");
+  });
+
+  it("R14 — non-image in-flight session is still marked paused on port disconnect", async () => {
+    const meta = await createSession();
+    await setSessionAgent(meta.id, {
+      agentMessages: [{ role: "user", content: "task" }],
+      stepIndex: 2,
+      skillExecutionScopeStack: [],
+      hasImageContent: false,
+    });
+
+    const stats = await transitionPortInFlightSessionsToPaused([meta.id]);
+
+    expect(stats.paused).toBe(1);
+    expect(stats.failed).toBe(0);
+    expect((await getSessionMeta(meta.id))!.status).toBe("paused");
   });
 });

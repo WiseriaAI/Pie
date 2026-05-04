@@ -1,5 +1,6 @@
 import type { ChatMessage } from "@/lib/model-router";
 import type { SkillDefinition } from "@/lib/skills";
+import type { Attachment } from "@/lib/images";
 
 // --- Page Content ---
 
@@ -91,6 +92,10 @@ export type DisplayMessage =
       role: "user";
       content: string;
       expandedForLLM?: string;
+      /** Phase 5 — image attachments for display. `image` kind renders a
+       *  thumbnail; `image_placeholder` kind renders a '[图已释放]' badge
+       *  (bytes stripped by R10 scrub at storage boundary). */
+      attachments?: Attachment[];
     }
   | { role: "assistant"; content: string }
   | {
@@ -114,6 +119,11 @@ export type DisplayMessage =
         existing: SkillDefinition | null;
         effective: SkillDefinition;
       };
+      /** Phase 5 — pre-captured screenshot thumbnail. Wire-only: SW pre-captures
+       *  before posting agent-confirm-request and embeds the bytes here so the
+       *  AgentConfirmCard can render the EXACT image the LLM will receive
+       *  (K-1 informed-approval). NEVER persisted (~MB-class bytes). */
+      screenshotPreview?: ScreenshotConfirmExtras;
     }
   | {
       role: "agent-summary";
@@ -173,6 +183,20 @@ export interface TabTarget {
    *  time tabTargets was built. The card renders this row as "(closed)" but
    *  the handler will skip it during dispatch. */
   stale?: boolean;
+}
+
+/**
+ * Phase 5 — pre-captured thumbnail embedded in confirm card so user
+ * approves the EXACT image LLM will see (K-1 informed-approval).
+ * capturedAt drives the 5 s stale invalidate (>5 s requires re-capture
+ * + re-confirm).
+ */
+export interface ScreenshotConfirmExtras {
+  thumbnail: string; // base64, post-resize (same bytes the LLM will see)
+  mediaType: string;
+  width: number;
+  height: number;
+  capturedAt: number; // Date.now()
 }
 
 /**
@@ -246,6 +270,12 @@ export interface AgentConfirmRequestMessage {
    *  credential light-strip, and ships the first chunk to the panel for
    *  informed approval. Handler reuses this cache on dispatch. */
   contentPreview?: TabContentPreview;
+  /** Phase 5 — for screenshot tool confirm cards (capture_visible_tab /
+   *  capture_fullpage_tab). The SW pre-captures the image BEFORE sending the
+   *  confirm request so the user sees the EXACT bytes the LLM will receive
+   *  (K-1 informed-approval). Absent when pre-capture failed or is not
+   *  applicable to the tool. */
+  screenshotPreview?: ScreenshotConfirmExtras;
   /** M2-U2 — session routing. See ChatChunkMessage.sessionId. */
   sessionId: string;
 }

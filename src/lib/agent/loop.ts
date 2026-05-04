@@ -1,6 +1,9 @@
 import type { ModelConfig, AgentMessage, ContentBlock, ToolDefinition } from "../model-router/types";
 import type { ChatMessage } from "../model-router";
 import { streamChat } from "../model-router";
+import { addImage, evictSession } from "../../background/image-cache";
+import { resetTaskBudget } from "./tools/screenshot";
+import { hydrateAttachments } from "./image-hydration";
 import { snapshotInteractiveElements } from "../dom-actions/snapshot";
 import type { PageSnapshot } from "../dom-actions/types";
 import {
@@ -19,6 +22,7 @@ import {
   GET_TAB_CONTENT_PREVIEW_BYTES,
 } from "./tools/tabs";
 import { buildAgentSystemPrompt, buildObservationMessage } from "./prompt";
+import { getProviderMeta } from "../model-router/providers/registry";
 import { applySlidingWindow } from "./window";
 import { applyTokenBudget } from "./window-token-budget";
 import {
@@ -77,7 +81,12 @@ export interface AgentLoopContext {
     payload: Omit<AgentConfirmRequestMessage, "type" | "confirmationId">,
   ) => Promise<{
     approved: boolean;
-    reason?: "flood-limit" | "user-reject" | "aborted";
+    reason?: "flood-limit" | "user-reject" | "aborted" | "pre-capture-failed";
+    // Phase 5 — pre-capture extras (only set for screenshot tools, populated
+    // by Task 12 SW wiring).
+    screenshotResult?: import("@/lib/images").ImageAttachment;
+    stale?: boolean;
+    failureReason?: string;
   }>;
   getEnabledSkillTools?: () => Promise<Tool[]>;
   /**
@@ -137,6 +146,21 @@ export interface AgentLoopContext {
    * was active; the loop starts fresh.
    */
   resumedSkillScopeStack?: Array<{ skillId: string; allowedTools: string[] | null }>;
+  /**
+   * Phase 5 — when resuming a paused session, the prior in-flight
+   * snapshot's hasImageContent flag, so we don't lose the R14
+   * fail-on-image precondition across restarts.
+   */
+  resumedHasImageContent?: boolean;
+  /**
+   * Phase 5 — unique identifier for this task invocation, used to key
+   * the per-task screenshot budget (screenshot.ts `budgetByTask`).
+   * Optional for backward compatibility; when absent, resetTaskBudget
+   * is skipped (no budget was allocated).
+   * Task 12 makes this required by passing a SW-generated UUID when
+   * dispatching the agent loop.
+   */
+  taskId?: string;
   /**
    * M3-U2 — pre-anchored pinned tab + origin. Captured by the panel at
    * session creation / activation and stored on the session meta; the
@@ -233,14 +257,33 @@ export interface AgentLoopContext {
  * Exported for unit testing (D7 wrap invariant).
  */
 export function chatMessageToAgentMessage(m: ChatMessage): AgentMessage {
-  if (m.role === "user") {
-    const escaped = escapeUntrustedWrappers(m.content);
-    return {
-      role: "user",
-      content: `<untrusted_user_message>${escaped}</untrusted_user_message>`,
-    };
+  if (m.role !== "user") return { role: m.role, content: m.content };
+
+  const wrappedText =
+    m.content.length > 0
+      ? `<untrusted_user_message>${escapeUntrustedWrappers(m.content)}</untrusted_user_message>`
+      : "";
+
+  if (!m.attachments?.length) {
+    return { role: "user", content: wrappedText };
   }
-  return { role: m.role, content: m.content };
+
+  const blocks: ContentBlock[] = [];
+  for (const a of m.attachments) {
+    if (a.kind === "image") {
+      blocks.push({
+        type: "image",
+        source: { type: "base64", mediaType: a.mediaType, data: a.data },
+      });
+    } else {
+      blocks.push({
+        type: "text",
+        text: "[image released — no longer available]",
+      });
+    }
+  }
+  if (wrappedText) blocks.push({ type: "text", text: wrappedText });
+  return { role: "user", content: blocks };
 }
 
 function toolsToDefinitions(tools: Tool[]): ToolDefinition[] {
@@ -288,7 +331,7 @@ function withSession<T extends object>(msg: T, sessionId: string): T & { session
   return { ...msg, sessionId };
 }
 
-function isRestrictedUrl(url: string): boolean {
+export function isRestrictedUrl(url: string): boolean {
   // Reject schemes whose origin collapses to the string "null" or that the agent
   // has no sensible way to pin: file://, data:, javascript:, blob:. Without these
   // checks, any subsequent navigation within one of these schemes would pass the
@@ -583,11 +626,13 @@ export function buildSessionAgentSnapshot(
   history: AgentMessage[],
   stepIndex: number,
   skillExecutionScopeStack: SessionAgentState["skillExecutionScopeStack"] = [],
+  hasImageContent: boolean = false,
 ): SessionAgentState {
   return {
     agentMessages: structuredClone(history),
     stepIndex,
     skillExecutionScopeStack: structuredClone(skillExecutionScopeStack),
+    hasImageContent,
   };
 }
 
@@ -619,6 +664,7 @@ export function buildSessionAgentTombstone(lastTaskSynth?: string | null): Sessi
     agentMessages: [],
     stepIndex: 0,
     skillExecutionScopeStack: [],
+    hasImageContent: false,
   };
   if (lastTaskSynth != null) {
     base.lastTaskSynth = lastTaskSynth;
@@ -779,6 +825,14 @@ export async function runAgentLoop(ctx: AgentLoopContext): Promise<void> {
     doneEmitted = true;
     sendAgentDone(port, { ...msg, sessionId });
 
+    // Phase 5 — R13 path (a): evict image cache on any terminal state.
+    // Also free the per-task screenshot budget so a future task on the
+    // same session starts with a fresh 5/task quota.
+    evictSession(sessionId);
+    if (ctx.taskId) {
+      resetTaskBudget(ctx.taskId);
+    }
+
     // U3 / AD1 fix — synthesize assistant turn and fold it into the tombstone
     // write so both changes land in ONE atomic write to session_${id}_agent.
     // Previously setLastTaskSynth and onStepSnapshot(tombstone) were two
@@ -930,6 +984,18 @@ export async function runAgentLoop(ctx: AgentLoopContext): Promise<void> {
       { tabId: pinnedTabId, origin: pinnedOrigin },
     ),
   };
+
+  // Phase 5 — hydrate user attachments into per-session image cache.
+  // Fresh ImageAttachment bytes are stored; ImagePlaceholder entries are
+  // re-inflated from the cache if present (cross-turn follow-up support).
+  // Run BEFORE history seed so chatMessageToAgentMessage sees hydrated bytes.
+  // Skip on resume path — agentMessages already contain the expanded IR.
+  let hasImageContent: boolean = ctx.resumedHasImageContent ?? false;
+  if (!ctx.resumedAgentMessages && ctx.messages && ctx.messages.length > 0) {
+    const hydration = hydrateAttachments(ctx.sessionId, ctx.messages);
+    ctx.messages = hydration.messages;
+    hasImageContent = hydration.hasImageContent || hasImageContent;
+  }
 
   history = ctx.resumedAgentMessages
     ? structuredClone(ctx.resumedAgentMessages)
@@ -1435,6 +1501,177 @@ export async function runAgentLoop(ctx: AgentLoopContext): Promise<void> {
           }
         }
 
+        // Phase 5 — Screenshot tool dispatch (R5/R6).
+        //
+        // Screenshot tools get their own confirm path so the loop can
+        // consume the pre-capture extras (screenshotResult / stale /
+        // failureReason) that Task 12's SW wiring passes back through
+        // the widened sendConfirmRequest resolver. The generic
+        // risk-classify → confirm → handler pipeline is NOT used for
+        // these two tool names — we `continue` before reaching it.
+        if (
+          tc.name === "capture_visible_tab" ||
+          tc.name === "capture_fullpage_tab"
+        ) {
+          // R9 sub-path c — early-fail when the current provider doesn't
+          // support vision. Avoids wasting a confirm-card flow + pre-capture
+          // budget for a tool whose result (image content) the provider can't
+          // accept. The LLM gets a clear error so it can communicate the
+          // limitation to the user rather than looping on a confirm it can't
+          // process the result of.
+          const providerMeta = getProviderMeta(modelConfig.provider);
+          if (!providerMeta?.supportsVision) {
+            const noVisionObs = `screenshot ${tc.name} unavailable: current provider (${modelConfig.provider}) does not support vision. Switch to anthropic / openai / openrouter or remove the screenshot tool.`;
+            toolResultBlocks.push({
+              type: "tool_result",
+              toolUseId: tc.id,
+              isError: true,
+              content: noVisionObs,
+            });
+            emitStep({
+              type: "agent-step",
+              stepIndex,
+              tool: tc.name,
+              args: redactArgsForPanel(tc.name, tc.args),
+              resolvedElement,
+              status: "error",
+              observation: noVisionObs,
+              skillAuthor: skillAuthorForStep,
+            });
+            continue;
+          }
+
+          const screenshotConfirmId = crypto.randomUUID();
+          const approval = await sendConfirmRequest(screenshotConfirmId, {
+            tool: tc.name,
+            args: tc.args,
+            resolvedElement: resolvedElement ?? { text: "", tag: "" },
+            riskReason:
+              "Screenshot tools require explicit user approval per capture (R5/R6) — pixel data cannot be sanitized.",
+          });
+
+          if (!approval.approved) {
+            // Reject or pre-capture-failed. Feed observation; don't roll back
+            // budget (pre-capture was real if we got here via SW dispatch).
+            const reason = approval.reason ?? "user-reject";
+            const failureReason = approval.failureReason;
+            const rejectObs = failureReason
+              ? `screenshot ${tc.name} failed: ${failureReason}`
+              : `screenshot ${tc.name} rejected: ${reason}`;
+            toolResultBlocks.push({
+              type: "tool_result",
+              toolUseId: tc.id,
+              isError: true,
+              content: rejectObs,
+            });
+            emitStep({
+              type: "agent-step",
+              stepIndex,
+              tool: tc.name,
+              args: redactArgsForPanel(tc.name, tc.args),
+              resolvedElement,
+              status: "error",
+              observation: rejectObs,
+              skillAuthor: skillAuthorForStep,
+            });
+            continue;
+          }
+
+          if (approval.stale === true) {
+            // Pre-capture > 5s old; SW discarded it. LLM can re-issue.
+            const staleObs =
+              "screenshot pre-capture stale (>5s) — re-issue the tool call to capture fresh pixels";
+            toolResultBlocks.push({
+              type: "tool_result",
+              toolUseId: tc.id,
+              isError: true,
+              content: staleObs,
+            });
+            emitStep({
+              type: "agent-step",
+              stepIndex,
+              tool: tc.name,
+              args: redactArgsForPanel(tc.name, tc.args),
+              resolvedElement,
+              status: "error",
+              observation: staleObs,
+              skillAuthor: skillAuthorForStep,
+            });
+            continue;
+          }
+
+          const img = approval.screenshotResult;
+          if (!img) {
+            // Should not happen per contract (approved + !stale should have
+            // an image), but defend against contract violation.
+            const noImgObs = `screenshot ${tc.name} failed: no image returned`;
+            toolResultBlocks.push({
+              type: "tool_result",
+              toolUseId: tc.id,
+              isError: true,
+              content: noImgObs,
+            });
+            emitStep({
+              type: "agent-step",
+              stepIndex,
+              tool: tc.name,
+              args: redactArgsForPanel(tc.name, tc.args),
+              resolvedElement,
+              status: "error",
+              observation: noImgObs,
+              skillAuthor: skillAuthorForStep,
+            });
+            continue;
+          }
+
+          // Cache the screenshot (subsequent turns can reference it).
+          addImage(ctx.sessionId, {
+            id: img.id,
+            userTurnId: `turn_screenshot_${stepIndex}`,
+            mediaType: img.mediaType,
+            data: img.data,
+            width: img.width,
+            height: img.height,
+            byteLength: img.byteLength,
+            addedAt: Date.now(),
+          });
+          hasImageContent = true;
+
+          // Feed image into agentMessages. Two blocks under one user msg:
+          // [tool_result, image]. Anthropic accepts this directly. OpenAI's
+          // shaper (Task 5) splits image_url into a separate user msg if
+          // needed — that's the shaper's job, not ours.
+          const screenshotObs = `screenshot captured: ${img.width}x${img.height} jpeg`;
+          toolResultBlocks.push({
+            type: "tool_result",
+            toolUseId: tc.id,
+            content: screenshotObs,
+          });
+          // Append the image block alongside the tool_result in the same
+          // user turn. Done by pushing an extra image block into toolResultBlocks
+          // so both land in the same user message (the history.push at end of
+          // loop body groups all toolResultBlocks into one user message).
+          toolResultBlocks.push({
+            type: "image",
+            source: {
+              type: "base64",
+              mediaType: img.mediaType,
+              data: img.data,
+            },
+          });
+          emitStep({
+            type: "agent-step",
+            stepIndex,
+            tool: tc.name,
+            args: redactArgsForPanel(tc.name, tc.args),
+            resolvedElement,
+            status: "ok",
+            observation: screenshotObs,
+            skillAuthor: skillAuthorForStep,
+          });
+          continue;
+        }
+
         const riskCtx: RiskClassifyContext = {
           pinnedOrigin,
           allTabsCache: tabTargetsToOriginCache(tabTargets),
@@ -1759,7 +1996,7 @@ export async function runAgentLoop(ctx: AgentLoopContext): Promise<void> {
       // panel-display redaction happens via redactArgsForPanel on the
       // sendAgentStep path, which is a separate code path.
       if (ctx.onStepSnapshot) {
-        const snapshot = buildSessionAgentSnapshot(history, stepIndex, skillExecutionScopeStack);
+        const snapshot = buildSessionAgentSnapshot(history, stepIndex, skillExecutionScopeStack, hasImageContent);
         ctx.onStepSnapshot(snapshot).catch((e) => {
           console.warn(
             `[agent] snapshot failed for session=${ctx.sessionId} step=${stepIndex}:`,

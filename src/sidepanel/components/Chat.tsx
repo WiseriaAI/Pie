@@ -7,10 +7,15 @@ import {
   normalizeSkillSlashKey,
 } from "@/lib/skills";
 import { getActiveProvider, getProviderConfig } from "@/lib/storage";
+import { getProviderMeta } from "@/lib/model-router/providers/registry";
+import { resizePanel } from "@/lib/images/resize-panel";
+import type { ImageAttachment } from "@/lib/images";
 import type { UseSession } from "@/sidepanel/hooks/useSession";
 import AgentStepGroup, { type AgentStepData } from "./AgentStepGroup";
 import AgentConfirmCard from "./AgentConfirmCard";
 import type { DisplayMessage } from "@/types";
+
+const MAX_IMAGES_PER_TURN = 3;
 
 // Display segment for the chat scrollback. Consecutive agent-step messages
 // collapse into a single "steps" segment so the panel renders one
@@ -137,8 +142,36 @@ export default function Chat({
   const [livePinnedOrigin, setLivePinnedOrigin] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
+  // Phase 5 image input state
+  const [attachments, setAttachments] = useState<ImageAttachment[]>([]);
+  const [resizing, setResizing] = useState<Set<string>>(new Set());
+  const [supportsVision, setSupportsVision] = useState<boolean>(false);
+  const [attachLocalToast, setAttachLocalToast] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   useEffect(() => {
     checkConfig();
+  }, []);
+
+  // R9 sub-path b — clear pending image attachments when the user switches
+  // to a provider that lacks vision support. The dependency array intentionally
+  // contains only supportsVision so this fires on the flip (false→true and
+  // true→false) rather than on every attachments change, which would cause
+  // infinite re-render loops. The initial render value is false (default), so
+  // we guard against clearing on mount by checking attachments.length.
+  useEffect(() => {
+    if (!supportsVision && attachments.length > 0) {
+      showLocalToast("Switched to a non-vision provider — pending images cleared.");
+      setAttachments([]);
+    }
+  }, [supportsVision]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Clear the toast timer on unmount to prevent state-update-on-dead-component.
+  useEffect(() => {
+    return () => {
+      if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    };
   }, []);
 
   useEffect(() => {
@@ -274,15 +307,88 @@ export default function Chat({
     const active = await getActiveProvider();
     if (!active) {
       setHasConfig(false);
+      setSupportsVision(false);
       return;
     }
     try {
       const config = await getProviderConfig(active);
       setHasConfig(!!config);
+      const meta = getProviderMeta(active);
+      setSupportsVision(meta?.supportsVision ?? false);
     } catch {
       setHasConfig(false);
+      setSupportsVision(false);
     }
   }
+
+  // Phase 5 — local transient warning for image upload errors.
+  // Uses inline render below (same visual style as the error banner) rather
+  // than the session toast (that surface is SW→panel wire only, read-only here).
+  function showLocalToast(msg: string) {
+    setAttachLocalToast(msg);
+    // Clear any prior pending dismiss before scheduling a fresh one.
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    toastTimerRef.current = setTimeout(() => setAttachLocalToast(null), 4000);
+  }
+
+  const addFiles = async (files: File[]) => {
+    if (!supportsVision) {
+      showLocalToast("Current provider does not support image input.");
+      return;
+    }
+    if (files.length === 0) {
+      // Composer detected image data in the paste/drop event but no File
+      // object was extractable (e.g. user copied an <img> from a web page —
+      // clipboard carries text/uri-list / text/html, not a binary File).
+      // User has to save the image to disk first and use the file picker.
+      showLocalToast(
+        "Couldn't read image from clipboard. Save the image to disk and use the attach button.",
+      );
+      return;
+    }
+    const room = MAX_IMAGES_PER_TURN - attachments.length;
+    if (room <= 0) {
+      showLocalToast(`Max ${MAX_IMAGES_PER_TURN} images per message.`);
+      return;
+    }
+    const slice = files.slice(0, room);
+    for (const f of slice) {
+      const tempId = `pending_${crypto.randomUUID()}`;
+      setResizing((s) => new Set(s).add(tempId));
+      try {
+        const r = await resizePanel(f);
+        setResizing((s) => {
+          const next = new Set(s);
+          next.delete(tempId);
+          return next;
+        });
+        if (!r.ok) {
+          showLocalToast(`Image rejected: ${r.reason}`);
+          continue;
+        }
+        const att: ImageAttachment = {
+          kind: "image",
+          id: `img_user_${crypto.randomUUID()}`,
+          mediaType: r.value.mediaType,
+          data: r.value.data,
+          width: r.value.width,
+          height: r.value.height,
+          byteLength: r.value.byteLength,
+        };
+        setAttachments((prev) => [...prev, att]);
+      } catch {
+        setResizing((s) => {
+          const next = new Set(s);
+          next.delete(tempId);
+          return next;
+        });
+        showLocalToast("Image processing failed.");
+      }
+    }
+  };
+
+  const removeAttachment = (id: string) =>
+    setAttachments((prev) => prev.filter((a) => a.id !== id));
 
   const slashState = useMemo(() => {
     if (!input.startsWith("/")) return null;
@@ -316,6 +422,7 @@ export default function Chat({
 
     setInput("");
     clearError();
+    setAttachLocalToast(null);
 
     let expandedForLLM: string | undefined = undefined;
     if (content.startsWith("/")) {
@@ -330,7 +437,11 @@ export default function Chat({
       }
     }
 
-    sessionSendMessage({ content, expandedForLLM });
+    // Capture attachments snapshot before clearing
+    const pendingAttachments = attachments.length > 0 ? [...attachments] : undefined;
+    setAttachments([]);
+
+    sessionSendMessage({ content, expandedForLLM, attachments: pendingAttachments });
   }
 
   function handleKeyDown(e: React.KeyboardEvent) {
@@ -512,6 +623,7 @@ export default function Chat({
                       riskReason={msg.riskReason}
                       resolved={msg.resolved}
                       metaSkillPreview={msg.metaSkillPreview}
+                      screenshotPreview={msg.screenshotPreview}
                       onApprove={() =>
                         resolveConfirm(msg.confirmationId, true)
                       }
@@ -601,12 +713,140 @@ export default function Chat({
         )}
       </div>
 
+      {/* Phase 5 — hidden file input, wired to fileInputRef */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="image/jpeg,image/png,image/webp,image/gif"
+        multiple
+        style={{ display: "none" }}
+        onChange={(e) => {
+          if (e.target.files) void addFiles([...e.target.files]);
+          e.target.value = "";
+        }}
+      />
+
+      {/* Phase 5 — local attach error toast (provider no vision / cap exceeded / resize fail) */}
+      {attachLocalToast && (
+        <div
+          role="alert"
+          aria-live="polite"
+          className="mx-4 mb-2 flex items-start gap-2 rounded-lg border border-warning-line bg-warning-tint px-3 py-2 text-[12px] text-warning"
+        >
+          <span style={{ flex: 1 }}>{attachLocalToast}</span>
+          <button
+            type="button"
+            onClick={() => setAttachLocalToast(null)}
+            aria-label="Dismiss"
+            style={{
+              background: "none",
+              border: "none",
+              cursor: "pointer",
+              color: "inherit",
+              padding: 0,
+              fontSize: 12,
+              lineHeight: 1,
+              flexShrink: 0,
+            }}
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
+      {/* Phase 5 — thumbnail row: pending spinners + ready thumbnails */}
+      {(attachments.length > 0 || resizing.size > 0) && (
+        <div
+          role="list"
+          aria-label="image attachments"
+          className="flex gap-2 px-4 pb-2"
+        >
+          {[...resizing].map((id) => (
+            <div
+              key={id}
+              role="listitem"
+              style={{
+                width: 64,
+                height: 64,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                background: "var(--c-field)",
+                border: "1px solid var(--c-line)",
+                borderRadius: 4,
+                flexShrink: 0,
+              }}
+            >
+              <span aria-label="processing image" style={{ color: "var(--c-fg-3)", fontSize: 18 }}>
+                …
+              </span>
+            </div>
+          ))}
+          {attachments.map((a) => (
+            <div
+              key={a.id}
+              role="listitem"
+              tabIndex={0}
+              style={{ position: "relative", width: 64, height: 64, flexShrink: 0 }}
+              onKeyDown={(e) => {
+                if (e.key === "Backspace" || e.key === "Delete") {
+                  e.preventDefault();
+                  removeAttachment(a.id);
+                }
+              }}
+            >
+              <img
+                src={`data:${a.mediaType};base64,${a.data}`}
+                alt="uploaded image preview"
+                width={64}
+                height={64}
+                style={{
+                  borderRadius: 4,
+                  objectFit: "cover",
+                  width: 64,
+                  height: 64,
+                  display: "block",
+                  border: "1px solid var(--c-line)",
+                }}
+              />
+              <button
+                type="button"
+                aria-label="remove image"
+                onClick={() => removeAttachment(a.id)}
+                style={{
+                  position: "absolute",
+                  top: -6,
+                  right: -6,
+                  width: 18,
+                  height: 18,
+                  borderRadius: "50%",
+                  background: "var(--c-canvas)",
+                  color: "var(--c-fg-1)",
+                  border: "1px solid var(--c-line)",
+                  fontSize: 12,
+                  lineHeight: 1,
+                  cursor: "pointer",
+                  padding: 0,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                }}
+              >
+                ×
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
       <Composer
         input={input}
         streaming={streaming}
         popoverOpen={popoverOpen}
         slashState={slashState}
         popoverSelected={popoverSelected}
+        supportsVision={supportsVision}
+        attachmentCount={attachments.length}
         onChange={(v) => {
           setInput(v);
           if (dismissedInput !== null && v !== dismissedInput) {
@@ -618,6 +858,9 @@ export default function Chat({
         onKeyDown={handleKeyDown}
         onSend={() => sendMessage()}
         onStop={handleStop}
+        onAttachClick={() => fileInputRef.current?.click()}
+        onPasteFiles={(files) => void addFiles(files)}
+        onDropFiles={(files) => void addFiles(files)}
       />
     </div>
   );
@@ -697,13 +940,35 @@ function PageChangedBanner({ onNewTask }: { onNewTask: () => void }) {
 function MessageBubble({
   message,
 }: {
-  message: { role: "user" | "assistant"; content: string };
+  message: Extract<DisplayMessage, { role: "user" | "assistant" }>;
 }) {
   if (message.role === "user") {
     return (
       <div className="flex justify-end">
         <div className="max-w-[280px] whitespace-pre-wrap rounded-[10px_10px_2px_10px] border border-line bg-field px-3.5 py-2.5 text-[13px] leading-5 text-fg-1">
           {message.content}
+          {message.attachments?.map((a) =>
+            a.kind === "image" ? (
+              <img
+                key={a.id}
+                src={`data:${a.mediaType};base64,${a.data}`}
+                alt="image attachment"
+                width={Math.min(160, a.width)}
+                className="mt-1 block rounded"
+              />
+            ) : (
+              // R10/R13 — image bytes not persisted; evicted after SW restart,
+              // session switch, or port disconnect. Badge preserved identity so
+              // the user understands the image was here but is no longer cached.
+              <span
+                key={a.id}
+                title="图片不持久化存储 — 切换会话或重启 SW 后释放"
+                className="mt-1 inline-block rounded border border-line bg-field px-2 py-0.5 font-mono text-[11px] text-fg-3"
+              >
+                {`[图已释放] ${a.width}×${a.height}`}
+              </span>
+            ),
+          )}
         </div>
       </div>
     );
@@ -744,24 +1009,34 @@ function Composer({
   popoverOpen,
   slashState,
   popoverSelected,
+  supportsVision,
+  attachmentCount,
   onChange,
   onSelectPopover,
   onPickSkill,
   onKeyDown,
   onSend,
   onStop,
+  onAttachClick,
+  onPasteFiles,
+  onDropFiles,
 }: {
   input: string;
   streaming: boolean;
   popoverOpen: boolean;
   slashState: { query: string; results: SkillDefinition[] } | null;
   popoverSelected: number;
+  supportsVision: boolean;
+  attachmentCount: number;
   onChange: (v: string) => void;
   onSelectPopover: (i: number) => void;
   onPickSkill: (skill: SkillDefinition) => void;
   onKeyDown: (e: React.KeyboardEvent) => void;
   onSend: () => void;
   onStop: () => void;
+  onAttachClick: () => void;
+  onPasteFiles: (files: File[]) => void;
+  onDropFiles: (files: File[]) => void;
 }) {
   return (
     <div className="flex flex-shrink-0 flex-col gap-2 border-t border-line bg-canvas px-4 pb-4 pt-3">
@@ -784,7 +1059,74 @@ function Composer({
             rows={1}
             disabled={streaming}
             className="flex-1 resize-none bg-transparent text-[13px] leading-5 text-fg-1 placeholder:text-fg-3 disabled:opacity-50"
+            onPaste={(e) => {
+              const items = e.clipboardData?.items;
+              if (!items) return;
+              // Detect ANY image in clipboard (file OR string-typed image
+              // data like text/uri-list of an image URL). Without this
+              // detection, paste would silently no-op when (a) provider
+              // lacks vision OR (b) clipboard has image-as-URL (common
+              // when copying from web pages) — user reports "no response".
+              const hasImageInClipboard = Array.from(items).some((item) =>
+                item.type.startsWith("image/"),
+              );
+              if (!hasImageInClipboard) return; // normal text paste, fall through
+              e.preventDefault();
+              const files: File[] = [];
+              for (const item of items) {
+                if (item.kind === "file" && item.type.startsWith("image/")) {
+                  const f = item.getAsFile();
+                  if (f) files.push(f);
+                }
+              }
+              // Always invoke — addFiles surfaces a toast for every reason
+              // (no-vision-provider / cap-exceeded / empty-files / resize-fail).
+              onPasteFiles(files);
+            }}
+            onDrop={(e) => {
+              const dropped = [...(e.dataTransfer?.files ?? [])];
+              const hasImageInDrop = dropped.some((f) => f.type.startsWith("image/"));
+              if (!hasImageInDrop) return; // non-image drop, leave to default
+              e.preventDefault();
+              const files = dropped.filter((f) => f.type.startsWith("image/"));
+              onDropFiles(files);
+            }}
+            onDragOver={(e) => {
+              e.preventDefault();
+            }}
           />
+          {/* Phase 5 — paperclip attach button (SVG, not emoji) */}
+          {!streaming && (
+            <button
+              type="button"
+              aria-label="attach image"
+              disabled={!supportsVision || attachmentCount >= MAX_IMAGES_PER_TURN}
+              onClick={onAttachClick}
+              className="self-end rounded border border-line px-1.5 py-1 text-fg-3 hover:border-fg-3 hover:text-fg-2 disabled:cursor-not-allowed disabled:opacity-40"
+              title={
+                !supportsVision
+                  ? "Current provider does not support image input"
+                  : attachmentCount >= MAX_IMAGES_PER_TURN
+                    ? `Max ${MAX_IMAGES_PER_TURN} images per message`
+                    : "Attach image (or paste/drop)"
+              }
+            >
+              {/* Paperclip icon — Heroicons outline style */}
+              <svg
+                width="14"
+                height="14"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
+              </svg>
+            </button>
+          )}
           {streaming ? (
             <button
               onClick={onStop}

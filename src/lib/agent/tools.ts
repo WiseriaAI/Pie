@@ -225,4 +225,46 @@ export const BUILT_IN_TOOLS: Tool[] = [
 
   // Phase 3 — Cross-tab tools (see tools/tabs.ts)
   ...TAB_TOOLS,
+
+  // Phase 5 — Screenshot tools (handlers wired in Tasks 8/9)
+  {
+    name: "capture_visible_tab",
+    description:
+      "Capture a JPEG screenshot of the currently visible viewport of the pinned tab. Returns post-resize image content (max-edge 1568 px). Use when you need to see the visible page region (e.g. 'click the third button I can see'). Never use for capturing scrolled-out-of-view content — use capture_fullpage_tab for that.",
+    parameters: {
+      type: "object",
+      properties: {},
+      required: [],
+      additionalProperties: false,
+    },
+    handler: async (_args: unknown, _ctx: ToolHandlerContext): Promise<ActionResult> => {
+      // The loop dispatch (loop.ts ~line 1503) intercepts these tool names
+      // BEFORE reaching this handler. If we ever land here, that intercept
+      // was removed or bypassed — surface as a contract violation rather
+      // than a silent error observation.
+      throw new Error(
+        "[contract violation] capture_visible_tab reached BUILT_IN_TOOLS handler — must be intercepted in loop.ts"
+      );
+    },
+  },
+  {
+    name: "capture_fullpage_tab",
+    description:
+      "Capture a JPEG screenshot of the FULL page (including content below the visible viewport) of the pinned tab via Chrome DevTools Protocol. Returns post-resize image content (max-edge 1568 px). Use sparingly — this attaches CDP if not already attached and may show a yellow browser banner.",
+    parameters: {
+      type: "object",
+      properties: {},
+      required: [],
+      additionalProperties: false,
+    },
+    handler: async (_args: unknown, _ctx: ToolHandlerContext): Promise<ActionResult> => {
+      // The loop dispatch (loop.ts ~line 1503) intercepts these tool names
+      // BEFORE reaching this handler. If we ever land here, that intercept
+      // was removed or bypassed — surface as a contract violation rather
+      // than a silent error observation.
+      throw new Error(
+        "[contract violation] capture_fullpage_tab reached BUILT_IN_TOOLS handler — must be intercepted in loop.ts"
+      );
+    },
+  },
 ];

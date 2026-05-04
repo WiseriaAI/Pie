@@ -46,10 +46,26 @@ export const TAB_TOOL_NAMES = [
   "move_tabs",
 ] as const;
 
+// Phase 5 screenshot tools (always present in BUILT_IN_TOOLS).
+//
+// class=read: no tab-state mutation. Pinned-tab-only — R7 cross-session
+// lock cannot fire (same session pins the target by construction).
+//
+// risk=always-high: enforced separately in risk.ts ALWAYS_HIGH_SCREENSHOT_TOOLS.
+// Class and risk are orthogonal axes — class drives R7 (cross-session
+// concurrency), risk drives confirm-card gating. R5/R6 mandate confirm
+// every capture (no "extractPageContentHardened"-style strip is possible
+// against pixel data).
+export const SCREENSHOT_TOOL_NAMES = [
+  "capture_visible_tab",
+  "capture_fullpage_tab",
+] as const;
+
 export const KNOWN_BUILT_IN_TOOL_NAMES = [
   ...PHASE_2_TOOL_NAMES,
   ...SKILL_META_TOOL_NAMES_FOR_REGISTRY,
   ...TAB_TOOL_NAMES,
+  ...SCREENSHOT_TOOL_NAMES,
 ] as const;
 
 export const KNOWN_KEYBOARD_TOOL_NAMES = [
@@ -118,6 +134,9 @@ export const TOOL_CLASSES: Readonly<Record<string, ToolClass>> = {
   // Phase 2.5 CDP keyboard tools
   dispatch_keyboard_input: "write",
   press_key: "write",
+  // Phase 5 screenshot tools
+  capture_visible_tab: "read",
+  capture_fullpage_tab: "read",
 };
 
 // Build-time exhaustive check — every known tool name MUST have a class
@@ -173,4 +192,5 @@ export const ALL_KNOWN_NON_SKILL_TOOL_NAMES: ReadonlySet<string> = new Set<strin
   ...PHASE_2_TOOL_NAMES,
   ...KNOWN_KEYBOARD_TOOL_NAMES,
   ...TAB_TOOL_NAMES,
+  ...SCREENSHOT_TOOL_NAMES,
 ]);

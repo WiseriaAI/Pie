@@ -99,6 +99,46 @@ describe("createSession", () => {
     expect(list[0]!.id).toBe(meta.id);
     expect(list[0]!.status).toBe("active");
   });
+
+  it("I-1: strips ImageAttachment.data from messages passed to createSession (R10 scrub)", async () => {
+    // Verify createSession applies scrubAttachmentBytes before persisting,
+    // closing the gap where it previously wrote via writeAtomic directly.
+    const messagesWithAttachment = [
+      {
+        role: "user" as const,
+        content: "check this screenshot",
+        // Cast through unknown: DisplayMessage has no static `attachments` field
+        // (Phase 5 is runtime-guarded). The scrub is defensive + runtime-correct.
+        attachments: [
+          {
+            kind: "image",
+            id: "img-1",
+            mediaType: "image/jpeg",
+            data: "AAAA_BASE64_DATA",
+            width: 100,
+            height: 100,
+            byteLength: 3,
+          },
+        ],
+      } as unknown as import("./types").SessionMeta["messages"][number],
+    ];
+
+    const meta = await createSession({ messages: messagesWithAttachment });
+    const stored = await getSessionMeta(meta.id);
+    expect(stored).not.toBeNull();
+
+    // The stored message should have the attachment scrubbed to image_placeholder.
+    const storedMsg = stored!.messages[0] as Record<string, unknown>;
+    const attachments = storedMsg["attachments"] as Array<Record<string, unknown>>;
+    expect(attachments).toBeDefined();
+    expect(attachments[0]!["kind"]).toBe("image_placeholder");
+    // Raw bytes must not be in storage.
+    expect(attachments[0]!["data"]).toBeUndefined();
+    expect(attachments[0]!["byteLength"]).toBeUndefined();
+    // Identity fields are preserved.
+    expect(attachments[0]!["id"]).toBe("img-1");
+    expect(attachments[0]!["mediaType"]).toBe("image/jpeg");
+  });
 });
 
 describe("getSessionMeta / getSessionAgent", () => {
@@ -122,6 +162,7 @@ describe("setSessionMeta / setSessionAgent — D2 dual-key independence", () => 
       agentMessages: [{ role: "user", content: "hi" }],
       stepIndex: 7,
       skillExecutionScopeStack: [],
+      hasImageContent: false,
     };
     await setSessionAgent(meta.id, agentBefore);
 
@@ -140,6 +181,7 @@ describe("setSessionMeta / setSessionAgent — D2 dual-key independence", () => 
       agentMessages: [{ role: "assistant", content: "ok" }],
       stepIndex: 1,
       skillExecutionScopeStack: [],
+      hasImageContent: false,
     });
 
     const metaAfter = await getSessionMeta(meta.id);
@@ -183,6 +225,56 @@ describe("setSessionMeta / setSessionAgent — D2 dual-key independence", () => 
     expect(setSpy).toHaveBeenCalledTimes(1);
     const call = setSpy.mock.calls[0]![0] as Record<string, unknown>;
     expect(Object.keys(call)).toEqual([`session_${meta.id}_meta`]);
+    setSpy.mockRestore();
+  });
+
+  it("R10 — setSessionMeta strips ImageAttachment bytes → ImagePlaceholder before persisting", async () => {
+    const meta = await createSession();
+    const imageAttachment = {
+      kind: "image" as const,
+      id: "img_test_abc",
+      mediaType: "image/jpeg" as const,
+      data: "AAAABASE64BYTES",
+      width: 800,
+      height: 600,
+      byteLength: 12345,
+    };
+    // Inject an attachment into a user message via unknown cast (DisplayMessage
+    // doesn't have attachments in its static type; the scrub is a runtime guard).
+    const messageWithImage = {
+      role: "user" as const,
+      content: "look at this",
+      attachments: [imageAttachment],
+    };
+    await setSessionMeta({
+      ...meta,
+      messages: [messageWithImage as unknown as import("@/types").DisplayMessage],
+    });
+
+    const stored = await getSessionMeta(meta.id);
+    const storedMsg = (stored!.messages[0] as unknown as Record<string, unknown>);
+    const storedAttachments = storedMsg["attachments"] as Array<Record<string, unknown>>;
+    expect(storedAttachments).toHaveLength(1);
+    // Bytes stripped → ImagePlaceholder shape
+    expect(storedAttachments[0]!["kind"]).toBe("image_placeholder");
+    expect(storedAttachments[0]!["id"]).toBe("img_test_abc");
+    expect(storedAttachments[0]!["mediaType"]).toBe("image/jpeg");
+    expect(storedAttachments[0]!["width"]).toBe(800);
+    expect(storedAttachments[0]!["height"]).toBe(600);
+    // data and byteLength MUST NOT be in storage
+    expect("data" in storedAttachments[0]!).toBe(false);
+    expect("byteLength" in storedAttachments[0]!).toBe(false);
+  });
+
+  it("R10 — setSessionMeta is a no-op when no ImageAttachment present", async () => {
+    const meta = await createSession();
+    const setSpy = vi.spyOn(chromeMock.storage.local, "set");
+    await setSessionMeta({
+      ...meta,
+      messages: [{ role: "user", content: "no images here" }],
+    });
+    // No scrubbing needed → single atomic write (no extra set calls)
+    expect(setSpy).toHaveBeenCalledTimes(1);
     setSpy.mockRestore();
   });
 });
@@ -342,6 +434,7 @@ describe("setPendingConfirm / scrubPendingConfirm — M1-U4", () => {
       agentMessages: [{ role: "user", content: "hi" }],
       stepIndex: 3,
       skillExecutionScopeStack: [],
+      hasImageContent: false,
     });
     await setPendingConfirm(meta.id, sampleRecord);
     const agent = await getSessionAgent(meta.id);
@@ -362,6 +455,7 @@ describe("setPendingConfirm / scrubPendingConfirm — M1-U4", () => {
       agentMessages: [{ role: "user", content: "hi" }],
       stepIndex: 3,
       skillExecutionScopeStack: [],
+      hasImageContent: false,
     });
     await setPendingConfirm(meta.id, sampleRecord);
     await scrubPendingConfirm(meta.id);
@@ -735,6 +829,7 @@ describe("setLastTaskSynth / clearLastTaskSynth — U3 (AD1 fix: agent-state)", 
         agentMessages: snapshotMessages,
         stepIndex: 3,
         skillExecutionScopeStack: [],
+        hasImageContent: false,
       }),
     ]);
 
@@ -773,6 +868,7 @@ describe("setLastTaskSynth / clearLastTaskSynth — U3 (AD1 fix: agent-state)", 
       agentMessages: [],
       stepIndex: 0,
       skillExecutionScopeStack: [],
+      hasImageContent: false,
       lastTaskSynth: synth,
     };
     await setSessionAgent(meta.id, tombstone);
@@ -882,6 +978,7 @@ describe("migrateLastTaskSynthFromMeta — AD1 migration", () => {
       agentMessages: [],
       stepIndex: 0,
       skillExecutionScopeStack: [],
+      hasImageContent: false,
       lastTaskSynth: synth,
     });
 
