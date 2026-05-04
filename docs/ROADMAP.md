@@ -13,7 +13,8 @@
 | **Gemini provider** | design.md L80, L135 | registry pattern 加 entry 即可，差 host_permission |
 | **Ollama / 本地模型** | design.md L80–82, L135 | 需 manifest 加 `http://localhost/*`，streaming 协议适配 |
 | **快捷键支持** | design.md L136 | 零结构性风险的打磨项 |
-| **任务状态持久化（SW 重启恢复）** | design.md L91 | ✅ M1 partial done (PR #8) — single-session SW-restart recovery + tombstone + R11 drift card. M2/M3 (多 session UI / per-session sandbox) 仍待 |
+| **任务状态持久化（SW 重启恢复）** | design.md L91 | ✅ **完成** — M1 PR #8 + M2 PR #9/#10/未编号 + M3 PR #13 全 ship。Single-session SW-restart recovery + tombstone + R11 drift card + multi-session UI drawer + LLM 标题 + LRU archive + per-session sandbox |
+| **图片输入（多模态）** | design.md（隐含 / 用户 2026-05-04 新提） | ✅ **完成** — Phase 5 v1 PR #20 merged 2026-05-04。用户上传（粘贴/拖拽/按钮 ≤3 张）+ LLM screenshot tools (`capture_visible_tab` / `capture_fullpage_tab`) + No-persist storage + Anthropic/OpenAI/OpenRouter 三家 vision。v1.1 follow-up 见 §8 |
 | **定时工作流（scheduled agent runs）** | design.md L40 "定时工作流可以作为后续迭代加上去" | 需先解决 SW 5 min 限制 + 任务持久化 |
 
 ## 2. Skill 框架进阶（Phase 2 / 2.6 brainstorm 主动 defer）
@@ -28,9 +29,9 @@
 | **Skill version 历史 / migration** | 同上 L81 | YAGNI；编辑直接覆盖 |
 | **Skill draft / quarantine 中间态** | 同上 L83 | 当前用 R10 首次执行二次 confirm 替代 |
 
-## 3. Checkpoint & Resume（Phase 2.6 brainstorm 附录 C1–C5）— **M1 SHIPPED · M2/M3 pending**
+## 3. Checkpoint & Resume（Phase 2.6 brainstorm 附录 C1–C5）— ✅ **M1 + M2 + M3 全 SHIPPED (2026-05-04)**
 
-> **Status (2026-05-02)**: Brainstorm 升级为 "session 作为 first-class persistent layer" → `docs/brainstorms/2026-05-02-checkpoint-resume-requirements.md`。Plan (14 unit / M1→M2→M3) → `docs/plans/2026-05-02-001-feat-session-persistent-layer-plan.md`，frontmatter status=`m1-shipped`. **M1 (U1-U5) 已 ship via PR #8** (single-session 持久化 + SW restart recovery + R11 drift card)。M1 关键 invariants + 踩过的坑 → `docs/solutions/2026-05-02-session-as-first-class-persistent-layer-m1.md`。**M2 (multi-session UI: drawer / LLM 标题 / LRU archive) 与 M3 (per-session sandbox) 在新 PR 单独推进** —— 不要堆在 m1 分支上。
+> **Status (2026-05-04)**: Brainstorm 升级为 "session 作为 first-class persistent layer" → `docs/brainstorms/2026-05-02-checkpoint-resume-requirements.md`。Plan (14 unit / M1→M2→M3) → `docs/plans/2026-05-02-001-feat-session-persistent-layer-plan.md`，frontmatter status=`completed`. **M1 (PR #8)** single-session 持久化 + SW restart recovery + R11 drift card → `docs/solutions/2026-05-02-session-as-first-class-persistent-layer-m1.md`。**M2 (PR #9 + #10 + 未编号)** multi-session UI drawer + LLM 标题 + LRU archive + 30d 硬删 + soft delete + storage indicator。**M3 (PR #13)** per-session port + per-session pinned tab/origin + R7 cross-session lock + ownerToken `{sessionId, tabId}` + queueTabOp 串行化 + R14 fail-on-image precondition (与 Phase 5 协同) → `docs/solutions/2026-05-03-multi-session-invariant-trace.md`。M3 残余 advisory 项见 §9。
 
 **Original C1–C5 outline (now superseded by full plan above; kept for traceability)**:
 
@@ -68,7 +69,7 @@
 
 | # | 方向 | 状态 | 下一步 |
 |---|---|---|---|
-| **1** | 多模态输入图片 | ✅ **已 nail down + 7-reviewer review + 4 high-decision resolve**：`docs/brainstorms/2026-05-04-multimodal-image-input-requirements.md`。v1 范围 = 用户上传（粘贴/拖拽/按钮，多图 ≤ 3，auto-resize 1568px JPEG q85 + EXIF strip）+ LLM 主动调 screenshot tool（仅 pinned tab，visible / fullPage 二选一，**两者都 default high 风险**）+ **No-persist storage + Per-session in-memory cache**（SW Map 30 MB/last-3-turn LRU，5 evict 路径）+ **Fail-on-image**（含 image 的 paused → failed，不可 resume）+ **image untrusted boundary system prompt** + Anthropic/OpenAI/OpenRouter 第一波。Resolve-Before-Planning 3 项：ChatMessage IR shape / resize 执行环境 / CDP fullPage attach lifecycle | → `/ce:plan` |
+| **1** | 多模态输入图片 | ✅ **PR #20 merged 2026-05-04**：v1 = 用户上传（粘贴/拖拽/按钮 ≤3 张，auto-resize 1568px JPEG q85 + EXIF strip）+ LLM screenshot tools (`capture_visible_tab` / `capture_fullpage_tab` 两者 always-high) + No-persist SW per-session cache (30MB/last-3-turn LRU，4 evict 路径) + Fail-on-image (R14 paused→failed) + R15 image untrusted boundary system prompt + Anthropic/OpenAI/OpenRouter 三家。15 task / 339→461 tests (+122 net) / R1-R15 全闭环。v1.1 follow-up 见 §8 | 完成 |
 | **2** | Skill 脚本化（"完整 skill"） | ⚠️ **scope 含糊未深入**：必须先 narrow 含义到 (a) JS 自定义 tool handler / (b) DSL 描述固定步骤 / (c) prompt 加 control flow / (d) 录制+回放（与 #4 重叠）中的某一个。Manifest V3 CSP 对 (a) 是硬约束（禁 `eval`/`Function`，要 sandboxed iframe / Worker，BYOK trust model 重审）；(c) 与 LLM 自身 reasoning 重叠 YAGNI 风险高 | 单独 `/ce:brainstorm` 先 narrow 哪一种含义 + 当前 skill 系统真正卡住的用例 |
 | **3** | 控制 Chrome 浏览器 | ✅ **已 nail down + 4-reviewer review + multi-pin pivot**：`docs/brainstorms/2026-05-04-tabs-create-and-nav-requirements.md`。v1 范围 = `open_url(url, active=false)` + **pinnedTabs 升级为 array**（schema migration: SessionMeta `pinnedTabId`/`pinnedOrigin` → `pinnedTabs: Array<{tabId, origin}>`）+ URL allow-list (R6 显式 `protocol === 'http:'\|'https:'`) + IDN punycode 显示（防 homograph）+ always-high confirm。v1 估时 2-3 天。**`nav_pinned_tab` cross-origin nav 推 v1.1 单独 brainstorm**——review 暴露 4 invariant 互动复杂度（R6 inTransitOrigin / R7 atomic swap / R9 CDP detach / R10 task-mutex）+ ADV-1 Premise collapse（多步表单实际是 click-induced nav 而非 nav 工具能解）。Resolve-Before-Planning 4 项：schema migration 路径 / tabId 选择策略 / R7 cross-session 在 multi-pin 下行为 / URL.protocol 边界 | → `/ce:plan` |
 | **3.1** | nav_pinned_tab cross-origin (defer) | ⚠️ **推 v1.1**：原稿（pre-multi-pin）暴露 4 P0（SEC-2 server-side redirect / SEC-5 pin-in-transit 永久 DoS / ADV-2 inTransitOrigin race basis / ADV-3 shared-pin sessions broken）+ R11 click-induced false-positive 才是用户最常见痛点。需独立 brainstorm 收窄 4 invariant 设计 + 评估 R11 false-positive 修是否更高 ROI | 单独 `/ce:brainstorm` 在 multi-pin v1 ship 后；评估"R11 click-nav false-positive 修"作为更轻量替代 |
@@ -165,7 +166,7 @@ ce:review autofix sweep 时已提但未做的项，不影响 R24/R25/R26 accepta
 按"用户痛感 × 解锁后续能力"性价比（已纳入 §5 4-way 评估结果）：
 
 1. **多轮对话上下文（§6）** — Half A 半小时 + Half B 决策 1 个；用户已报告，用户痛感最直接
-2. **多模态输入图片（§5 #1）** — ✅ **PR #20 SHIPPED 2026-05-04**：15 task / 339→448 tests / R1-R15 全闭环；用户验收阶段
+2. **多模态输入图片（§5 #1）** — ✅ **PR #20 merged 2026-05-04**：15 task / 339→461 tests (+122 net) / R1-R15 全闭环；user acceptance 期间发现 2 个跨层集成 bug（first-task pin race + screenshotPreview wire transit）— 修复并 push (commits `0927031` + `517435d`) 已合并。Phase 5 v1.1 backlog 见 §8
 3. **Provider + Model 能力中心化管理（§7）** — 用户 2026-05-04 反馈；Settings 改 dropdown + 删手填 BaseURL；解锁中国 provider vision 完整接入路径
 4. **Chrome narrow（§5 #3）** — `tabs.create` + `open_url`，1-2 天，与 Phase 3 同套机制
 5. **Gemini provider** — 最小补丁；与 §7 协同（自家 inline_data + host_permission 同期评估），独立 SSE 协议另行 brainstorm
