@@ -238,8 +238,13 @@ export const BUILT_IN_TOOLS: Tool[] = [
       additionalProperties: false,
     },
     handler: async (_args: unknown, _ctx: ToolHandlerContext): Promise<ActionResult> => {
-      // Wired in Task 8.
-      return { success: false, error: "capture_visible_tab handler not yet implemented (Task 8)" };
+      // The loop dispatch (loop.ts ~line 1503) intercepts these tool names
+      // BEFORE reaching this handler. If we ever land here, that intercept
+      // was removed or bypassed — surface as a contract violation rather
+      // than a silent error observation.
+      throw new Error(
+        "[contract violation] capture_visible_tab reached BUILT_IN_TOOLS handler — must be intercepted in loop.ts"
+      );
     },
   },
   {
@@ -253,8 +258,13 @@ export const BUILT_IN_TOOLS: Tool[] = [
       additionalProperties: false,
     },
     handler: async (_args: unknown, _ctx: ToolHandlerContext): Promise<ActionResult> => {
-      // Wired in Task 9.
-      return { success: false, error: "capture_fullpage_tab handler not yet implemented (Task 9)" };
+      // The loop dispatch (loop.ts ~line 1503) intercepts these tool names
+      // BEFORE reaching this handler. If we ever land here, that intercept
+      // was removed or bypassed — surface as a contract violation rather
+      // than a silent error observation.
+      throw new Error(
+        "[contract violation] capture_fullpage_tab reached BUILT_IN_TOOLS handler — must be intercepted in loop.ts"
+      );
     },
   },
 ];

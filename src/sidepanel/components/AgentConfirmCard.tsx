@@ -364,7 +364,7 @@ export default function AgentConfirmCard({
               maxWidth: "100%",
               height: "auto",
               borderRadius: 4,
-              border: "1px solid var(--c-border, #2a2a2a)",
+              border: "1px solid var(--c-line)",
             }}
           />
           <p style={{ fontSize: 11, opacity: 0.7, marginTop: 4 }}>
