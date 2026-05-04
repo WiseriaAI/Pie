@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ChatMessage } from "@/lib/model-router";
+import type { ImageAttachment } from "@/lib/images";
 import type { DisplayMessage, PortMessageToPanel } from "@/types";
 import {
   createSession,
@@ -116,6 +117,10 @@ interface SendMessageInput {
   /** Slash-command expansion sent to the LLM in place of `content`. The
    *  user-facing message keeps the slash form. */
   expandedForLLM?: string;
+  /** Phase 5 image attachments — included in the last user ChatMessage
+   *  sent to the SW. NOT persisted to storage (scrubber policy from
+   *  ChatMessage R10 storage note applies). */
+  attachments?: ImageAttachment[];
 }
 
 export interface UseSession {
@@ -686,20 +691,38 @@ export function useSession(): UseSession {
       streamFinishedRef.current = false;
 
       // Build the LLM-facing chat history (text-only, slash-expanded).
-      const chatMessages: ChatMessage[] = updated
-        .filter(
-          (
-            m,
-          ): m is
-            | { role: "user"; content: string; expandedForLLM?: string }
-            | { role: "assistant"; content: string } =>
-            m.role === "user" || m.role === "assistant",
-        )
-        .map((m) =>
-          m.role === "user" && m.expandedForLLM
-            ? { role: "user" as const, content: m.expandedForLLM }
-            : { role: m.role, content: m.content },
-        );
+      // Phase 5: the very last user ChatMessage carries image attachments
+      // (passed via input.attachments) so the LLM sees them. Attachments
+      // are only on the most-recent turn — historical turns are storage-
+      // scrubbed (placeholder only, no data bytes) per the R10 policy.
+      const flatUserAssistant = updated.filter(
+        (
+          m,
+        ): m is
+          | { role: "user"; content: string; expandedForLLM?: string }
+          | { role: "assistant"; content: string } =>
+          m.role === "user" || m.role === "assistant",
+      );
+      const chatMessages: ChatMessage[] = flatUserAssistant.map((m, idx) => {
+        const isLastUserTurn =
+          idx === flatUserAssistant.length - 1 && m.role === "user";
+        if (m.role === "user" && m.expandedForLLM) {
+          return {
+            role: "user" as const,
+            content: m.expandedForLLM,
+            ...(isLastUserTurn && input.attachments?.length
+              ? { attachments: input.attachments }
+              : {}),
+          };
+        }
+        return {
+          role: m.role,
+          content: m.content,
+          ...(isLastUserTurn && input.attachments?.length
+            ? { attachments: input.attachments }
+            : {}),
+        };
+      });
 
       // Bug-fix-C — persist immediately so the session_index entry picks
       // up the first-user-message title fallback (via persistMessages →
