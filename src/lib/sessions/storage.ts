@@ -115,17 +115,26 @@ export interface CreateSessionOptions {
   /**
    * v1.5 — Native multi-pin option. Preferred over legacy fields.
    * Pinned tabs captured at session creation.
+   *
+   * Precedence: when both `pinnedTabs[]` and legacy `pinnedTabId`/
+   * `pinnedOrigin` are provided, `pinnedTabs[]` wins; legacy is ignored.
+   * When only one of `pinnedTabId`/`pinnedOrigin` is provided (without the
+   * matching twin), both are silently dropped — partial legacy options are
+   * not converted.
    */
   pinnedTabs?: Array<{ tabId: number; origin: string }>;
   /**
    * @deprecated v1.5 — Use `pinnedTabs[]` instead. Accepted here for
    * back-compat with existing test fixtures and pre-migration callers.
-   * Internally converted to `pinnedTabs:[{tabId, origin}]`; never
-   * persisted as a legacy field.
+   * Internally converted to `pinnedTabs:[{tabId, origin}]` only when BOTH
+   * `pinnedTabId` AND `pinnedOrigin` are present; otherwise silently dropped.
+   * Never persisted as a legacy field directly — storage's dual-write shim
+   * re-synthesizes legacy fields from `pinnedTabs[0]`.
    */
   pinnedTabId?: number;
   /**
-   * @deprecated v1.5 — Use `pinnedTabs[]` instead.
+   * @deprecated v1.5 — Use `pinnedTabs[]` instead. See `pinnedTabId` for
+   * the both-required-or-dropped precedence rule.
    */
   pinnedOrigin?: string;
   /** M5 — Explicit pin mode. If omitted: defaults to 'user' when a pin
@@ -387,19 +396,27 @@ export async function updateLastAccessed(
     title?: string;
     /**
      * v1.5 — Native multi-pin patch. Preferred over legacy fields.
+     *
+     * Precedence: when both `pinnedTabs[]` and legacy `pinnedTabId`/
+     * `pinnedOrigin` are provided, `pinnedTabs[]` wins; legacy is ignored.
+     * When only one of `pinnedTabId`/`pinnedOrigin` is provided (without the
+     * matching twin), both are silently dropped — partial legacy patches are
+     * not converted.
      */
     pinnedTabs?: Array<{ tabId: number; origin: string }>;
     /**
      * @deprecated v1.5 — Use `pinnedTabs[]` instead. Accepted here for
      * back-compat with existing callers. When both `pinnedTabId` AND
      * `pinnedOrigin` are provided, they are converted to a single-element
-     * `pinnedTabs[]` entry and never persisted as legacy fields. When only
-     * one is provided, the patch is a silent no-op for that field (partial
-     * legacy patch is not supported).
+     * `pinnedTabs[]` entry; storage's dual-write shim then re-synthesizes
+     * legacy fields from `pinnedTabs[0]` on persist. When only one is
+     * provided, the pin patch is a silent no-op (partial legacy patch is
+     * not supported).
      */
     pinnedTabId?: number;
     /**
-     * @deprecated v1.5 — Use `pinnedTabs[]` instead.
+     * @deprecated v1.5 — Use `pinnedTabs[]` instead. See `pinnedTabId` for
+     * the both-required-or-dropped precedence rule.
      */
     pinnedOrigin?: string;
     /** M5 — explicit pin mode. When pinnedTabs is patched and non-empty without

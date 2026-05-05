@@ -1143,12 +1143,18 @@ export function useSession(): UseSession {
     const meta = await getSessionMeta(id);
     if (!meta) return;
     if (meta.pinMode !== "user") return; // only user mode is user-clearable
-    // Strip pin and revert mode. Storage normalize-on-write enforces the
-    // auto-mode-no-pin invariant, so passing an explicit pinMode='auto' is
-    // sufficient — but we strip the fields here for clarity.
-    // v1.5 — also drop pinnedTabs[] (source of truth); otherwise storage's
-    // dual-write shim would re-synthesize legacy fields from pinnedTabs[0]
-    // and resurrect the pin.
+    // v1.5 — `delete next.pinnedTabs` is LOAD-BEARING here (not cosmetic):
+    // storage's syncLegacyFromArray dual-write shim re-synthesizes legacy
+    // pinnedTabId/pinnedOrigin from `pinnedTabs[0]` on every persist. If we
+    // left `pinnedTabs` on the meta and only flipped pinMode to 'auto', the
+    // shim would resurrect the legacy fields from the leftover array, leaving
+    // the session pinned despite the user's clear-pin action.
+    //
+    // The legacy-field deletes below are paranoid hygiene only — storage's
+    // syncLegacyFromArray ignores caller-supplied legacy fields and always
+    // re-synthesizes from `pinnedTabs[0]`, so dropping them here is redundant
+    // with the shim. Kept for read-side clarity (the in-memory `next` object
+    // doesn't carry stale legacy values into any downstream consumer).
     const next = { ...meta, pinMode: "auto" as const };
     delete (next as { pinnedTabs?: SessionMeta["pinnedTabs"] }).pinnedTabs;
     delete (next as { pinnedTabId?: number }).pinnedTabId;
