@@ -1,0 +1,99 @@
+import { useState, useEffect, useRef } from "react";
+import type { DecryptedInstance } from "@/lib/instances";
+
+interface Props {
+  instances: DecryptedInstance[];
+  currentId: string | null;
+  locked: boolean;
+  onChange: (id: string) => void;
+  onManage: () => void;
+}
+
+function shortModel(modelId: string): string {
+  // drop OpenRouter "vendor/" prefix
+  if (modelId.includes("/")) return modelId.split("/").pop()!;
+  // drop common "claude-" prefix
+  if (modelId.startsWith("claude-")) return modelId.slice("claude-".length);
+  return modelId;
+}
+
+export default function InstanceSelector(props: Props) {
+  const [open, setOpen] = useState(false);
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const current = props.instances.find((i) => i.id === props.currentId);
+
+  // Click-outside to close
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e: MouseEvent) => {
+      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, [open]);
+
+  return (
+    <div ref={wrapRef} className="relative">
+      <button
+        onClick={() => !props.locked && setOpen(!open)}
+        disabled={props.locked}
+        className="flex items-center gap-1.5 px-1.5 py-1 text-[10px] disabled:opacity-50"
+        aria-label={current ? `${current.nickname} ${current.model}` : "select config"}
+      >
+        <span className={`h-1.5 w-1.5 rounded-full ${props.locked ? "bg-fg-3" : "bg-accent"}`} />
+        <span className="font-mono tracking-[0.04em] text-fg-1">
+          {current ? `${current.nickname} · ${shortModel(current.model)}` : "(none)"}
+        </span>
+        {props.locked ? (
+          <svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true">
+            <path d="M3 5V3.5C3 2.4 3.9 1.5 5 1.5C6.1 1.5 7 2.4 7 3.5V5M2.5 5H7.5V8.5H2.5V5Z" stroke="#525965" strokeWidth="0.9" strokeLinecap="round" />
+          </svg>
+        ) : (
+          <span className="text-accent">{open ? "▾" : "▴"}</span>
+        )}
+      </button>
+
+      {open && (
+        <div
+          role="dialog"
+          className="absolute bottom-full left-0 mb-2 w-[280px] rounded-lg border border-line bg-surface shadow-2xl"
+          style={{ boxShadow: "0 16px 40px rgba(0,0,0,0.7), 0 4px 12px rgba(0,0,0,0.5)" }}
+        >
+          <div className="flex items-baseline justify-between px-3.5 pt-2.5 pb-1.5">
+            <span className="font-mono text-[10px] uppercase tracking-[0.16em] text-fg-3">SWITCH CONFIG</span>
+            <span className="font-mono text-[10px] text-fg-3">{props.instances.length} configs</span>
+          </div>
+          <div className="flex flex-col">
+            {props.instances.map((inst) => {
+              const isCurrent = inst.id === props.currentId;
+              return (
+                <button
+                  key={inst.id}
+                  onClick={() => { props.onChange(inst.id); setOpen(false); }}
+                  className={`flex items-center gap-2.5 px-3.5 py-2 text-left hover:bg-field ${isCurrent ? "bg-field" : ""}`}
+                >
+                  <span className={`h-1.5 w-1.5 rounded-full ${isCurrent ? "bg-accent" : "bg-fg-3"}`} />
+                  <div className="min-w-0 flex-1">
+                    <div className="text-[12px] font-medium text-fg-1">
+                      {inst.nickname}
+                      <span className="ml-1 text-[11px] font-normal text-fg-3">· {inst.provider}</span>
+                    </div>
+                    <div className="font-mono text-[10px] text-fg-2">{shortModel(inst.model)}</div>
+                  </div>
+                  {isCurrent && <span className="font-mono text-[9px] uppercase tracking-[0.08em] text-accent">ACTIVE</span>}
+                </button>
+              );
+            })}
+          </div>
+          <button
+            onClick={() => { setOpen(false); props.onManage(); }}
+            className="flex w-full items-center gap-2 border-t border-line px-3.5 py-2 text-left text-[11px] text-fg-2 hover:bg-field"
+          >
+            <span>+ 新建配置 / Manage configs</span>
+            <span className="ml-auto font-mono text-[10px] text-fg-3">⌘,</span>
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}

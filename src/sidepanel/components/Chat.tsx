@@ -15,6 +15,13 @@ import AgentStepGroup, { type AgentStepData } from "./AgentStepGroup";
 import AgentConfirmCard from "./AgentConfirmCard";
 import PinnedTabDropdown from "./PinnedTabDropdown";
 import type { DisplayMessage } from "@/types";
+import InstanceSelector from "./InstanceSelector";
+import { listInstances, type DecryptedInstance } from "@/lib/instances";
+import {
+  getSessionMeta,
+  setSessionMeta,
+  metaKey,
+} from "@/lib/sessions/storage";
 
 const MAX_IMAGES_PER_TURN = 3;
 
@@ -179,6 +186,39 @@ export default function Chat({
   const [attachLocalToast, setAttachLocalToast] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // InstanceSelector state — list of configured instances + per-session current
+  const [instances, setInstances] = useState<DecryptedInstance[]>([]);
+  const [currentInstanceId, setCurrentInstanceId] = useState<string | null>(null);
+
+  // Helper to persist instanceId to session meta
+  async function persistSessionInstanceId(sessionId: string, id: string) {
+    const existing = await getSessionMeta(sessionId);
+    if (!existing) return;
+    await setSessionMeta({ ...existing, instanceId: id });
+  }
+
+  // Load instances list + current session's instanceId on mount / sessionId change
+  const sessionId = session.sessionId;
+  useEffect(() => {
+    listInstances().then(setInstances).catch(() => setInstances([]));
+    if (!sessionId) return;
+    getSessionMeta(sessionId)
+      .then((meta) => setCurrentInstanceId(meta?.instanceId ?? null))
+      .catch(() => setCurrentInstanceId(null));
+    // Also react to SW writing meta.instanceId (e.g. Task 14 backfill at chat-start)
+    const key = metaKey(sessionId);
+    const onChanged = (changes: Record<string, chrome.storage.StorageChange>) => {
+      if (key in changes) {
+        const meta = changes[key]?.newValue as { instanceId?: string } | undefined;
+        if (meta && meta.instanceId !== undefined) {
+          setCurrentInstanceId(meta.instanceId);
+        }
+      }
+    };
+    chrome.storage.local.onChanged.addListener(onChanged);
+    return () => chrome.storage.local.onChanged.removeListener(onChanged);
+  }, [sessionId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     checkConfig();
@@ -1067,6 +1107,13 @@ After the skill completes, briefly summarize what was created (the user will see
         onDropFiles={(files) => void addFiles(files)}
         onStartRecording={onStartRecording}
         recordingDisabled={pendingRecording !== null}
+        instances={instances}
+        currentInstanceId={currentInstanceId}
+        onInstanceChange={async (id) => {
+          setCurrentInstanceId(id);
+          if (sessionId) await persistSessionInstanceId(sessionId, id);
+        }}
+        onManageInstances={onOpenSettings}
       />
     </div>
   );
@@ -1228,6 +1275,10 @@ function Composer({
   onDropFiles,
   onStartRecording,
   recordingDisabled,
+  instances,
+  currentInstanceId,
+  onInstanceChange,
+  onManageInstances,
 }: {
   input: string;
   streaming: boolean;
@@ -1252,6 +1303,10 @@ function Composer({
   /** Disabled while a pendingRecording chip is sitting in the input
    *  (you'd send the existing chip first) or when no active session. */
   recordingDisabled?: boolean;
+  instances: DecryptedInstance[];
+  currentInstanceId: string | null;
+  onInstanceChange: (id: string) => void;
+  onManageInstances: () => void;
 }) {
   return (
     <div className="flex flex-shrink-0 flex-col gap-2 border-t border-line bg-canvas px-4 pb-4 pt-4">
@@ -1381,9 +1436,19 @@ function Composer({
           )}
         </div>
       </div>
-      <div className="flex items-center gap-4 px-0.5 font-mono text-[10px] tracking-[0.08em] text-fg-3">
-        <span>/ skills</span>
-        <span>SHIFT ↵ NEWLINE</span>
+      <div className="flex items-center gap-2 px-0.5">
+        <InstanceSelector
+          instances={instances}
+          currentId={currentInstanceId}
+          locked={streaming}
+          onChange={onInstanceChange}
+          onManage={onManageInstances}
+        />
+        <div className="flex-1" />
+        <div className="flex items-center gap-4 font-mono text-[10px] tracking-[0.08em] text-fg-3">
+          <span>/ skills</span>
+          <span>SHIFT ↵ NEWLINE</span>
+        </div>
       </div>
     </div>
   );
