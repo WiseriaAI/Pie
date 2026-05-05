@@ -258,6 +258,19 @@ export function classifyRisk(
     };
   }
 
+  // v1.5 open_url — always high. Opens a new tab and adds it to the
+  // session's pinnedTabs. The URL and origin must be reviewed by the user
+  // before the tab is created. Strict http/https allowlist is enforced
+  // in the handler; risk.ts classifies it unconditionally high so the
+  // confirm card fires on every call.
+  if (toolName === "open_url") {
+    return {
+      level: "high",
+      reason:
+        "Opens a new tab — review the URL and origin in the confirm card before approving.",
+    };
+  }
+
   // v1.5 focus_tab — always low. Mutates only the session's internal
   // currentFocusTabId pointer; no tab state is changed, no content is
   // read, no cross-origin data is exposed. The next iteration's snapshot
@@ -404,6 +417,7 @@ const ALWAYS_HIGH_TAB_TOOLS = new Set<string>([
   "ungroup_tabs",
   "move_tabs",
   "get_tab_content",
+  "open_url", // v1.5
 ]);
 
 // activate_tab: high if cross-origin, low if same-origin (ADV-3).

@@ -1,6 +1,7 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi, beforeEach } from "vitest";
 import { chromeMock } from "@/test/setup";
 import { TAB_TOOLS } from "./tabs";
+import { openUrlTool } from "./tabs";
 
 const focusTabTool = TAB_TOOLS.find((t) => t.name === "focus_tab")!;
 
@@ -289,5 +290,129 @@ describe("focus_tab (v1.5 Task 6) — handler contract", () => {
     );
     expect(result.success).toBe(false);
     expect(result.error).toMatch(/requires a numeric tabId/i);
+  });
+});
+
+// ── v1.5 Task 7 — open_url tool ──────────────────────────────────────────────
+
+describe("open_url tool", () => {
+  beforeEach(() => {
+    (chromeMock.tabs as unknown as { create: unknown }).create = vi
+      .fn()
+      .mockResolvedValue({ id: 999, url: "https://example.com/" });
+  });
+
+  it("rejects non-http/https schemes", async () => {
+    const cases = [
+      "javascript:alert(1)",
+      "data:text/html,xxx",
+      "file:///etc/passwd",
+      "chrome://settings",
+      "view-source:https://example.com",
+      "mailto:foo@bar.com",
+      "ftp://example.com",
+      "ws://example.com",
+      "blob:https://x/abc",
+    ];
+    for (const url of cases) {
+      const r = await openUrlTool.handler(
+        { url },
+        { tabId: 12, snapshot: { url: "", title: "", elements: [] } },
+      );
+      expect(r.success).toBe(false);
+      // Some of these throw in `new URL(input)` (e.g., "blob:https://x/abc"
+      // parses, but "javascript:..." parses too — the protocol check catches all).
+      // The "invalid URL" path also acceptable for unparseable forms.
+      expect(r.error).toMatch(/unsafe-url-scheme|invalid URL/);
+    }
+  });
+
+  it("rejects empty / non-string url", async () => {
+    for (const url of ["", null, undefined, 42, {}]) {
+      const r = await openUrlTool.handler(
+        { url } as unknown as { url: string },
+        { tabId: 12, snapshot: { url: "", title: "", elements: [] } },
+      );
+      expect(r.success).toBe(false);
+    }
+  });
+
+  it("rejects URL longer than 4096 chars", async () => {
+    const url = "https://example.com/" + "a".repeat(5000);
+    const r = await openUrlTool.handler(
+      { url },
+      { tabId: 12, snapshot: { url: "", title: "", elements: [] } },
+    );
+    expect(r.success).toBe(false);
+    expect(r.error).toMatch(/url-too-long/);
+  });
+
+  it("rejects relative URL (URL constructor throws)", async () => {
+    const r = await openUrlTool.handler(
+      { url: "/example.com" },
+      { tabId: 12, snapshot: { url: "", title: "", elements: [] } },
+    );
+    expect(r.success).toBe(false);
+    expect(r.error).toMatch(/invalid URL/);
+  });
+
+  it("creates tab and pushes pin on success", async () => {
+    const append = vi.fn().mockResolvedValue(undefined);
+    const r = await openUrlTool.handler(
+      { url: "https://example.com/page" },
+      {
+        tabId: 12,
+        snapshot: { url: "", title: "", elements: [] },
+        pinnedTabs: [{ tabId: 12, origin: "https://a.com" }],
+        appendPinnedTab: append,
+      },
+    );
+    expect(r.success).toBe(true);
+    expect(
+      (chromeMock.tabs as unknown as { create: ReturnType<typeof vi.fn> })
+        .create,
+    ).toHaveBeenCalledWith({
+      url: "https://example.com/page",
+      active: false,
+    });
+    expect(append).toHaveBeenCalledWith({
+      tabId: 999,
+      origin: "https://example.com",
+    });
+    expect(r.observation).toMatch(/Opened tab 999/);
+    expect(r.observation).toMatch(/focus_tab\(999\)/);
+  });
+
+  it("respects active=true", async () => {
+    const append = vi.fn().mockResolvedValue(undefined);
+    const r = await openUrlTool.handler(
+      { url: "https://example.com/", active: true },
+      {
+        tabId: 12,
+        snapshot: { url: "", title: "", elements: [] },
+        appendPinnedTab: append,
+      },
+    );
+    expect(
+      (chromeMock.tabs as unknown as { create: ReturnType<typeof vi.fn> })
+        .create,
+    ).toHaveBeenCalledWith({
+      url: "https://example.com/",
+      active: true,
+    });
+    expect(r.observation).toMatch(/stole user's view/);
+  });
+
+  it("succeeds without appendPinnedTab writer (test/legacy harness)", async () => {
+    const r = await openUrlTool.handler(
+      { url: "https://example.com/" },
+      { tabId: 12, snapshot: { url: "", title: "", elements: [] } },
+    );
+    expect(r.success).toBe(true);
+    // No appendPinnedTab present, but the tab was still created.
+    expect(
+      (chromeMock.tabs as unknown as { create: ReturnType<typeof vi.fn> })
+        .create,
+    ).toHaveBeenCalled();
   });
 });
