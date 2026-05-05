@@ -1015,42 +1015,28 @@ After the skill completes, briefly summarize what was created (the user will see
       {pendingRecording && (
         <div
           data-testid="pending-recording-chip"
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 8,
-            padding: "6px 10px",
-            margin: "0 12px 6px",
-            background: "var(--c-bg-2, #f5f5f5)",
-            border: "1px solid var(--c-line, #ccc)",
-            borderRadius: 6,
-            fontSize: 13,
-            color: "var(--c-fg-1)",
-          }}
+          className="mx-3 mb-1.5 flex items-center gap-2 rounded-md border border-line bg-field px-2.5 py-1.5 text-[13px] text-fg-1"
           title={`Send → 由 LLM 调 create_skill_from_recording 创建 skill\n\n预览（前 200 字）：\n${pendingRecording.trace.slice(0, 200)}${pendingRecording.trace.length > 200 ? "…" : ""}`}
         >
-          <span>📼 已录制 {pendingRecording.stepCount} 步 — 写提示后 Send 让 LLM 创建 skill</span>
+          <span
+            className="inline-block h-1.5 w-1.5 flex-shrink-0 rounded-full bg-pending"
+            aria-hidden="true"
+          />
+          <span className="font-mono text-[10px] font-semibold tracking-[0.08em] text-pending">
+            REC
+          </span>
+          <span className="text-fg-1">
+            {pendingRecording.stepCount}
+            <span className="ml-1 text-fg-3">{pendingRecording.stepCount === 1 ? "step" : "steps"}</span>
+          </span>
+          <span className="text-fg-3">·</span>
+          <span className="text-fg-2">写提示 → Send 让 LLM 创建 skill</span>
           <button
             type="button"
             aria-label="discard recording"
             data-testid="dismiss-pending-recording"
             onClick={() => onPendingRecordingConsumed?.()}
-            style={{
-              marginLeft: "auto",
-              width: 20,
-              height: 20,
-              borderRadius: "50%",
-              background: "var(--c-canvas)",
-              color: "var(--c-fg-1)",
-              border: "1px solid var(--c-line)",
-              fontSize: 13,
-              lineHeight: 1,
-              cursor: "pointer",
-              padding: 0,
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-            }}
+            className="ml-auto flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-full border border-line bg-canvas text-fg-2 hover:border-fg-3 hover:text-fg-1"
           >
             ×
           </button>
