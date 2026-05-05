@@ -580,8 +580,7 @@ describe("useSession — M3-U2 lock-on-send pin (post-acceptance rule)", () => {
     expect(newId).not.toBeNull();
     const meta = await getSessionMeta(newId!);
     expect(meta).not.toBeNull();
-    expect(meta!.pinnedTabId).toBeUndefined();
-    expect(meta!.pinnedOrigin).toBeUndefined();
+    expect(meta!.pinnedTabs).toBeUndefined();
     // Hook also exposes pinnedTabs: null for the new empty session.
     expect(result.current.pinnedTabs).toBeNull();
   });
@@ -591,7 +590,7 @@ describe("useSession — M3-U2 lock-on-send pin (post-acceptance rule)", () => {
     // rule, bootstrap leaves it alone. The user can tab-switch freely
     // (PINNED follows live), and the next sendMessage captures.
     const legacy = await createSession({ now: 1000 });
-    expect(legacy.pinnedTabId).toBeUndefined();
+    expect(legacy.pinnedTabs).toBeUndefined();
 
     chromeMock.tabs.__activeTab = {
       id: 99,
@@ -604,8 +603,7 @@ describe("useSession — M3-U2 lock-on-send pin (post-acceptance rule)", () => {
     await waitFor(() => expect(result.current.ready).toBe(true));
 
     const after = await getSessionMeta(legacy.id);
-    expect(after?.pinnedTabId).toBeUndefined();
-    expect(after?.pinnedOrigin).toBeUndefined();
+    expect(after?.pinnedTabs).toBeUndefined();
   });
 
   it("setActive backfills a legacy session that already has content (M1/M2 migration)", async () => {
@@ -630,15 +628,16 @@ describe("useSession — M3-U2 lock-on-send pin (post-acceptance rule)", () => {
     const { result } = renderHook(() => useSession());
     await waitFor(() => expect(result.current.ready).toBe(true));
     // Bootstrap created a fresh session — legacy is untouched at this point.
-    expect((await getSessionMeta(legacy.id))?.pinnedTabId).toBeUndefined();
+    expect((await getSessionMeta(legacy.id))?.pinnedTabs).toBeUndefined();
 
     await act(async () => {
       await result.current.setActive(legacy.id);
     });
 
     const after = await getSessionMeta(legacy.id);
-    expect(after?.pinnedTabId).toBe(99);
-    expect(after?.pinnedOrigin).toBe("https://app.example.com");
+    expect(after?.pinnedTabs).toEqual(
+      expect.arrayContaining([expect.objectContaining({ tabId: 99, origin: "https://app.example.com" })]),
+    );
   });
 
   it("first sendMessage on an empty session captures + persists the pin", async () => {
@@ -655,7 +654,7 @@ describe("useSession — M3-U2 lock-on-send pin (post-acceptance rule)", () => {
 
     // Pre-send: no pin
     let meta = await getSessionMeta(id);
-    expect(meta?.pinnedTabId).toBeUndefined();
+    expect(meta?.pinnedTabs).toBeUndefined();
 
     act(() => {
       result.current.sendMessage({ content: "hello" });
@@ -665,9 +664,9 @@ describe("useSession — M3-U2 lock-on-send pin (post-acceptance rule)", () => {
     // await persistMessages before chat-start). Wait for the pin to land.
     await waitFor(async () => {
       meta = await getSessionMeta(id);
-      expect(meta?.pinnedTabId).toBe(55);
+      expect(meta?.pinnedTabs?.[0]?.tabId).toBe(55);
     });
-    expect(meta?.pinnedOrigin).toBe("https://send-time.example.com");
+    expect(meta?.pinnedTabs?.[0]?.origin).toBe("https://send-time.example.com");
   });
 
   it("second sendMessage does NOT re-capture or overwrite the pin", async () => {
@@ -687,7 +686,7 @@ describe("useSession — M3-U2 lock-on-send pin (post-acceptance rule)", () => {
     });
     await waitFor(async () => {
       const m = await getSessionMeta(id);
-      expect(m?.pinnedTabId).toBe(55);
+      expect(m?.pinnedTabs?.[0]?.tabId).toBe(55);
     });
 
     // Simulate the SW completing the stream so the panel can send again.
@@ -713,8 +712,8 @@ describe("useSession — M3-U2 lock-on-send pin (post-acceptance rule)", () => {
 
     // Pin still locked to the first-send capture (55 / first.example.com).
     const meta = await getSessionMeta(id);
-    expect(meta?.pinnedTabId).toBe(55);
-    expect(meta?.pinnedOrigin).toBe("https://first.example.com");
+    expect(meta?.pinnedTabs?.[0]?.tabId).toBe(55);
+    expect(meta?.pinnedTabs?.[0]?.origin).toBe("https://first.example.com");
   });
 
   it("setActive does NOT overwrite an existing pin on subsequent activations", async () => {
@@ -747,8 +746,8 @@ describe("useSession — M3-U2 lock-on-send pin (post-acceptance rule)", () => {
       await result.current.setActive(session.id);
     });
     const after = await getSessionMeta(session.id);
-    expect(after?.pinnedTabId).toBe(7);
-    expect(after?.pinnedOrigin).toBe("https://original.example.com");
+    expect(after?.pinnedTabs?.[0]?.tabId).toBe(7);
+    expect(after?.pinnedTabs?.[0]?.origin).toBe("https://original.example.com");
   });
 
   it("captureActivePinned returns null for restricted URLs (loop falls back to legacy anchor)", async () => {
@@ -764,8 +763,7 @@ describe("useSession — M3-U2 lock-on-send pin (post-acceptance rule)", () => {
 
     // Bootstrap created a fresh session because the index was empty.
     const meta = await getSessionMeta(result.current.sessionId!);
-    expect(meta?.pinnedTabId).toBeUndefined();
-    expect(meta?.pinnedOrigin).toBeUndefined();
+    expect(meta?.pinnedTabs).toBeUndefined();
   });
 
   it("captureActivePinned returns null when tab.id is -1 (session-restore / detached tab)", async () => {
@@ -785,8 +783,7 @@ describe("useSession — M3-U2 lock-on-send pin (post-acceptance rule)", () => {
     await waitFor(() => expect(result.current.ready).toBe(true));
 
     const meta = await getSessionMeta(result.current.sessionId!);
-    expect(meta?.pinnedTabId).toBeUndefined();
-    expect(meta?.pinnedOrigin).toBeUndefined();
+    expect(meta?.pinnedTabs).toBeUndefined();
   });
 
   it("captureActivePinned returns null for blob: URLs (review fix REL-2)", async () => {
@@ -806,8 +803,7 @@ describe("useSession — M3-U2 lock-on-send pin (post-acceptance rule)", () => {
     await waitFor(() => expect(result.current.ready).toBe(true));
 
     const meta = await getSessionMeta(result.current.sessionId!);
-    expect(meta?.pinnedTabId).toBeUndefined();
-    expect(meta?.pinnedOrigin).toBeUndefined();
+    expect(meta?.pinnedTabs).toBeUndefined();
   });
 
   it("setActive backfills missing pin ONLY for legacy sessions that already have content", async () => {
@@ -843,8 +839,7 @@ describe("useSession — M3-U2 lock-on-send pin (post-acceptance rule)", () => {
       await result.current.setActive(sessionB_empty.id);
     });
     const afterEmpty = await getSessionMeta(sessionB_empty.id);
-    expect(afterEmpty?.pinnedTabId).toBeUndefined();
-    expect(afterEmpty?.pinnedOrigin).toBeUndefined();
+    expect(afterEmpty?.pinnedTabs).toBeUndefined();
     void sessionA; // referenced for setup parity; not asserted
 
     // Switch to legacy-with-content session → backfill fires.
@@ -852,8 +847,8 @@ describe("useSession — M3-U2 lock-on-send pin (post-acceptance rule)", () => {
       await result.current.setActive(sessionB_legacy.id);
     });
     const afterLegacy = await getSessionMeta(sessionB_legacy.id);
-    expect(afterLegacy?.pinnedTabId).toBe(77);
-    expect(afterLegacy?.pinnedOrigin).toBe("https://b.example.com");
+    expect(afterLegacy?.pinnedTabs?.[0]?.tabId).toBe(77);
+    expect(afterLegacy?.pinnedTabs?.[0]?.origin).toBe("https://b.example.com");
   });
 
   it("setActive does NOT overwrite an existing pin on activation", async () => {
@@ -885,8 +880,8 @@ describe("useSession — M3-U2 lock-on-send pin (post-acceptance rule)", () => {
     });
 
     const after = await getSessionMeta(sessionB.id);
-    expect(after?.pinnedTabId).toBe(99);
-    expect(after?.pinnedOrigin).toBe("https://original.example.com");
+    expect(after?.pinnedTabs?.[0]?.tabId).toBe(99);
+    expect(after?.pinnedTabs?.[0]?.origin).toBe("https://original.example.com");
   });
 
   it("v1.5 togglePinTab cycles auto → user[A] → user[A,B] → user[B] → auto across multi-toggle (cross-layer integration)", async () => {

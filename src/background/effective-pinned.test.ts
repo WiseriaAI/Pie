@@ -56,7 +56,7 @@ describe("resolveEffectivePinned", () => {
     const result = await resolveEffectivePinned(
       undefined,
       SESSION_ID,
-      makeGetMeta({ pinnedOrigin: "https://meta.example.com" }), // no pinnedTabs
+      makeGetMeta({}), // no pinnedTabs → falls through
       makeQueryActiveTab({ id: 99, url: "https://active.example.com" }),
       noRestrict,
     );

@@ -422,14 +422,7 @@ async function checkPinnedDrift(
   const originalTask = escapeUntrustedWrappers(rawTask);
 
   // v1.5 — Walk all pinnedTabs[] entries. Return on first drift detected.
-  // Fall back to legacy pinnedTabId/pinnedOrigin fields for M1/M2 sessions
-  // that predate the pinnedTabs[] array.
-  const pins: Array<{ tabId: number; origin: string }> =
-    meta.pinnedTabs && meta.pinnedTabs.length > 0
-      ? meta.pinnedTabs
-      : meta.pinnedTabId !== undefined && meta.pinnedOrigin
-        ? [{ tabId: meta.pinnedTabId, origin: meta.pinnedOrigin }]
-        : [];
+  const pins = meta.pinnedTabs ?? [];
 
   if (pins.length === 0) {
     // M1 sessions don't have pinned anchored at creation (M3-U2

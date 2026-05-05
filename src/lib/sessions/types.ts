@@ -79,26 +79,6 @@ export interface SessionMeta {
    *  when LLM call fails or is in flight. */
   title?: string;
   /**
-   * @deprecated v1.5 — superseded by `pinnedTabs[]`. Storage stops writing
-   * these in Task 2; consumers migrate in Tasks 3–9; field declaration
-   * removed in Task 10. Until then the @deprecated annotation drives IDE
-   * warnings.
-   *
-   * Pinned tab captured at session creation (M3-U2). The M5 lifecycle
-   * (pinMode='auto'/'task'/'user' semantics) is now carried by
-   * `pinnedTabs[]` on the new field; this single-pin field is retained
-   * only so that pre-v1.5 stored sessions continue to type-check during
-   * the staged migration.
-   */
-  pinnedTabId?: number;
-  /**
-   * @deprecated v1.5 — superseded by `pinnedTabs[].origin`. Storage stops
-   * writing this in Task 2; consumers migrate in Tasks 3–9; field
-   * declaration removed in Task 10. Until then the @deprecated annotation
-   * drives IDE warnings.
-   */
-  pinnedOrigin?: string;
-  /**
    * v1.5 multi-pin (Path A) — array of pinned tabs owned by this session.
    *
    * Lifecycle invariants:
@@ -107,22 +87,20 @@ export interface SessionMeta {
    *                       = open_url-created tabs in chronological order
    *   - pinMode='user'  → ≥1 entries; user-toggled via PinnedTabDropdown.
    *
-   * Replaces pre-v1.5 `pinnedTabId` + `pinnedOrigin` single fields. Those
-   * fields remain marked @deprecated through the migration; Task 10 deletes
-   * them after all consumers move to this array.
+   * Replaces pre-v1.5 single-pin fields (removed in Task 10).
    */
   pinnedTabs?: Array<{ tabId: number; origin: string }>;
   /**
    * M5 — Pin mode state machine. Optional for backwards compatibility with
    * pre-M5 sessions; `getEffectivePinMode` in `pin-state.ts` infers the
-   * mode from legacy fields when this is undefined.
+   * mode when this is undefined.
    *
    *  - `auto`: pin is not persisted; UI live-previews the active tab. R7
    *    cross-session registry skips this session (other sessions can freely
    *    operate on its prior tab). Default for new + post-task sessions.
    *  - `task`: pin frozen to the tab/origin captured at chat-start. SW
    *    transitions auto→task during chat-start; emitDone transitions
-   *    task→auto and clears pinnedTabId/Origin. R7 registry includes this.
+   *    task→auto and clears pinnedTabs[]. R7 registry includes this.
    *  - `user`: user explicitly picked a tab via the PinnedTabDropdown.
    *    Survives task end. R7 registry includes this. Drift check skipped
    *    (user intent is fixed; if origin changes, that's the user's call).
@@ -241,8 +219,7 @@ export interface SessionAgentState {
  * lastAccessedAt is high enough that we don't want to also write the
  * origin string on every access; consumers that need pinnedOrigin
  * (close_tabs cross-session check via plan D9) read from the per-session
- * meta. `pinnedTabId` is here because cross-session
- * `getActivePinnedTabs()` (M3-U4) wants index-only access.
+ * meta. `pinnedTabIds[]` carries the cross-session R7 lock set.
  */
 export interface SessionIndexEntry {
   id: string;
@@ -250,15 +227,8 @@ export interface SessionIndexEntry {
   status: SessionStatus;
   title?: string;
   /**
-   * @deprecated v1.5 — superseded by `pinnedTabIds[]`. Storage stops writing
-   * this in Task 2; consumers migrate in Tasks 3–9; field declaration
-   * removed in Task 10. Until then the @deprecated annotation drives IDE
-   * warnings.
-   */
-  pinnedTabId?: number;
-  /**
    * v1.5 multi-pin — flat list of pinned tab ids for cross-session R7 lock
-   * lookup. Replaces single `pinnedTabId` outright in Task 10.
+   * lookup.
    */
   pinnedTabIds?: number[];
   /**

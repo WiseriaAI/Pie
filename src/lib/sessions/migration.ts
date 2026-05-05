@@ -114,7 +114,9 @@ export async function runSessionMigrations(): Promise<{ cleared: string[] }> {
     lastAccessedAt: newMeta.lastAccessedAt,
     status: newMeta.status,
     ...(newMeta.title !== undefined ? { title: newMeta.title } : {}),
-    ...(newMeta.pinnedTabId !== undefined ? { pinnedTabId: newMeta.pinnedTabId } : {}),
+    ...(newMeta.pinnedTabs && newMeta.pinnedTabs.length > 0
+      ? { pinnedTabIds: newMeta.pinnedTabs.map((p) => p.tabId) }
+      : {}),
   };
 
   const updatedIndex: SessionIndexEntry[] = [
