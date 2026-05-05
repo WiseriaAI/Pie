@@ -10,6 +10,11 @@ import { getActiveProvider, getProviderConfig } from "@/lib/storage";
 import { getProviderMeta } from "@/lib/model-router";
 import { normalizeSkillSlashKey } from "@/lib/skills";
 import { useSession } from "@/sidepanel/hooks/useSession";
+import { useRecording } from "@/sidepanel/hooks/useRecording";
+import RecordingMode from "@/sidepanel/components/RecordingMode";
+import SaveSkillDialog from "@/sidepanel/components/SaveSkillDialog";
+import TopBarRecordButton from "@/sidepanel/components/TopBarRecordButton";
+import type { RecordedAction } from "@/lib/recording/types";
 import { listSessionIndex } from "@/lib/sessions/storage";
 import { hardDeleteExpired } from "@/lib/sessions/lifecycle";
 import type { SessionIndexEntry, SessionAgentState } from "@/lib/sessions/types";
@@ -58,6 +63,16 @@ export default function App() {
   }, [themeMode]);
 
   const session = useSession();
+
+  const [pendingSave, setPendingSave] = useState<RecordedAction[] | null>(null);
+  const handleRecordingFinished = useCallback((_skillId: string) => {
+    setPendingSave(null);
+  }, []);
+  const recording = useRecording({
+    port: session.port,
+    sessionId: session.sessionId,
+    onFinished: handleRecordingFinished,
+  });
 
   // ── Load session index ────────────────────────────────────────────────────
   // Maintained by storage onChanged so the drawer refreshes when SW writes
@@ -266,6 +281,19 @@ export default function App() {
           {sessionTitle}
         </span>
 
+        {/* Record button */}
+        <TopBarRecordButton
+          active={recording.active}
+          disabled={!session.sessionId || session.streaming || pendingSave !== null}
+          onClick={() => {
+            if (recording.active) {
+              setPendingSave(recording.actions);
+            } else {
+              recording.startRecording();
+            }
+          }}
+        />
+
         {/* Theme toggle (light / dark / system cycle) */}
         <TopBarThemeButton mode={themeMode} onModeChange={setThemeMode} />
 
@@ -284,7 +312,27 @@ export default function App() {
         className="view-enter"
         style={{ flex: 1, overflow: "hidden", display: "flex", flexDirection: "column" }}
       >
-        {view === "agent" ? (
+        {view === "agent" && pendingSave !== null ? (
+          <SaveSkillDialog
+            actions={pendingSave}
+            onSave={(args) => {
+              recording.finishRecording(args);
+              setPendingSave(null);
+            }}
+            onDiscard={() => {
+              recording.discardRecording();
+              setPendingSave(null);
+            }}
+          />
+        ) : view === "agent" && recording.active ? (
+          <RecordingMode
+            active={recording.active}
+            actions={recording.actions}
+            lastAbortReason={recording.lastAbortReason}
+            onFinish={() => setPendingSave(recording.actions)}
+            onDiscard={() => recording.discardRecording()}
+          />
+        ) : view === "agent" ? (
           <Chat
             providerLabel={providerLabel}
             onOpenSettings={() => setView("settings")}
