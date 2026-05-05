@@ -1,6 +1,7 @@
 import type { ChatMessage } from "@/lib/model-router";
 import type { SkillDefinition } from "@/lib/skills";
 import type { Attachment } from "@/lib/images";
+import type { CapturedActionPayload, RecordedAction } from "@/lib/recording/types";
 
 // --- Page Content ---
 
@@ -448,6 +449,72 @@ export interface SessionToastMessage {
   sessionId: string;
 }
 
+// --- Recording v1 — Side Panel → Service Worker ---
+
+/** 用户点 Start recording。SW 创建 RecordingSession，注入 capture listener。 */
+export interface RecordingStartMessage {
+  type: "recording-start";
+  sessionId: string;
+}
+
+/** capture inject 函数 → SW（**通过 sendMessage**，不走 port）。 */
+export interface RecordingActionMessage {
+  type: "recording-action";
+  payload: CapturedActionPayload;
+}
+
+/** 用户点 Finish。SW 序列化 trace 后通过 RecordingFinishedBroadcast 推回 panel；
+ *  panel 在 chat 输入框显示 chip + Send 时 prefix /create_skill_from_recording。
+ *
+ *  Reframe (2026-05-05)：SW 不再直接 saveSkill。改由 LLM 看到 trace 后调用
+ *  built-in skill `create_skill_from_recording` → 该 skill 调 create_skill
+ *  meta tool → 走 R10 first-run confirm 卡片作为 capability review surface
+ *  （替代原 SaveSkillDialog 心智）。 */
+export interface RecordingFinishMessage {
+  type: "recording-finish";
+  sessionId: string;
+}
+
+/** 用户在 chat 输入框 chip × 掉，或 RecordingMode discard。 */
+export interface RecordingDiscardMessage {
+  type: "recording-discard";
+  sessionId: string;
+}
+
+// --- Recording v1 — Service Worker → Side Panel ---
+
+export interface RecordingStartedBroadcast {
+  type: "recording-started";
+  sessionId: string;
+  tabId: number;
+  origin: string;
+  startedAt: number;
+}
+
+export interface RecordingActionBroadcast {
+  type: "recording-action-broadcast";
+  sessionId: string;
+  action: RecordedAction;
+}
+
+/** SW → panel：录制结束。serializedTrace 是中文步骤序列（已经过 serialize.ts 处理，
+ *  含 wrapper-escape + 8KB 上限校验）；stepCount 给 chip 文案用。
+ *
+ *  Reframe (2026-05-05)：废弃 skillId 字段。新流程下 skill 由 LLM 在 chat 收到
+ *  trace + user prompt 后调 create_skill 创建（走 R10 confirm 卡片）。 */
+export interface RecordingFinishedBroadcast {
+  type: "recording-finished";
+  sessionId: string;
+  serializedTrace: string;
+  stepCount: number;
+}
+
+export interface RecordingAbortedBroadcast {
+  type: "recording-aborted";
+  sessionId: string;
+  reason: "sw-restart" | "session-switched" | "panel-disconnect" | "tab-closed" | "csp-blocked" | "user-discard";
+}
+
 // --- Discriminated Unions ---
 
 export type PortMessageToWorker =
@@ -456,7 +523,10 @@ export type PortMessageToWorker =
   | AgentConfirmResponseMessage
   | PanelMountedMessage
   | ResumeTaskMessage
-  | DiscardTaskMessage;
+  | DiscardTaskMessage
+  | RecordingStartMessage      // NEW
+  | RecordingFinishMessage     // NEW
+  | RecordingDiscardMessage;   // NEW
 
 export type PortMessageToPanel =
   | ChatChunkMessage
@@ -466,4 +536,8 @@ export type PortMessageToPanel =
   | AgentConfirmRequestMessage
   | AgentDoneTaskMessage
   | SessionConfirmRequestMessage
-  | SessionToastMessage;
+  | SessionToastMessage
+  | RecordingStartedBroadcast        // NEW
+  | RecordingActionBroadcast         // NEW
+  | RecordingFinishedBroadcast       // NEW
+  | RecordingAbortedBroadcast;       // NEW
