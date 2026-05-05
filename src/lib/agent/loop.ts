@@ -759,6 +759,47 @@ export function resolveFocusedPin(
 }
 
 /**
+ * v1.5 Task 6+7 — per-iteration focus refresh helper.
+ *
+ * Re-reads storage so that:
+ *   - (Task 6) a focus_tab call in the previous iteration takes effect here
+ *     (currentFocusTabId lives on SessionAgentState; mutated by focus_tab
+ *     via setCurrentFocusTabId).
+ *   - (Task 7) a new pin appended by open_url is observable in the very
+ *     next iteration (pinnedTabs lives on SessionMeta; mutated by open_url
+ *     via addPinToMeta + setSessionMeta). ctx.pinnedTabs is captured at
+ *     task-start and is FROZEN inside the loop closure, so we re-read meta
+ *     to pick up newly opened pins.
+ *
+ * resolveFocusedPin falls back to pinnedTabs[0] when currentFocusTabId is
+ * undefined (auto/legacy mode) or stale (target pin was removed).
+ *
+ * Returns undefined when there is no pinned tab to resolve (legacy active-tab
+ * fallback path).
+ *
+ * IMPORTANT field-path constraint (regression guard):
+ *   - currentFocusTabId lives on SessionAgentState, NOT SessionMeta
+ *   - pinnedTabs       lives on SessionMeta,       NOT SessionAgentState
+ * Both Promises MUST be awaited; the historical bug was reading
+ * `getSessionAgent(...).currentFocusTabId` (Promise without await → always
+ * undefined → focus_tab silently no-ops on every iteration).
+ *
+ * Exported so the integration regression tests can exercise the exact
+ * storage round-trip the loop uses.
+ */
+export async function readFocusFromStorage(
+  sessionId: string,
+  ctxPinnedTabs: ReadonlyArray<{ tabId: number; origin: string }> | undefined,
+): Promise<{ tabId: number; origin: string } | undefined> {
+  const [agentSnap, metaSnap] = await Promise.all([
+    getSessionAgent(sessionId),
+    getSessionMeta(sessionId),
+  ]);
+  const refreshedPins = metaSnap?.pinnedTabs ?? ctxPinnedTabs ?? [];
+  return resolveFocusedPin(refreshedPins, agentSnap?.currentFocusTabId);
+}
+
+/**
  * M3-U4 — pure helper: collect tab ids that this tool call would write
  * to AND that are pinned by another active session. Returns an empty
  * array when the tool is read-class, has no explicit cross-session
@@ -1028,6 +1069,14 @@ export async function runAgentLoop(ctx: AgentLoopContext): Promise<void> {
   // M3-U3 — bind ownerToken now that pinnedTabId is final. acquireSessionForTask
   // (defined below) closes over this; first invocation happens inside the
   // for-loop after this assignment, so the timing is safe.
+  //
+  // TODO(v1.5-focus_tab): ownerToken.tabId is captured once at task-start
+  // with the initial pinnedTabId. When the agent calls focus_tab mid-task
+  // the focused tab changes but ownerToken is NOT updated — CDP keyboard
+  // tools (dispatch_keyboard_input / press_key) still attach to the original
+  // tab. This is intentional for v1.5: keyboard + focus_tab on different tabs
+  // is an unsupported combination. A future milestone can refresh ownerToken
+  // per-iteration alongside pinnedTabId/pinnedOrigin.
   ownerToken = { sessionId, tabId: pinnedTabId };
 
   // Curried CdpSession factory — passed to keyboard tools via closure.
@@ -1082,12 +1131,15 @@ export async function runAgentLoop(ctx: AgentLoopContext): Promise<void> {
       task,
       keyboardSimEnabledAtStart,
       /* hasMetaTools */ true,
-      // M3-U2 — pass the authoritative pinned tab id + origin so
-      // the LLM can call get_tab_content({tabId}) directly for
-      // "summarize / read this page" tasks instead of burning a
-      // list_tabs round-trip + a confirm card just to discover
-      // its own tab id.
-      { tabId: pinnedTabId, origin: pinnedOrigin },
+      // v1.5 M3-U2 — pass the full pinnedTabs array + initial focus.
+      // Single-entry: back-compat phrasing ("a specific browser tab").
+      // Multi-entry: lists all tabs with "← current focus" marker and
+      // explains focus_tab. The LLM can call get_tab_content({tabId})
+      // directly for read tasks; the focus marker reflects task-start
+      // focus only (system prompt is static per task; see focus_tab
+      // handler for per-iteration refresh semantics).
+      ctx.pinnedTabs ?? [],
+      pinnedTabId,
     ),
   };
 
@@ -1141,6 +1193,16 @@ export async function runAgentLoop(ctx: AgentLoopContext): Promise<void> {
     for (let stepIndex = startStepIndex; stepIndex <= MAX_STEPS; stepIndex++) {
       lastStepIndex = stepIndex;
       if (signal.aborted) return; // → finally
+
+      // v1.5 Task 6+7 — per-iteration focus refresh.
+      const refreshedFocus = await readFocusFromStorage(
+        sessionId,
+        ctx.pinnedTabs,
+      );
+      if (refreshedFocus) {
+        pinnedTabId = refreshedFocus.tabId;
+        pinnedOrigin = refreshedFocus.origin;
+      }
 
       // Origin check
       let currentUrl: string;

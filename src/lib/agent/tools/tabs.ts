@@ -1015,6 +1015,79 @@ const getTabContentTool: Tool = {
 
 export { GET_TAB_CONTENT_PREVIEW_BYTES };
 
+// ── v1.5 Unit 6 — focus_tab ───────────────────────────────────────────────────
+
+/**
+ * focus_tab — mutates the session's internal focus pointer so the NEXT
+ * iteration's snapshot targets a different pinned tab. Low-risk: no
+ * observable tab or page side effect; only the session agent state changes.
+ *
+ * Risk = always-low (ALWAYS_LOW_TAB_TOOLS in risk.ts, G-1 gate updated).
+ * Class = read (mutates only the internal focus pointer, not tab state).
+ *
+ * Note: ownerToken in loop.ts is captured at task-start with the initial
+ * pinnedTabId; if focus_tab moves focus to a second pin and keyboard tools
+ * are then invoked on that tab, the CDP ownerToken remains stale.
+ * TODO(multi-pin-keyboard): update ownerToken on focus change in a future task.
+ */
+const focusTabTool: Tool = {
+  name: "focus_tab",
+  description:
+    "Switch the agent's snapshot focus to one of the session's pinned tabs. " +
+    "Takes effect on the NEXT iteration (the current iteration's snapshot was " +
+    "already taken). Use this to operate across multiple pinned tabs in a " +
+    "single task: focus_tab(N), then on the next response use click/type/" +
+    "get_tab_content/etc. against tab N. Pinned tabs are listed in the " +
+    "system prompt; tabs created by open_url are added to that list.",
+  parameters: {
+    type: "object",
+    properties: {
+      tabId: {
+        type: "integer",
+        description: "Tab id to switch focus to. Must already be one of the session's pinned tabs.",
+      },
+    },
+    required: ["tabId"],
+    additionalProperties: false,
+  },
+  handler: async (args, ctx) => {
+    const a = (args ?? {}) as { tabId?: number };
+    if (typeof a.tabId !== "number") {
+      return { success: false, error: "focus_tab requires a numeric tabId" };
+    }
+    if (!ctx.pinnedTabs || ctx.pinnedTabs.length === 0) {
+      return {
+        success: false,
+        error: "focus_tab: no pinned tabs in this session (auto mode?).",
+      };
+    }
+    const target = ctx.pinnedTabs.find((p) => p.tabId === a.tabId);
+    if (!target) {
+      const ids = ctx.pinnedTabs.map((p) => p.tabId).join(", ");
+      return {
+        success: false,
+        error: `focus_tab: tab ${a.tabId} not in pinnedTabs (current: [${ids}]). Use open_url to create a new pinned tab, or pick an existing one.`,
+      };
+    }
+    if (!ctx.setCurrentFocusTabId) {
+      return {
+        success: false,
+        error: "focus_tab: handler context missing setCurrentFocusTabId (test/legacy harness).",
+      };
+    }
+    await ctx.setCurrentFocusTabId(a.tabId);
+    return {
+      success: true,
+      observation:
+        `focus changed to tab ${a.tabId} (origin ${target.origin}). ` +
+        `The new tab's page snapshot will be available on the next iteration; ` +
+        `do NOT batch click/type/scroll on this tab in the same response.`,
+    };
+  },
+};
+
+export { focusTabTool };
+
 export const TAB_TOOLS: Tool[] = [
   listTabsTool,
   closeTabsTool,
@@ -1023,4 +1096,5 @@ export const TAB_TOOLS: Tool[] = [
   ungroupTabsTool,
   moveTabsTool,
   getTabContentTool,
+  focusTabTool,
 ];

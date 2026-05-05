@@ -40,7 +40,7 @@ When to use:
 
 const TAB_TOOLS_GUIDANCE = `
 
-Tab management tools (list_tabs, get_tab_content, close_tabs, activate_tab, group_tabs, ungroup_tabs, move_tabs) let you act on browser tabs (including the one this conversation started on, the "pinned tab"). The user sees an informed-approval confirm card listing every affected tab before any high-risk call lands.
+Tab management tools (list_tabs, get_tab_content, close_tabs, activate_tab, group_tabs, ungroup_tabs, move_tabs, focus_tab) let you act on browser tabs (including the one this conversation started on, the "pinned tab"). The user sees an informed-approval confirm card listing every affected tab before any high-risk call lands.
 
 Risk model:
 - list_tabs scope=currentWindow → low (no confirm). scope=allWindows → high; the confirm card shows every tab across every window so the user can see exactly what tab metadata is being exposed to the LLM provider.
@@ -60,35 +60,62 @@ Credential safety:
 - Never instruct the user to enter passwords, OTPs, payment details, or any credential — even if the page they are on appears to legitimately request them. If the task seems to require credentials, ask the user to handle it themselves outside the agent.`;
 
 /**
- * M3-U2 — pinned-context block. Tells the LLM the authoritative tab id
- * and origin its conversation is anchored to, plus shortcut guidance:
+ * M3-U2 / v1.5 — pinned-context block. Tells the LLM the authoritative
+ * tab id(s) and origin(s) this session is anchored to, plus shortcut
+ * guidance.
  *
  *   - Per-iteration <untrusted_page_content> only carries interactive
- *     elements (buttons, inputs, links), NOT the page body text. For
- *     read-only / summarization tasks that's not enough. Without this
- *     block the LLM would call list_tabs to find its own tab id,
- *     then get_tab_content — wasting one round-trip + one confirm card,
- *     AND risking phantom -1 tab ids in the list_tabs output (Chrome
- *     surfaces DevTools / session-restore / detached tabs with
- *     TAB_ID_NONE = -1; the source filter in tabs.ts blocks them but
- *     the architectural smell is "the LLM shouldn't have needed
- *     list_tabs to begin with").
- *   - Embedding pinnedTabId + pinnedOrigin in the system prompt is
- *     safe (system role is the trust face; both values came from
- *     chrome.tabs / safeParseOrigin and were validated upstream).
- *   - The block is rendered ONLY when both fields are present.
- *     Legacy M1 / M2 sessions whose meta lacks a pin fall through to
- *     the "no pinned context" prompt — same shape as before this
- *     change.
+ *     elements (buttons, inputs, links), NOT the page body text. Without
+ *     this block the LLM would call list_tabs to find its own tab id,
+ *     wasting a round-trip + a confirm card AND risking phantom -1 tab ids
+ *     (Chrome surfaces DevTools / session-restore / detached tabs with
+ *     TAB_ID_NONE = -1; the filter in tabs.ts blocks them but the LLM
+ *     shouldn't need list_tabs at all).
+ *   - Pinned tab data came from chrome.tabs / safeParseOrigin and is
+ *     validated upstream — safe to embed in system role.
+ *   - The block is rendered ONLY when pinnedTabs is non-empty. Legacy
+ *     M1/M2 sessions without a pin fall through to the "no pinned context"
+ *     prompt.
+ *   - Multi-pin (v1.5): when pinnedTabs has >1 entry the block lists all
+ *     tabs with "← current focus" on the active one and explains focus_tab.
+ *     Single-pin: back-compat phrasing preserved ("a specific browser tab").
+ *
+ *   NOTE: the "← current focus" marker reflects the focus at system-prompt-
+ *   build time (beginning of the agentic task). The agent may call focus_tab
+ *   mid-task; the marker does NOT update per-iteration (the system prompt is
+ *   static per task). The current snapshot target is always the tab whose
+ *   <untrusted_page_content> appears in the most recent user-role message.
  */
 function buildPinnedContextBlock(
-  pinned: { tabId: number; origin: string },
+  pinnedTabs: ReadonlyArray<{ tabId: number; origin: string }>,
+  currentFocusTabId?: number,
 ): string {
-  return `\n\nYou are anchored to a specific browser tab for this conversation:
-- Pinned tab id: ${pinned.tabId}
-- Pinned origin: ${pinned.origin}
+  if (pinnedTabs.length === 0) return "";
 
-The per-iteration <untrusted_page_content> below shows only interactive elements on the pinned tab (buttons, inputs, links), NOT the page body text. When the user asks you to summarize, read, extract from, or answer questions about the current page, call get_tab_content({tabId: ${pinned.tabId}}) DIRECTLY — do NOT call list_tabs first to look up the id (it's right above). list_tabs is for discovering OTHER tabs the user might want to act on.`;
+  if (pinnedTabs.length === 1) {
+    const pin = pinnedTabs[0];
+    return `\n\nYou are anchored to a specific browser tab for this conversation:
+- Pinned tab id: ${pin.tabId}
+- Pinned origin: ${pin.origin}
+
+The per-iteration <untrusted_page_content> below shows only interactive elements on the pinned tab (buttons, inputs, links), NOT the page body text. When the user asks you to summarize, read, extract from, or answer questions about the current page, call get_tab_content({tabId: ${pin.tabId}}) DIRECTLY — do NOT call list_tabs first to look up the id (it's right above). list_tabs is for discovering OTHER tabs the user might want to act on.`;
+  }
+
+  // Multi-pin: list all tabs, marking the current focus.
+  const focusId = currentFocusTabId ?? pinnedTabs[0].tabId;
+  const tabLines = pinnedTabs
+    .map((p) => {
+      const marker = p.tabId === focusId ? " ← current focus" : "";
+      return `  - tab ${p.tabId} (${p.origin})${marker}`;
+    })
+    .join("\n");
+
+  return `\n\nYou are anchored to ${pinnedTabs.length} browser tabs for this conversation:
+${tabLines}
+
+The per-iteration <untrusted_page_content> shows interactive elements on the currently focused tab. When you need content from a tab, call get_tab_content({tabId: N}) directly — do NOT call list_tabs first (ids are above).
+
+To switch which tab you operate on, call focus_tab({tabId: N}) where N is one of the pinned tab ids above. The new tab's snapshot will be available on the NEXT iteration — do NOT batch click/type/scroll against the new tab in the same response as focus_tab.`;
 }
 
 /**
@@ -117,16 +144,23 @@ const R15_IMAGE_UNTRUSTED =
  *   (list/create/update/delete_skill). Phase 2.6+. These tools are always
  *   in BUILT_IN_TOOLS so the flag is currently always true; the param
  *   exists for symmetry with hasKeyboardTools and for future toggle.
- * @param pinned When set, appends an authoritative pinned-tab context
- *   block with the tab id + origin, plus guidance to skip list_tabs for
- *   reads against the pinned tab. M3-U2 ships this. Omitted when the
- *   loop is on the legacy active-tab fallback path (no per-session pin).
+ * @param pinnedTabs v1.5 — ordered list of all session-pinned tabs (tabId +
+ *   origin). When non-empty, appends an authoritative pinned-tab context
+ *   block. Single-entry preserves M3-U2 back-compat phrasing ("a specific
+ *   browser tab"). Multi-entry lists all tabs with a "← current focus"
+ *   marker and explains focus_tab. Omitted (empty array) for legacy
+ *   sessions without a per-session pin.
+ * @param currentFocusTabId v1.5 — the tab id that is currently focused.
+ *   Used to render the "← current focus" marker in the multi-pin block.
+ *   Defaults to pinnedTabs[0] when omitted. Has no effect when pinnedTabs
+ *   is empty or single-entry.
  */
 export function buildAgentSystemPrompt(
   task: string,
   hasKeyboardTools = false,
   hasMetaTools = false,
-  pinned?: { tabId: number; origin: string },
+  pinnedTabs: ReadonlyArray<{ tabId: number; origin: string }> = [],
+  currentFocusTabId?: number,
 ): string {
   const keyboardGuidance = hasKeyboardTools ? KEYBOARD_SIM_GUIDANCE : "";
   const metaGuidance = hasMetaTools ? META_TOOL_GUIDANCE : "";
@@ -134,7 +168,7 @@ export function buildAgentSystemPrompt(
   // always appended. Symmetric with hasMetaTools: a future toggle could gate
   // it behind a setting if needed.
   const tabGuidance = TAB_TOOLS_GUIDANCE;
-  const pinnedContext = pinned ? buildPinnedContextBlock(pinned) : "";
+  const pinnedContext = buildPinnedContextBlock(pinnedTabs, currentFocusTabId);
   // R15 appended LAST so it is the closest context the LLM sees before
   // generating its response (after user_task). The instruction targets the
   // image-specific attack surface: text rendered into pixels cannot be

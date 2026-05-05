@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 import { chromeMock } from "@/test/setup";
 import { TAB_TOOLS } from "./tabs";
 
+const focusTabTool = TAB_TOOLS.find((t) => t.name === "focus_tab")!;
+
 const listTabsTool = TAB_TOOLS.find((t) => t.name === "list_tabs")!;
 const closeTabsTool = TAB_TOOLS.find((t) => t.name === "close_tabs")!;
 
@@ -195,5 +197,97 @@ describe("close_tabs K-9 (M5) — pinMode-aware pinned-tab protection", () => {
     );
     expect(result.success).toBe(false);
     expect(result.error).toMatch(/user's explicitly pinned tab/i);
+  });
+});
+
+// ── v1.5 Task 6 — focus_tab handler ─────────────────────────────────────────
+
+describe("focus_tab (v1.5 Task 6) — handler contract", () => {
+  const snapshot = { url: "", title: "", elements: [] };
+
+  it("SUCCEEDS and calls setCurrentFocusTabId when tabId is in pinnedTabs", async () => {
+    const setCurrentFocusTabId = vi.fn(async () => undefined);
+    const result = await focusTabTool.handler(
+      { tabId: 10 },
+      {
+        tabId: 10,
+        snapshot,
+        pinnedTabs: [
+          { tabId: 10, origin: "https://a.example.com" },
+          { tabId: 20, origin: "https://b.example.com" },
+        ],
+        setCurrentFocusTabId,
+      },
+    );
+    expect(result.success).toBe(true);
+    expect(setCurrentFocusTabId).toHaveBeenCalledWith(10);
+    expect(result.observation).toContain("focus changed to tab 10");
+    expect(result.observation).toContain("https://a.example.com");
+    // Must warn the LLM not to batch operations on the new tab in the same response.
+    expect(result.observation).toContain("next iteration");
+  });
+
+  it("FAILS with descriptive error when tabId is NOT in pinnedTabs", async () => {
+    const setCurrentFocusTabId = vi.fn(async () => undefined);
+    const result = await focusTabTool.handler(
+      { tabId: 99 },
+      {
+        tabId: 10,
+        snapshot,
+        pinnedTabs: [
+          { tabId: 10, origin: "https://a.example.com" },
+          { tabId: 20, origin: "https://b.example.com" },
+        ],
+        setCurrentFocusTabId,
+      },
+    );
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/not in pinnedTabs/i);
+    // Error must list the valid tab ids so the LLM can self-correct.
+    expect(result.error).toContain("10");
+    expect(result.error).toContain("20");
+    // setCurrentFocusTabId must NOT have been called.
+    expect(setCurrentFocusTabId).not.toHaveBeenCalled();
+  });
+
+  it("FAILS with error when pinnedTabs is empty (auto / no-pin mode)", async () => {
+    const result = await focusTabTool.handler(
+      { tabId: 5 },
+      {
+        tabId: 5,
+        snapshot,
+        pinnedTabs: [],
+      },
+    );
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/no pinned tabs/i);
+  });
+
+  it("FAILS gracefully when setCurrentFocusTabId is absent (test/legacy harness)", async () => {
+    // Simulates a legacy ToolHandlerContext without the v1.5 setter.
+    const result = await focusTabTool.handler(
+      { tabId: 10 },
+      {
+        tabId: 10,
+        snapshot,
+        pinnedTabs: [{ tabId: 10, origin: "https://a.example.com" }],
+        // setCurrentFocusTabId intentionally omitted
+      },
+    );
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/missing setCurrentFocusTabId/i);
+  });
+
+  it("FAILS with error when tabId arg is missing or non-numeric", async () => {
+    const result = await focusTabTool.handler(
+      {},
+      {
+        tabId: 10,
+        snapshot,
+        pinnedTabs: [{ tabId: 10, origin: "https://a.example.com" }],
+      },
+    );
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/requires a numeric tabId/i);
   });
 });

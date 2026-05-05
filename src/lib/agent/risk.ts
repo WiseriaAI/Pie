@@ -258,6 +258,14 @@ export function classifyRisk(
     };
   }
 
+  // v1.5 focus_tab — always low. Mutates only the session's internal
+  // currentFocusTabId pointer; no tab state is changed, no content is
+  // read, no cross-origin data is exposed. The next iteration's snapshot
+  // will target the new tab, but that's a snapshot read (low) not a write.
+  if (toolName === "focus_tab") {
+    return { level: "low" };
+  }
+
   // Phase 3 — list_tabs is the single tab tool with args-dependent risk.
   // currentWindow (default) is low; allWindows triggers high because it
   // exposes tab metadata across windows the user has not chosen as the
@@ -405,17 +413,27 @@ const ARGS_CONDITIONAL_TAB_TOOLS = new Set<string>([
   "list_tabs",
 ]);
 
+// v1.5 — focus_tab is always low. It only mutates the session's internal
+// currentFocusTabId pointer (no tab state, no cross-origin data exposure).
+// NOTE: G-1 K-3 rationale still holds for this tool — skills that add
+// focus_tab to allowedTools will only be granted per-call low-risk focus
+// switching, which does not open the K-3 privilege-chain vector (focus_tab
+// cannot itself call any tool; it just changes what tab the next snapshot
+// targets). No allowedTools schema upgrade needed.
+const ALWAYS_LOW_TAB_TOOLS = new Set<string>(["focus_tab"]);
+
 for (const name of TAB_TOOL_NAMES) {
   if (
     !ALWAYS_HIGH_TAB_TOOLS.has(name) &&
-    !ARGS_CONDITIONAL_TAB_TOOLS.has(name)
+    !ARGS_CONDITIONAL_TAB_TOOLS.has(name) &&
+    !ALWAYS_LOW_TAB_TOOLS.has(name)
   ) {
     throw new Error(
       `[Phase 3 G-1] cross-tab tool "${name}" is in TAB_TOOL_NAMES but ` +
-        `not classified in risk.ts (ALWAYS_HIGH_TAB_TOOLS or ARGS_CONDITIONAL_TAB_TOOLS). ` +
-        `If this is a new low-risk cross-tab tool, you MUST first upgrade ` +
-        `SkillDefinition.allowedTools schema from string[] to (name, scope) ` +
-        `tuple — see plan G-1 acceptance gate / K-3.`,
+        `not classified in risk.ts (ALWAYS_HIGH_TAB_TOOLS, ARGS_CONDITIONAL_TAB_TOOLS, ` +
+        `or ALWAYS_LOW_TAB_TOOLS). ` +
+        `If this is a new low-risk cross-tab tool, add it to ALWAYS_LOW_TAB_TOOLS. ` +
+        `If it needs K-3 schema upgrade review, see plan G-1 acceptance gate / K-3.`,
     );
   }
 }

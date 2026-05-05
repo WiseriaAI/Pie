@@ -1,16 +1,24 @@
 import { describe, expect, it } from "vitest";
+import "@/test/setup";
 import type { AgentMessage, ContentBlock } from "@/lib/model-router";
 import type { ChatMessage } from "@/lib/model-router";
-import type { SessionAgentState } from "@/lib/sessions/types";
+import type { SessionAgentState, SessionMeta } from "@/lib/sessions/types";
 import {
   buildSessionAgentSnapshot,
   buildSessionAgentTombstone,
   collectCrossSessionConflicts,
   chatMessageToAgentMessage,
   resolveFocusedPin,
+  readFocusFromStorage,
   mergeSessionAgentSnapshot,
 } from "./loop";
 import { synthesizeAgentTurnText } from "./synthesize-agent-turn";
+import {
+  getSessionAgent,
+  getSessionMeta,
+  setSessionAgent,
+  setSessionMeta,
+} from "@/lib/sessions/storage";
 
 // M1-U3 invariant tests — focused on the snapshot helper, not the full
 // agent loop. The full loop is too tightly coupled to Chrome APIs +
@@ -1100,5 +1108,218 @@ describe("v1.5 multi-pin — mergeSessionAgentSnapshot", () => {
     };
     const merged = mergeSessionAgentSnapshot(existing, odd);
     expect(merged.currentFocusTabId).toBe(13);
+  });
+});
+
+// ── v1.5 Task 6+7 — per-iteration focus refresh pattern ────────────────────
+//
+// The loop body re-reads currentFocusTabId from SessionAgentState AND
+// pinnedTabs from SessionMeta at the top of each iteration so that:
+//   - (Task 6) a focus_tab call in iteration N takes effect in iteration N+1
+//     by mutating SessionAgentState.currentFocusTabId
+//   - (Task 7) a new pin appended by open_url is observable in the next
+//     iteration by mutating SessionMeta.pinnedTabs
+//
+// IMPORTANT field-path constraint:
+//   - currentFocusTabId lives on SessionAgentState (NOT on SessionMeta)
+//   - pinnedTabs       lives on SessionMeta       (NOT on SessionAgentState)
+// A regression where the loop reads agentSnap.pinnedTabs (typo-wrong field)
+// would silently fall back to ctx.pinnedTabs forever. A regression where
+// the loop forgets `await` on getSessionAgent would silently leave
+// agentSnap?.currentFocusTabId === undefined (Promise has no such field).
+// Both are invisible to pure-function tests. The integration regression
+// tests below catch them by exercising the actual storage round-trip.
+
+describe("v1.5 Task 6 — per-iteration focus refresh (pure-function contract)", () => {
+  it("resolveFocusedPin picks up the new focus when currentFocusTabId points to a secondary pin", () => {
+    // Simulates iteration N+1 after focus_tab(20) in iteration N:
+    // SessionAgentState.currentFocusTabId is now 20.
+    const pinnedTabs = [
+      { tabId: 10, origin: "https://a.example.com" },
+      { tabId: 20, origin: "https://b.example.com" },
+    ];
+    const currentFocusTabId = 20;
+
+    const refreshedFocus = resolveFocusedPin(pinnedTabs, currentFocusTabId);
+
+    expect(refreshedFocus).toEqual({ tabId: 20, origin: "https://b.example.com" });
+  });
+
+  it("falls back to pinnedTabs[0] when currentFocusTabId is undefined (focus_tab never called)", () => {
+    const pinnedTabs = [
+      { tabId: 10, origin: "https://a.example.com" },
+      { tabId: 20, origin: "https://b.example.com" },
+    ];
+
+    const refreshedFocus = resolveFocusedPin(pinnedTabs, undefined);
+
+    expect(refreshedFocus).toEqual({ tabId: 10, origin: "https://a.example.com" });
+  });
+
+  it("falls back to pinnedTabs[0] when both agent state and meta state are null/empty", () => {
+    // First-iteration case: getSessionAgent and getSessionMeta both return null.
+    const agentSnap: SessionAgentState | null = null;
+    const metaSnap: { pinnedTabs?: Array<{ tabId: number; origin: string }> } | null = null;
+    const ctxPinnedTabs = [
+      { tabId: 10, origin: "https://a.example.com" },
+    ];
+
+    // The loop's guard pattern: meta wins, ctx is fallback.
+    const refreshedPins = metaSnap?.pinnedTabs ?? ctxPinnedTabs;
+    const refreshedFocus = resolveFocusedPin(
+      refreshedPins,
+      agentSnap?.currentFocusTabId,
+    );
+
+    expect(refreshedFocus).toEqual({ tabId: 10, origin: "https://a.example.com" });
+  });
+});
+
+// ── v1.5 Task 6+7 — per-iteration refresh INTEGRATION regression tests ──────
+//
+// These tests exercise the actual storage round-trip used by the loop:
+//   1. setSessionMeta + setSessionAgent populate storage
+//   2. await getSessionAgent + await getSessionMeta read it back
+//   3. resolveFocusedPin composes the result
+//
+// Why integration tests here: the original Task 6 implementation had two
+// compounding bugs invisible to pure-function tests:
+//   - Missing `await` on getSessionAgent → agentSnap was a Promise, not
+//     SessionAgentState; agentSnap?.currentFocusTabId was always undefined
+//   - Wrong field path: agentSnap.pinnedTabs (typo — pinnedTabs lives on
+//     SessionMeta, not SessionAgentState) silently became undefined and the
+//     loop fell back to ctx.pinnedTabs forever
+// Both bugs would cause the per-iteration refresh to silently no-op while
+// pure-function tests still passed. These integration tests fail loudly
+// if either regresses.
+
+describe("v1.5 Task 6+7 — readFocusFromStorage (integration regression)", () => {
+  // These tests call readFocusFromStorage — the EXACT helper the loop uses,
+  // so any future regression on missing-await or wrong-field-path inside the
+  // helper itself fails here.
+  const baseMeta = (overrides: Partial<SessionMeta>): SessionMeta => ({
+    id: "sess-task6",
+    createdAt: 1000,
+    lastAccessedAt: 1000,
+    status: "active",
+    messages: [],
+    ...overrides,
+  });
+
+  it("REGRESSION (missing await): currentFocusTabId from storage IS picked up", async () => {
+    // Setup: session has two pinned tabs and currentFocusTabId=20 (as if
+    // focus_tab(20) ran in the previous iteration). If readFocusFromStorage
+    // forgets `await` on getSessionAgent, agentSnap is a Promise →
+    // currentFocusTabId is undefined → falls back to tab 10 → fail.
+    const sessionId = "sess-task6-await";
+    await setSessionMeta(
+      baseMeta({
+        id: sessionId,
+        pinMode: "task",
+        pinnedTabs: [
+          { tabId: 10, origin: "https://a.example.com" },
+          { tabId: 20, origin: "https://b.example.com" },
+        ],
+      }),
+    );
+    await setSessionAgent(sessionId, {
+      agentMessages: [{ role: "user", content: "x" }],
+      stepIndex: 1,
+      skillExecutionScopeStack: [],
+      hasImageContent: false,
+      currentFocusTabId: 20,
+    });
+
+    const refreshedFocus = await readFocusFromStorage(sessionId, []);
+
+    expect(refreshedFocus?.tabId).toBe(20);
+    expect(refreshedFocus?.origin).toBe("https://b.example.com");
+  });
+
+  it("REGRESSION (wrong field path): pinnedTabs is read from SessionMeta, not SessionAgentState", async () => {
+    // Setup: only meta carries pinnedTabs (which is the truthful storage
+    // shape — pinnedTabs has never lived on SessionAgentState).
+    const sessionId = "sess-task6-fieldpath";
+    await setSessionMeta(
+      baseMeta({
+        id: sessionId,
+        pinMode: "task",
+        pinnedTabs: [
+          { tabId: 30, origin: "https://only-in-meta.example.com" },
+        ],
+      }),
+    );
+    await setSessionAgent(sessionId, {
+      agentMessages: [],
+      stepIndex: 0,
+      skillExecutionScopeStack: [],
+      hasImageContent: false,
+    });
+
+    // Fallback ctxPinnedTabs is intentionally a different value to confirm
+    // meta wins (otherwise the test would pass trivially).
+    const refreshedFocus = await readFocusFromStorage(sessionId, [
+      { tabId: 999, origin: "https://stale-ctx.example.com" },
+    ]);
+
+    expect(refreshedFocus?.tabId).toBe(30);
+    expect(refreshedFocus?.origin).toBe("https://only-in-meta.example.com");
+  });
+
+  it("Task 7 forward-provision: SessionMeta.pinnedTabs mutation IS observable in next iteration (no closure staleness)", async () => {
+    // Simulates Task 7's open_url flow:
+    //   1. Loop starts with ctx.pinnedTabs = [10] (frozen at task-start)
+    //   2. open_url appends tab 50 to SessionMeta.pinnedTabs → storage now
+    //      has [10, 50]
+    //   3. Next iteration's readFocusFromStorage re-reads meta and SHOULD
+    //      see [10, 50], NOT the frozen ctxPinnedTabs.
+    const sessionId = "sess-task7-forward";
+    const ctxPinnedTabsAtTaskStart = [
+      { tabId: 10, origin: "https://a.example.com" },
+    ];
+
+    await setSessionMeta(
+      baseMeta({
+        id: sessionId,
+        pinMode: "task",
+        pinnedTabs: ctxPinnedTabsAtTaskStart,
+      }),
+    );
+
+    // open_url appends tab 50 (mutation between iterations)
+    const meta1 = await getSessionMeta(sessionId);
+    await setSessionMeta({
+      ...meta1!,
+      pinnedTabs: [
+        ...ctxPinnedTabsAtTaskStart,
+        { tabId: 50, origin: "https://opened.example.com" },
+      ],
+    });
+    // Suppose focus_tab(50) was also called
+    await setSessionAgent(sessionId, {
+      agentMessages: [{ role: "user", content: "x" }],
+      stepIndex: 1,
+      skillExecutionScopeStack: [],
+      hasImageContent: false,
+      currentFocusTabId: 50,
+    });
+
+    // Pass the frozen ctxPinnedTabs (the loop closure's stale value).
+    const refreshedFocus = await readFocusFromStorage(
+      sessionId,
+      ctxPinnedTabsAtTaskStart,
+    );
+
+    // Focus correctly resolves to the newly-opened tab — meta's pinnedTabs
+    // overrode the frozen ctx.
+    expect(refreshedFocus?.tabId).toBe(50);
+    expect(refreshedFocus?.origin).toBe("https://opened.example.com");
+  });
+
+  it("returns undefined when no meta and ctx is empty (legacy fallback path)", async () => {
+    // No setSessionMeta call → meta is null. Empty ctx → no pinnedTabs
+    // anywhere → caller should fall back to the legacy active-tab anchor.
+    const refreshedFocus = await readFocusFromStorage("sess-no-pin", []);
+    expect(refreshedFocus).toBeUndefined();
   });
 });
