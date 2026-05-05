@@ -1131,13 +1131,19 @@ async function handleChatStream(
     );
 
     // Step 2: read lastTaskSynth from agent state (post-AD1 location).
-    // Session meta was already fetched above (chatSessionMeta) — reuse it for
-    // pinned tab fields rather than reading storage a second time.
+    // AD1 fix: fetch synthMeta in parallel with synthAgent here, AFTER
+    // upgradeAutoToTaskAtChatStart has run above. The early chatSessionMeta
+    // (line ~1016) is stale for auto-mode sessions: upgradeAutoToTaskAtChatStart
+    // writes pinMode='task' + pinnedTabs[] AFTER chatSessionMeta was loaded,
+    // so reusing it would cause getPrimaryPin/getEffectivePinMode to miss the
+    // freshly-captured pin — regression of M5 invariants.
     // Note: title generation (above) uses messages.length === 1 which
     // is evaluated BEFORE this injection, so the injected synth never
     // accidentally counts as a second message for title-gen purposes.
-    const synthAgent = await getSessionAgent(sessionId);
-    const synthMeta = chatSessionMeta;
+    const [synthAgent, synthMeta] = await Promise.all([
+      getSessionAgent(sessionId),
+      getSessionMeta(sessionId),
+    ]);
     const lastTaskSynth = synthAgent?.lastTaskSynth ?? null;
 
     let effectiveMessages = messages;
