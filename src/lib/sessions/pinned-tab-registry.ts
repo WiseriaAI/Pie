@@ -48,8 +48,11 @@ const OWNING_STATUSES: ReadonlySet<SessionIndexEntry["status"]> = new Set([
 ]);
 
 /**
- * Returns every active/paused session's pinnedTabId. Sessions without a
- * pinnedTabId (M1 / M2 legacy that never got migrated) are skipped.
+ * Returns every active/paused session's pinned tab entries. Sessions without
+ * any pinned tabs (M1/M2 legacy, or auto-mode sessions) are skipped.
+ *
+ * v1.5: reads from `pinnedTabIds[]` (written by Task 2's indexEntryFromMeta).
+ * Each tabId in the array yields one ActivePinnedTab entry.
  *
  * Single read of session_index — O(N) in the number of session entries;
  * fine to call per chat-start.
@@ -59,12 +62,14 @@ export async function getActivePinnedTabs(): Promise<ActivePinnedTab[]> {
   const out: ActivePinnedTab[] = [];
   for (const entry of index) {
     if (!OWNING_STATUSES.has(entry.status)) continue;
-    if (typeof entry.pinnedTabId !== "number") continue;
-    out.push({
-      sessionId: entry.id,
-      tabId: entry.pinnedTabId,
-      status: entry.status as "active" | "paused",
-    });
+    const tabIds = entry.pinnedTabIds ?? [];
+    for (const tabId of tabIds) {
+      out.push({
+        sessionId: entry.id,
+        tabId,
+        status: entry.status as "active" | "paused",
+      });
+    }
   }
   return out;
 }
