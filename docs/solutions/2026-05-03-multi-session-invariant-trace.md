@@ -286,3 +286,17 @@ Task 9 changes (final integration):
 - `Chat.tsx`: `pageChanged` filters by `pinnedTabIds` set; ×N count badge for ≥2 pins.
 - `PinnedTabDropdown`: multi-select; each row toggles, dropdown stays open; Auto row clears all and closes.
 - Manifest bumped 0.5.1 → 0.5.2.
+
+Task 10 changes (final cleanup, post-final-review):
+- `SessionMeta.pinnedTabId/Origin` and `SessionIndexEntry.pinnedTabId` fields **deleted** entirely. Storage no longer dual-writes (`syncLegacyFromArray` removed).
+- `checkPinnedDrift` simplified: `meta.pinnedTabs ?? []`; M1/M2 legacy fallback removed (pre-v1.5 sessions treated as pin-less; loop's per-iteration origin check still catches real drift).
+- `migration.ts:117` legacy field write replaced with `pinnedTabIds[]` synthesis from `pinnedTabs[]`.
+- 7 files / 44 insertions / 189 deletions / 572 tests pass.
+
+### v1.5.1 backlog (deferred from v1.5 epic)
+
+- **Phantom pin pruning**: `removePinFromMeta` exists but no production caller. After a tab is closed (manual or crash), pinnedTabs[] retains the dead entry. Loop's per-iteration origin check fails-soft on dead tabs (clean abort, no security issue). Future fix: chrome.tabs.onRemoved listener AND/OR chat-start re-validation against live chrome.tabs.get.
+- **tabTargets / contentPreview wire drop**: pre-existing since Phase 3. `useSession.ts:414-423` agent-confirm-request handler does NOT destructure `tabTargets` or `contentPreview` despite both being declared on AgentConfirmRequestMessage and emitted by SW. close_tabs / group_tabs / get_tab_content confirm cards lose the origin list and content preview. v1.5 added openUrlPreview following the correct pattern but didn't fix the prior gap. K-1 informed-approval shortfall.
+- **ownerToken refresh on focus_tab**: keyboard tools route correctly to focused tab via ctx.tabId; ownerToken.tabId stays at task-start. Metadata-only inconsistency. Defense-in-depth: refresh ownerToken or surface a guard warning when keyboard + focus_tab combine.
+- **PinnedTabDropdown mount-only refresh**: tab list doesn't update while dropdown is open. Cosmetic; multi-select makes it more visible.
+- **CDP-keyboard comment audit (DONE in v0.5.2 polish)**: `loop.ts:1073-1080`, `cdp-session.ts:43-65`, `tabs.ts:1024-1036` previously claimed keyboard tools route to wrong tab after focus_tab — corrected; routing is via `ctx.tabId` and is always live.

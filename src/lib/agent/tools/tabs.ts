@@ -1029,10 +1029,11 @@ export { GET_TAB_CONTENT_PREVIEW_BYTES };
  * Risk = always-low (ALWAYS_LOW_TAB_TOOLS in risk.ts, G-1 gate updated).
  * Class = read (mutates only the internal focus pointer, not tab state).
  *
- * Note: ownerToken in loop.ts is captured at task-start with the initial
- * pinnedTabId; if focus_tab moves focus to a second pin and keyboard tools
- * are then invoked on that tab, the CDP ownerToken remains stale.
- * TODO(multi-pin-keyboard): update ownerToken on focus change in a future task.
+ * Note: focus_tab updates the loop's focused-tab pointer; ctx.tabId is
+ * re-resolved per iteration. CDP keyboard tools route to ctx.tabId, so
+ * keyboard input correctly follows focus changes. The ownerToken.tabId
+ * (loop.ts ownerToken) stays at task-start value but is metadata only —
+ * it does not gate keyboard routing.
  */
 const focusTabTool: Tool = {
   name: "focus_tab",

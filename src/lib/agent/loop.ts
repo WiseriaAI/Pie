@@ -1070,13 +1070,15 @@ export async function runAgentLoop(ctx: AgentLoopContext): Promise<void> {
   // (defined below) closes over this; first invocation happens inside the
   // for-loop after this assignment, so the timing is safe.
   //
-  // TODO(v1.5-focus_tab): ownerToken.tabId is captured once at task-start
-  // with the initial pinnedTabId. When the agent calls focus_tab mid-task
-  // the focused tab changes but ownerToken is NOT updated — CDP keyboard
-  // tools (dispatch_keyboard_input / press_key) still attach to the original
-  // tab. This is intentional for v1.5: keyboard + focus_tab on different tabs
-  // is an unsupported combination. A future milestone can refresh ownerToken
-  // per-iteration alongside pinnedTabId/pinnedOrigin.
+  // Note: ownerToken.tabId is captured once at task-start. After focus_tab
+  // mutates the focused tab, keyboard tools (dispatch_keyboard_input /
+  // press_key) ROUTE CORRECTLY to the new focused tab — they read ctx.tabId,
+  // not ownerToken.tabId. The ownerToken's tabId only drives the cdp-session
+  // sessionMap key (metadata for the M3-U3 owner-attached invariant); routing
+  // to the live focused tab is unchanged. The "ownerToken.tabId === ctx.tabId"
+  // invariant is now relaxed in multi-pin mode, but no security-critical path
+  // depends on it. v1.5.1 backlog: refresh ownerToken on focus_tab as
+  // defense-in-depth.
   ownerToken = { sessionId, tabId: pinnedTabId };
 
   // Curried CdpSession factory — passed to keyboard tools via closure.

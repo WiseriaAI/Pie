@@ -84,6 +84,11 @@ export default function PinnedTabDropdown({
   );
 
   // Fetch tab list on mount.
+  // TODO(v1.5.1): tab list is mount-only — doesn't refresh while dropdown is
+  // open. Consider subscribing to chrome.tabs.onCreated/onRemoved/onUpdated
+  // for the dropdown's lifetime so the list stays current under multi-select
+  // usage. Pre-existing pre-multi-select but more visible now since the
+  // dropdown stays open across multiple toggles.
   useEffect(() => {
     let cancelled = false;
     (async () => {

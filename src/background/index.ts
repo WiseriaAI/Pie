@@ -413,7 +413,7 @@ async function handlePanelMounted(
  * `escapeUntrustedWrappers` before they reach the panel (P3-G family).
  */
 async function checkPinnedDrift(
-  meta: { pinnedTabId?: number; pinnedOrigin?: string; pinnedTabs?: Array<{ tabId: number; origin: string }>; messages: DisplayMessage[] },
+  meta: { pinnedTabs?: Array<{ tabId: number; origin: string }>; messages: DisplayMessage[] },
   agentStepIndex: number,
 ): Promise<PinnedTabDriftPayload | null> {
   // Pull the original task from the first user message if available.

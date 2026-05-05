@@ -2,7 +2,7 @@
 
 延续 `docs/design.md` 的 Phase 0/1/2/3 终态。本文件是已交付 phase 状态 + 后续 backlog 的 single source of truth；invariant 级别细节见 `docs/solutions/`。
 
-**已交付**：Phase 0 / 1 / 2 / 2.5 / 2.6 / 3 / 4 (M1 + M2 + M3) / 5 (multimodal v1)。
+**已交付**：Phase 0 / 1 / 2 / 2.5 / 2.6 / 3 / 4 (M1 + M2 + M3) / 5 (multimodal v1) / v1.5 (multi-pin + open_url + focus_tab)。
 
 本文件汇总各 brainstorm / plan 主动 defer 的 milestone，是后续工作的 backlog。每条目标是"够用以决定下一步"，不是 plan，立 plan 时再 `/ce:brainstorm` + `/ce:plan` 走完整链路。
 
@@ -73,7 +73,7 @@
 |---|---|---|---|
 | **1** | 多模态输入图片 | ✅ **PR #20 merged 2026-05-04**：v1 = 用户上传（粘贴/拖拽/按钮 ≤3 张，auto-resize 1568px JPEG q85 + EXIF strip）+ LLM screenshot tools (`capture_visible_tab` / `capture_fullpage_tab` 两者 always-high) + No-persist SW per-session cache (30MB/last-3-turn LRU，4 evict 路径) + Fail-on-image (R14 paused→failed) + R15 image untrusted boundary system prompt + Anthropic/OpenAI/OpenRouter 三家。15 task / 339→461 tests (+122 net) / R1-R15 全闭环。v1.1 follow-up 见 §8 | 完成 |
 | **2** | Skill 脚本化（"完整 skill"） | ⚠️ **scope 含糊未深入**：必须先 narrow 含义到 (a) JS 自定义 tool handler / (b) DSL 描述固定步骤 / (c) prompt 加 control flow / (d) 录制+回放（与 #4 重叠）中的某一个。Manifest V3 CSP 对 (a) 是硬约束（禁 `eval`/`Function`，要 sandboxed iframe / Worker，BYOK trust model 重审）；(c) 与 LLM 自身 reasoning 重叠 YAGNI 风险高 | 单独 `/ce:brainstorm` 先 narrow 哪一种含义 + 当前 skill 系统真正卡住的用例 |
-| **3** | 控制 Chrome 浏览器 | ✅ **已 nail down + 4-reviewer review + multi-pin pivot**：`docs/brainstorms/2026-05-04-tabs-create-and-nav-requirements.md`。v1 范围 = `open_url(url, active=false)` + **pinnedTabs 升级为 array**（schema migration: SessionMeta `pinnedTabId`/`pinnedOrigin` → `pinnedTabs: Array<{tabId, origin}>`）+ URL allow-list (R6 显式 `protocol === 'http:'\|'https:'`) + IDN punycode 显示（防 homograph）+ always-high confirm。v1 估时 2-3 天。**`nav_pinned_tab` cross-origin nav 推 v1.1 单独 brainstorm**——review 暴露 4 invariant 互动复杂度（R6 inTransitOrigin / R7 atomic swap / R9 CDP detach / R10 task-mutex）+ ADV-1 Premise collapse（多步表单实际是 click-induced nav 而非 nav 工具能解）。Resolve-Before-Planning 4 项：schema migration 路径 / tabId 选择策略 / R7 cross-session 在 multi-pin 下行为 / URL.protocol 边界 | → `/ce:plan` |
+| **3** | 控制 Chrome 浏览器 | ✅ **SHIPPED 2026-05-05** (manifest 0.5.2, branch `feat/multi-pin-open-url-v15`)：v1.5 Path A 全闭环 = `open_url(url, active=false)` + `focus_tab(tabId)` + **pinnedTabs[] schema** + per-iteration `currentFocusTabId` refresh + multi-select PinnedTabDropdown UI + URL allow-list (R6 显式 `protocol === 'http:'\|'https:'`) + IDN punycode 显示（防 homograph）+ always-high confirm + per-call SkillsList badge。10 task / 572 tests pass / @deprecated legacy single-pin fields 完全删除。**`nav_pinned_tab` cross-origin nav 仍推 v1.1 单独 brainstorm**——pre-multi-pin review 暴露 4 invariant 互动复杂度（R6 inTransitOrigin / R7 atomic swap / R9 CDP detach / R10 task-mutex）+ ADV-1 Premise collapse；R11 click-induced nav false-positive 才是用户最常见痛点，v1.5.1 评估优先级。Trace doc → `docs/solutions/2026-05-03-multi-session-invariant-trace.md` v1.5 章节 | 完成；v1.5.1 backlog 见同 doc 末尾 |
 | **3.1** | nav_pinned_tab cross-origin (defer) | ⚠️ **推 v1.1**：原稿（pre-multi-pin）暴露 4 P0（SEC-2 server-side redirect / SEC-5 pin-in-transit 永久 DoS / ADV-2 inTransitOrigin race basis / ADV-3 shared-pin sessions broken）+ R11 click-induced false-positive 才是用户最常见痛点。需独立 brainstorm 收窄 4 invariant 设计 + 评估 R11 false-positive 修是否更高 ROI | 单独 `/ce:brainstorm` 在 multi-pin v1 ship 后；评估"R11 click-nav false-positive 修"作为更轻量替代 |
 | **4** | 行为录制 + AI 回放循环操作 | ⚠️ **与 §2 "操作录制 → Skill 自动生成"重叠，需收窄**：关键 tradeoff = 机械回放（fast，selector 易失效）vs LLM-assisted 回放（智能，token 翻倍）；参数化 + 数据源（剪贴板 / sheet / sidepanel UI 输入）+ 错误恢复策略未定。隐藏需求可能是 "**手动跑一次让 AI 学会**"（trace-as-skill-seed），与方向 2 (d) 收敛到同一形态 | 单独 `/ce:brainstorm` 收窄到 trace-as-skill-seed 模式 + 录制粒度（DOM 事件 vs CDP）+ 参数化模型 |
 
@@ -170,7 +170,7 @@ ce:review autofix sweep 时已提但未做的项，不影响 R24/R25/R26 accepta
 1. **多轮对话上下文（§6）** — Half A 半小时 + Half B 决策 1 个；用户已报告，用户痛感最直接
 2. **多模态输入图片（§5 #1）** — ✅ **PR #20 merged 2026-05-04**：15 task / 339→461 tests (+122 net) / R1-R15 全闭环；user acceptance 期间发现 2 个跨层集成 bug（first-task pin race + screenshotPreview wire transit）— 修复并 push (commits `0927031` + `517435d`) 已合并。Phase 5 v1.1 backlog 见 §8
 3. **Provider + Model 能力中心化管理（§7）** — 用户 2026-05-04 反馈；Settings 改 dropdown + 删手填 BaseURL；解锁中国 provider vision 完整接入路径
-4. **Chrome narrow（§5 #3）** — `tabs.create` + `open_url`，1-2 天，与 Phase 3 同套机制
+4. **Chrome narrow（§5 #3）** — ✅ **SHIPPED 2026-05-05** as v1.5 Path A: `open_url` + `focus_tab` + multi-pin schema. 10 task / 572 tests pass / manifest 0.5.2. v1.5.1 backlog (phantom pin pruning / tabTargets wire drop / ownerToken refresh / dropdown live-refresh) 见 `docs/solutions/2026-05-03-multi-session-invariant-trace.md`
 5. **Gemini provider** — 最小补丁；与 §7 协同（自家 inline_data + host_permission 同期评估），独立 SSE 协议另行 brainstorm
 6. **Ollama 本地模型** — 与 BYOK 定位契合；manifest + streaming 协议适配
 7. **快捷键支持** — 打磨项，零结构性风险

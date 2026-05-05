@@ -2,17 +2,18 @@
 //
 // Reads the lightweight session_index (D9) — the same key the drawer
 // uses to render the session list — to enumerate every active session's
-// pinnedTabId. Used by the SW dispatcher to compute
+// pinned tab ids. Used by the SW dispatcher to compute
 // `crossSessionPinnedTabIds` per chat-start / resume-task and by
 // write-class tools (R7 lock) to refuse operations on a tab another
 // session legitimately owns (close_tabs cross-session intent =
 // "session A should not be allowed to close session B's pinned tab").
 //
 // Why session_index and not per-session meta:
-//   - session_index already carries pinnedTabId (see
-//     SessionIndexEntry.pinnedTabId in types.ts). It's the canonical
-//     light-weight registry and is updated atomically with meta writes
-//     via D9 single-call set().
+//   - session_index already carries pinned tab ids (see
+//     `SessionIndexEntry.pinnedTabIds[]` in types.ts — v1.5 multi-pin
+//     replaced the single `pinnedTabId` field with this flat array).
+//     It's the canonical light-weight registry and is updated atomically
+//     with meta writes via D9 single-call set().
 //   - Reading per-session meta for every active session would multiply
 //     storage round-trips on every chat-start; the index is one read.
 //
