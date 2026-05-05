@@ -3,7 +3,7 @@
   "name": "Pie",
   "version": "0.5.2",
   "description": "BYOK Chrome Extension Agent — bring your own API key for page understanding, multi-step task automation, and smart tab management.",
-  "permissions": ["activeTab", "sidePanel", "storage", "tabs", "tabGroups", "scripting", "debugger"],
+  "permissions": ["activeTab", "sidePanel", "storage", "tabs", "tabGroups", "scripting", "debugger", "webNavigation"],
   "host_permissions": [
     "<all_urls>",
     "https://api.anthropic.com/*",

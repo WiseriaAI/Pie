@@ -75,7 +75,7 @@
 | **2** | Skill 脚本化（"完整 skill"） | ⚠️ **scope 含糊未深入**：必须先 narrow 含义到 (a) JS 自定义 tool handler / (b) DSL 描述固定步骤 / (c) prompt 加 control flow / (d) 录制+回放（与 #4 重叠）中的某一个。Manifest V3 CSP 对 (a) 是硬约束（禁 `eval`/`Function`，要 sandboxed iframe / Worker，BYOK trust model 重审）；(c) 与 LLM 自身 reasoning 重叠 YAGNI 风险高 | 单独 `/ce:brainstorm` 先 narrow 哪一种含义 + 当前 skill 系统真正卡住的用例 |
 | **3** | 控制 Chrome 浏览器 | ✅ **SHIPPED 2026-05-05** (manifest 0.5.2, branch `feat/multi-pin-open-url-v15`, PR #21)：v1.5 Path A 全闭环 = `open_url(url, active=false)` + `focus_tab(tabId)` + **pinnedTabs[] schema** + per-iteration `currentFocusTabId` refresh + multi-select PinnedTabDropdown UI + URL allow-list (R6 显式 `protocol === 'http:'\|'https:'`) + IDN punycode 显示（防 homograph）+ always-high confirm + per-call SkillsList badge。10 task / 572 tests pass / @deprecated legacy single-pin fields 完全删除。**`nav_pinned_tab` cross-origin nav 仍推 v1.1 单独 brainstorm**——pre-multi-pin review 暴露 4 invariant 互动复杂度（R6 inTransitOrigin / R7 atomic swap / R9 CDP detach / R10 task-mutex）+ ADV-1 Premise collapse；R11 click-induced nav false-positive 才是用户最常见痛点，v1.5.1 评估优先级。Trace doc → `docs/solutions/2026-05-03-multi-session-invariant-trace.md` v1.5 章节；engineering patterns（phased deletion / dual-write shim / merge-not-replace snapshot / cross-storage integration tests）→ `docs/solutions/2026-05-05-cross-cutting-type-migration-lessons.md` | 完成；v1.5.1 backlog 见 §10 |
 | **3.1** | nav_pinned_tab cross-origin (defer) | ⚠️ **推 v1.1**：原稿（pre-multi-pin）暴露 4 P0（SEC-2 server-side redirect / SEC-5 pin-in-transit 永久 DoS / ADV-2 inTransitOrigin race basis / ADV-3 shared-pin sessions broken）+ R11 click-induced false-positive 才是用户最常见痛点。需独立 brainstorm 收窄 4 invariant 设计 + 评估 R11 false-positive 修是否更高 ROI | 单独 `/ce:brainstorm` 在 multi-pin v1 ship 后；评估"R11 click-nav false-positive 修"作为更轻量替代 |
-| **4** | 行为录制 + AI 回放循环操作 | ⚠️ **与 §2 "操作录制 → Skill 自动生成"重叠，需收窄**：关键 tradeoff = 机械回放（fast，selector 易失效）vs LLM-assisted 回放（智能，token 翻倍）；参数化 + 数据源（剪贴板 / sheet / sidepanel UI 输入）+ 错误恢复策略未定。隐藏需求可能是 "**手动跑一次让 AI 学会**"（trace-as-skill-seed），与方向 2 (d) 收敛到同一形态 | 单独 `/ce:brainstorm` 收窄到 trace-as-skill-seed 模式 + 录制粒度（DOM 事件 vs CDP）+ 参数化模型 |
+| **4** | 行为录制 + AI 回放循环操作 | ✅ **SHIPPED 2026-05-05** (v1，单 tab + trace-as-Skill 形态)：sidepanel Record button → DOM event capture → 序列化为中文 promptTemplate + 推断 allowedTools/parameters → 写入 user-authored Skill via 现有 saveSkill。回放完全复用现有 ReAct + click/type 工具路径。所有 Phase 2.6 capability + Phase 3 cross-tab + M3 multi-session 自动兼容。trace doc → `docs/solutions/2026-05-05-record-and-replay-v1-invariant-trace.md`；plan → `docs/superpowers/plans/2026-05-05-record-and-replay.md`。v1.1 backlog：cross-tab 录制 / N 行数据循环 / 重录覆盖 UX | 完成 |
 
 **4 个方向都不是单条 PR 能拿下的 scope**——除了方向 1 已 nail，2/3/4 各自至少 1 轮独立 brainstorm 才能进 plan。
 
@@ -177,6 +177,8 @@ ce:review autofix sweep 时已提但未做的项，不影响 R24/R25/R26 accepta
 | **PinnedTabDropdown 列表 live refresh** | 低 | `useEffect(..., [])` 只在 mount 拉一次 tab list；user 多选期间 dropdown 长时间打开，浏览器开/关 tab 时列表 stale。修法：subscribe `chrome.tabs.onCreated` / `onRemoved` 直到 dropdown 关闭 |
 | **`nav_pinned_tab` cross-origin nav** | 大 | 见 §5 #3.1 — pre-multi-pin review 暴露 4 P0 + R11 click-induced false-positive；推 v1.1 单独 brainstorm 时一并评估"R11 false-positive 修"作为更轻量替代 |
 | **`SessionConfirmCard.PinnedTabDriftPayload.pinnedOrigin`** | 维护 | 这个 wire-format 字段名沿用 single-pin 命名；语义上现在是"pinned tab 触发 drift 的那个 origin"，可考虑下次顺手改为 `driftedOrigin` + `driftedTabId` 让多 pin 语义更清晰。无功能影响 |
+
+- **录制 v1.1 待办**：cross-tab 录制（用户在录制中开新 tab 也录入）；数据循环（N 行 csv → 跑 N 次同一步骤）；重录覆盖快捷入口（保 author='user' 路径）
 
 ---
 
