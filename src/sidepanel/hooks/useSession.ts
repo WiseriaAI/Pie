@@ -10,7 +10,7 @@ import {
   updateLastAccessed,
 } from "@/lib/sessions/storage";
 import { hardDeleteSession } from "@/lib/sessions/lifecycle";
-import type { SessionStatus } from "@/lib/sessions/types";
+import type { SessionMeta, SessionStatus } from "@/lib/sessions/types";
 import { deriveTitleFromMessages } from "@/lib/sessions/title";
 
 /**
@@ -833,6 +833,12 @@ export function useSession(): UseSession {
               // (auto mode never persists pin) doesn't strip it. Unit 5
               // will move this capture to the SW chat-start path.
               pinMode: "task",
+              // v1.5 — write source-of-truth pinnedTabs[]; storage derives
+              // legacy pinnedTabId/pinnedOrigin from this array on persist.
+              // Read paths still use legacy fields here until Task 9 migrates.
+              pinnedTabs: [
+                { tabId: pin.pinnedTabId, origin: pin.pinnedOrigin },
+              ],
               pinnedTabId: pin.pinnedTabId,
               pinnedOrigin: pin.pinnedOrigin,
               lastAccessedAt: Date.now(),
@@ -1000,6 +1006,12 @@ export function useSession(): UseSession {
           // resume/send needs an anchor). Without explicit pinMode the
           // storage normalize-on-write would strip the pin.
           pinMode: "task" as const,
+          // v1.5 — write source-of-truth pinnedTabs[]; storage derives
+          // legacy pinnedTabId/pinnedOrigin from this array on persist.
+          // Read paths still use legacy fields here until Task 9 migrates.
+          pinnedTabs: [
+            { tabId: pinned.pinnedTabId, origin: pinned.pinnedOrigin },
+          ],
           pinnedTabId: pinned.pinnedTabId,
           pinnedOrigin: pinned.pinnedOrigin,
           lastAccessedAt: Date.now(),
@@ -1109,6 +1121,10 @@ export function useSession(): UseSession {
       await setSessionMeta({
         ...meta,
         pinMode: "user",
+        // v1.5 — write source-of-truth pinnedTabs[]; storage derives
+        // legacy pinnedTabId/pinnedOrigin from this array on persist.
+        // Read paths still use legacy fields here until Task 9 migrates.
+        pinnedTabs: [{ tabId, origin }],
         pinnedTabId: tabId,
         pinnedOrigin: origin,
       });
@@ -1130,7 +1146,11 @@ export function useSession(): UseSession {
     // Strip pin and revert mode. Storage normalize-on-write enforces the
     // auto-mode-no-pin invariant, so passing an explicit pinMode='auto' is
     // sufficient — but we strip the fields here for clarity.
+    // v1.5 — also drop pinnedTabs[] (source of truth); otherwise storage's
+    // dual-write shim would re-synthesize legacy fields from pinnedTabs[0]
+    // and resurrect the pin.
     const next = { ...meta, pinMode: "auto" as const };
+    delete (next as { pinnedTabs?: SessionMeta["pinnedTabs"] }).pinnedTabs;
     delete (next as { pinnedTabId?: number }).pinnedTabId;
     delete (next as { pinnedOrigin?: string }).pinnedOrigin;
     await setSessionMeta(next);

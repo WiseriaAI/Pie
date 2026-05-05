@@ -87,14 +87,16 @@ describe("createSession", () => {
       pinnedTabId: 42,
       pinnedOrigin: "https://docs.google.com",
     });
-    // v1.5: legacy fields are converted to pinnedTabs[] internally, not persisted
+    // v1.5: legacy input is converted to pinnedTabs[] AND the persisted shape
+    // dual-writes legacy fields synthesized from pinnedTabs[0] for pre-migration
+    // consumers (Tasks 3-9). Task 10 removes the dual-write.
     expect(meta.pinnedTabs).toEqual([{ tabId: 42, origin: "https://docs.google.com" }]);
-    expect(meta.pinnedTabId).toBeUndefined();
-    expect(meta.pinnedOrigin).toBeUndefined();
+    expect(meta.pinnedTabId).toBe(42);
+    expect(meta.pinnedOrigin).toBe("https://docs.google.com");
     const reread = await getSessionMeta(meta.id);
     expect(reread!.pinnedTabs).toEqual([{ tabId: 42, origin: "https://docs.google.com" }]);
-    expect(reread!.pinnedTabId).toBeUndefined();
-    expect(reread!.pinnedOrigin).toBeUndefined();
+    expect(reread!.pinnedTabId).toBe(42);
+    expect(reread!.pinnedOrigin).toBe("https://docs.google.com");
   });
 
   it("registers the session in session_index immediately", async () => {
@@ -405,7 +407,9 @@ describe("updateLastAccessed", () => {
     const after = await getSessionMeta(meta.id);
     expect(after!.status).toBe("paused");
     expect(after!.pinnedTabs).toEqual([{ tabId: 99, origin: "https://x.com" }]);
-    expect(after!.pinnedTabId).toBeUndefined();
+    // Dual-write: legacy fields synthesized from pinnedTabs[0].
+    expect(after!.pinnedTabId).toBe(99);
+    expect(after!.pinnedOrigin).toBe("https://x.com");
     const list = await listSessionIndex();
     expect(list[0]!.status).toBe("paused");
     expect(list[0]!.pinnedTabIds).toEqual([99]);
@@ -913,7 +917,9 @@ describe("M5 — pinMode pin-storage invariants", () => {
     });
     expect(meta.pinMode).toBe("user");
     expect(meta.pinnedTabs).toEqual([{ tabId: 42, origin: "https://example.com" }]);
-    expect(meta.pinnedTabId).toBeUndefined();
+    // Dual-write: legacy fields synthesized from pinnedTabs[0].
+    expect(meta.pinnedTabId).toBe(42);
+    expect(meta.pinnedOrigin).toBe("https://example.com");
 
     const idx = await listSessionIndex();
     const entry = idx.find((e) => e.id === meta.id);
@@ -928,32 +934,37 @@ describe("M5 — pinMode pin-storage invariants", () => {
     });
     expect(meta.pinMode).toBe("task");
     expect(meta.pinnedTabs).toEqual([{ tabId: 5, origin: "https://x.com" }]);
-    expect(meta.pinnedTabId).toBeUndefined();
+    // Dual-write: legacy fields synthesized from pinnedTabs[0].
+    expect(meta.pinnedTabId).toBe(5);
+    expect(meta.pinnedOrigin).toBe("https://x.com");
   });
 
-  it("setSessionMeta strips legacy pinnedTabId/pinnedOrigin on write (defense-in-depth)", async () => {
+  it("setSessionMeta synthesizes legacy pinnedTabId/pinnedOrigin from pinnedTabs[0] (back-compat dual-write)", async () => {
     const meta = await createSession({
       pinnedTabs: [{ tabId: 9, origin: "https://x.com" }],
       pinMode: "user",
     });
 
-    // Caller accidentally passes legacy fields alongside pinnedTabs[].
-    // Storage must strip them before persisting.
+    // Caller passes stale legacy fields alongside pinnedTabs[]. Storage
+    // ignores them and re-synthesizes from pinnedTabs[0].
     await setSessionMeta({
       ...meta,
-      pinnedTabId: 9,
-      pinnedOrigin: "https://x.com",
+      pinnedTabId: 999,
+      pinnedOrigin: "https://stale.com",
     });
 
     const back = await getSessionMeta(meta.id);
     expect(back?.pinMode).toBe("user");
     expect(back?.pinnedTabs).toEqual([{ tabId: 9, origin: "https://x.com" }]);
-    expect(back?.pinnedTabId).toBeUndefined();
-    expect(back?.pinnedOrigin).toBeUndefined();
+    // Synthesized from pinnedTabs[0], NOT from the stale caller-supplied values.
+    expect(back?.pinnedTabId).toBe(9);
+    expect(back?.pinnedOrigin).toBe("https://x.com");
 
     const idx = await listSessionIndex();
     const entry = idx.find((e) => e.id === meta.id);
     expect(entry?.pinnedTabIds).toEqual([9]);
+    // Index continues to write only the new array shape (pinnedTabId on
+    // SessionIndexEntry is @deprecated and unused — Task 10 removes it).
     expect(entry?.pinnedTabId).toBeUndefined();
   });
 
@@ -1044,8 +1055,9 @@ describe("M5 — upgradeAutoToTaskAtChatStart (chat-start hook)", () => {
     const back = await getSessionMeta(meta.id);
     expect(back?.pinMode).toBe("task");
     expect(back?.pinnedTabs).toEqual([{ tabId: 42, origin: "https://example.com" }]);
-    expect(back?.pinnedTabId).toBeUndefined();
-    expect(back?.pinnedOrigin).toBeUndefined();
+    // Dual-write: legacy fields synthesized from pinnedTabs[0].
+    expect(back?.pinnedTabId).toBe(42);
+    expect(back?.pinnedOrigin).toBe("https://example.com");
 
     // Index also updated
     const idx = await listSessionIndex();
@@ -1141,7 +1153,9 @@ describe("M5 — upgradeAutoToTaskAtChatStart (chat-start hook)", () => {
     const back = await getSessionMeta(id);
     expect(back?.pinMode).toBe("task");
     expect(back?.pinnedTabs).toEqual([{ tabId: 42, origin: "https://new.com" }]);
-    expect(back?.pinnedTabId).toBeUndefined();
+    // Dual-write: legacy fields synthesized from pinnedTabs[0].
+    expect(back?.pinnedTabId).toBe(42);
+    expect(back?.pinnedOrigin).toBe("https://new.com");
   });
 });
 
@@ -1342,9 +1356,11 @@ describe("v1.5 multi-pin storage", () => {
     expect(back?.pinnedTabs).toEqual([{ tabId: 5, origin: "https://x.com" }]);
   });
 
-  it("setSessionMeta strips legacy pinnedTabId/pinnedOrigin on write (defense-in-depth)", async () => {
-    // Caller still has legacy fields on the type (Tasks 3-9 haven't migrated yet).
-    // Verify storage drops them on write.
+  it("setSessionMeta synthesizes legacy pinnedTabId/pinnedOrigin from pinnedTabs[0] (back-compat dual-write)", async () => {
+    // Caller still carries legacy fields on the type (Tasks 3-9 haven't
+    // migrated yet). Storage ignores caller-supplied values and re-synthesizes
+    // them from pinnedTabs[0] on every write — the persisted shape always
+    // carries both forms in sync until Task 10 removes the shim.
     const meta = {
       id: "s5",
       createdAt: 0,
@@ -1353,26 +1369,45 @@ describe("v1.5 multi-pin storage", () => {
       messages: [],
       pinMode: "task" as const,
       pinnedTabs: [{ tabId: 7, origin: "https://y.com" }],
-      // Legacy fields the type still allows:
+      // Caller-supplied stale legacy fields — should be ignored and re-synthesized.
       pinnedTabId: 999,
       pinnedOrigin: "https://stale.com",
     };
     await setSessionMeta(meta);
     const back = await getSessionMeta("s5");
     expect(back?.pinnedTabs).toEqual([{ tabId: 7, origin: "https://y.com" }]);
+    // Synthesized from pinnedTabs[0], NOT the stale caller-supplied values.
+    expect(back?.pinnedTabId).toBe(7);
+    expect(back?.pinnedOrigin).toBe("https://y.com");
+  });
+
+  it("setSessionMeta omits legacy fields when pinnedTabs empty/absent (auto mode)", async () => {
+    const meta: SessionMeta = {
+      id: "s6",
+      createdAt: 0,
+      lastAccessedAt: 0,
+      status: "active",
+      messages: [],
+      pinMode: "auto",
+    };
+    await setSessionMeta(meta);
+    const back = await getSessionMeta("s6");
+    expect(back?.pinnedTabs).toBeUndefined();
     expect(back?.pinnedTabId).toBeUndefined();
     expect(back?.pinnedOrigin).toBeUndefined();
   });
 
-  it("createSession accepts legacy pinnedTabId/pinnedOrigin and converts to pinnedTabs[]", async () => {
+  it("createSession accepts legacy pinnedTabId/pinnedOrigin and converts to pinnedTabs[] (v1.5 back-compat)", async () => {
     // Back-compat for existing test fixtures and pre-migration callers.
     const meta = await createSession({
       pinnedTabId: 5,
       pinnedOrigin: "https://x.com",
     });
     expect(meta.pinnedTabs).toEqual([{ tabId: 5, origin: "https://x.com" }]);
-    expect(meta.pinnedTabId).toBeUndefined();
-    expect(meta.pinnedOrigin).toBeUndefined();
+    // Dual-write synthesized: legacy fields present in persisted meta so
+    // pre-migration consumers (Tasks 3-9) keep working.
+    expect(meta.pinnedTabId).toBe(5);
+    expect(meta.pinnedOrigin).toBe("https://x.com");
     expect(meta.pinMode).toBe("user"); // existing back-compat default
   });
 

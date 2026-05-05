@@ -186,7 +186,9 @@ export async function createSession(
   // I-1 — scrub ImageAttachment.data bytes before persisting, consistent
   // with setSessionMeta's R10 scrub. Today no caller passes ImageAttachments
   // to createSession, but the surface is open; this closes it defensively.
-  const meta = scrubAttachmentBytes(rawMeta);
+  // v1.5 dual-write — synthesize legacy pinned* fields from pinnedTabs[0]
+  // so the persisted shape carries both forms in sync (mirrors setSessionMeta).
+  const meta = syncLegacyFromArray(scrubAttachmentBytes(rawMeta));
 
   const agent: SessionAgentState = {
     agentMessages: [],
@@ -254,6 +256,31 @@ function scrubAttachmentBytes(meta: SessionMeta): SessionMeta {
 }
 
 /**
+ * v1.5 back-compat shim — synthesize legacy `pinnedTabId`/`pinnedOrigin`
+ * fields from `pinnedTabs[0]` (or omit them when `pinnedTabs` is empty/absent).
+ *
+ * Caller-supplied legacy fields are dropped first (defense-in-depth against
+ * stale values), then re-synthesized from the primary pin. This keeps every
+ * persisted SessionMeta carrying both shapes in sync during the Tasks 3-9
+ * consumer migration window. Task 10 will delete this shim along with the
+ * legacy fields on the type.
+ */
+function syncLegacyFromArray(meta: SessionMeta): SessionMeta {
+  const next: SessionMeta = { ...meta };
+  // Drop any caller-supplied legacy fields first (defense against stale).
+  delete next.pinnedTabId;
+  delete next.pinnedOrigin;
+  // Synthesize legacy from pinnedTabs[0] if present (back-compat shim,
+  // removed in Task 10 when types delete the fields).
+  const primary = next.pinnedTabs?.[0];
+  if (primary) {
+    next.pinnedTabId = primary.tabId;
+    next.pinnedOrigin = primary.origin;
+  }
+  return next;
+}
+
+/**
  * Persist session meta. If `status`, `pinnedTabIds`, `lastAccessedAt`, or
  * `title` differ from what's currently in the index, the index is updated
  * in the same atomic batch (D9). If the session is missing from the index
@@ -263,19 +290,17 @@ function scrubAttachmentBytes(meta: SessionMeta): SessionMeta {
  * persisting. Bytes live in the in-memory image cache; placeholders survive
  * in storage so identity is preserved for warm-resume hydration.
  *
- * v1.5 defense-in-depth — strips legacy `pinnedTabId`/`pinnedOrigin` fields
- * before persisting even if a pre-migration caller passes them. Storage never
- * writes legacy fields; consumers (Tasks 3–9) migrate their own callsites.
+ * v1.5 dual-write — re-synthesizes legacy `pinnedTabId`/`pinnedOrigin` from
+ * `pinnedTabs[0]` before persisting (caller-supplied legacy values are
+ * ignored). The persisted shape always carries both forms in sync; Tasks
+ * 3-9 migrate consumers to read `pinnedTabs[]`; Task 10 removes the shim.
  */
 export async function setSessionMeta(meta: SessionMeta): Promise<void> {
-  // Defense-in-depth: strip legacy fields before persisting. Tasks 3-9 will
-  // migrate callsites; until then any caller still carrying legacy fields on
-  // the object won't pollute storage.
-  const strippedMeta: SessionMeta = { ...meta };
-  delete strippedMeta.pinnedTabId;
-  delete strippedMeta.pinnedOrigin;
+  // v1.5 dual-write: synthesize legacy fields from pinnedTabs[0] so the
+  // panel hook and any other pre-migration reader sees consistent values.
+  const syncedMeta = syncLegacyFromArray(meta);
 
-  const scrubbedMeta = scrubAttachmentBytes(strippedMeta);
+  const scrubbedMeta = scrubAttachmentBytes(syncedMeta);
   const index = await readIndex();
   const nextEntry = indexEntryFromMeta(scrubbedMeta);
   const existingEntry = index.find((e) => e.id === scrubbedMeta.id);
