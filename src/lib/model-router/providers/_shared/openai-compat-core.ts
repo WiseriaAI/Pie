@@ -1,5 +1,5 @@
 import type { ModelConfig } from "@/lib/model-router";
-import type { AgentMessage, ContentBlock, ToolDefinition, StreamEvent } from "@/lib/model-router/types";
+import type { AgentMessage, ToolDefinition, StreamEvent } from "@/lib/model-router/types";
 import { readSSELines } from "@/lib/model-router/sse";
 
 /**
@@ -35,7 +35,6 @@ interface OpenAIWireMessage {
 }
 
 function toWireMessages(messages: AgentMessage[]): OpenAIWireMessage[] {
-  // [identical to current openai.ts toWireMessages — copy verbatim]
   const result: OpenAIWireMessage[] = [];
   for (const msg of messages) {
     if (msg.role === "system") {

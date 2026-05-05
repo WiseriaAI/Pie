@@ -63,4 +63,27 @@ describe("streamChatOpenAICompat", () => {
     expect(done.stopReason).toBe("tool_calls");
     fetchMock.mockRestore();
   });
+
+  it("hooks.authHeader replaces default Bearer (not merged)", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      mockSseResponse([
+        'data: {"choices":[{"delta":{"content":"hi"}}]}',
+        "data: [DONE]",
+      ]),
+    );
+    const config: ModelConfig = {
+      provider: "bailian",
+      model: "qwen-max",
+      apiKey: "ignored",
+      baseUrl: "https://example.test",
+    };
+    for await (const _ of streamChatOpenAICompat(config, [{ role: "user", content: "hi" }], undefined, undefined, {
+      authHeader: () => ({ "X-Custom-Auth": "secret-token" }),
+    })) { /* drain */ }
+    const init = fetchMock.mock.calls[0]![1] as RequestInit;
+    const headers = init.headers as Record<string, string>;
+    expect(headers["X-Custom-Auth"]).toBe("secret-token");
+    expect(headers.authorization).toBeUndefined();
+    fetchMock.mockRestore();
+  });
 });
