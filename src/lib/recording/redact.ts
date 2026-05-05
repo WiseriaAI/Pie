@@ -24,7 +24,7 @@ interface RedactResult {
   placeholderName?: string;
 }
 
-const SENSITIVE_TEXT_PATTERN = /password|密码|secret|token|api[._-]?key|auth|cvv|cvc|otp|验证码/i;
+const SENSITIVE_TEXT_PATTERN = /password|密码|secret|token|api[._\-\s]?key|\bauth(?:[._\-\s]|$)|cvv|cvc|otp|验证码/i;
 const CC_AUTOCOMPLETE_PATTERN = /^cc-(number|cvc|exp|csc)$/i;
 const PASSWORD_AUTOCOMPLETE_PATTERN = /^(new-password|current-password)$/i;
 
@@ -56,9 +56,9 @@ function inferPlaceholderName(text: string): string {
   if (/password|密码/.test(lower)) return "password";
   if (/cvv|cvc/.test(lower)) return "card_security_code";
   if (/otp|验证码/.test(lower)) return "verification_code";
+  if (/\bauth(?:[._\-\s]|$)/.test(lower)) return "auth_value";
   if (/token/.test(lower)) return "token";
-  if (/api[._-]?key/.test(lower)) return "api_key";
+  if (/api[._\-\s]?key/.test(lower)) return "api_key";
   if (/secret/.test(lower)) return "secret";
-  if (/auth/.test(lower)) return "auth_value";
   return "sensitive_value";
 }

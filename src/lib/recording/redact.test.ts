@@ -53,4 +53,22 @@ describe("detectSensitive", () => {
     expect(detectSensitive({ type: "text", autocomplete: "cc-number" }).placeholderName).toBe("cc_number");
     expect(detectSensitive({ type: "password" }).placeholderName).toBe("password");
   });
+
+  it("does NOT redact common 'auth' false-positives like Author / Authority / Authentic", () => {
+    expect(detectSensitive({ type: "text", ariaLabel: "Author name" })).toEqual({ redacted: false });
+    expect(detectSensitive({ type: "text", placeholder: "Authority" })).toEqual({ redacted: false });
+    expect(detectSensitive({ type: "text", name: "authentic_review" })).toEqual({ redacted: false });
+    expect(detectSensitive({ type: "text", ariaLabel: "Authorize purchase" })).toEqual({ redacted: false });
+  });
+
+  it("does redact genuine 'auth' fields (auth_token / auth key / auth.token)", () => {
+    expect(detectSensitive({ type: "text", name: "auth_token" })).toMatchObject({ redacted: true, placeholderName: "auth_value" });
+    expect(detectSensitive({ type: "text", ariaLabel: "Auth key" })).toMatchObject({ redacted: true });
+    expect(detectSensitive({ type: "text", placeholder: "auth.token" })).toMatchObject({ redacted: true });
+  });
+
+  it("redacts 'API key' with space between (natural-language form)", () => {
+    expect(detectSensitive({ type: "text", ariaLabel: "API key" })).toMatchObject({ redacted: true, placeholderName: "api_key" });
+    expect(detectSensitive({ type: "text", placeholder: "API Key" })).toMatchObject({ redacted: true, placeholderName: "api_key" });
+  });
 });
