@@ -988,7 +988,11 @@ describe("M5 — pinMode normalize-on-write", () => {
     expect(entry?.pinnedTabId).toBeUndefined();
   });
 
-  it("setSessionMeta() infers pinMode='task' for legacy session with stepIndex>0 (in-flight)", async () => {
+  // v1.5 clean break: pin-state.ts helpers no longer infer from legacy
+  // pinnedTabId; they operate on pinnedTabs[] only. This storage-layer
+  // test of the M5 legacy-inference path is superseded by the v1.5 helpers.
+  // Task 2 migrates storage.ts to pinnedTabs[] and removes this test.
+  it.skip("setSessionMeta() infers pinMode='task' for legacy session with stepIndex>0 (in-flight)", async () => {
     const id = "legacy-session-2";
     const legacyMeta: SessionMeta = {
       id,
@@ -1091,7 +1095,12 @@ describe("M5 — clearTaskPinAtSessionEnd (emitDone hook)", () => {
     expect(cleared).toBe(false);
   });
 
-  it("downgrades legacy in-flight session (pinMode undefined + has pin)", async () => {
+  // v1.5 clean break: clearTaskPinIfActive now only checks for pinMode==='task'
+  // (no legacy pinnedTabId fallback). Legacy sessions with no explicit pinMode
+  // but a stale pinnedTabId are not cleared by this helper anymore. Task 2
+  // migrates clearTaskPinAtSessionEnd (storage.ts) to use pinnedTabs[] and
+  // removes this legacy-inference scenario.
+  it.skip("downgrades legacy in-flight session (pinMode undefined + has pin)", async () => {
     // Legacy M3 session shape (pre-M5): pinMode undefined, has pin.
     // emitDone treats this as a task that just ended.
     const id = "legacy-session";
@@ -1242,7 +1251,12 @@ describe("M5 — upgradeAutoToTaskAtChatStart (chat-start hook)", () => {
     expect(back?.pinnedTabId).toBe(42);
   });
 
-  it("does NOT upgrade legacy session with stepIndex>0 (resumed task)", async () => {
+  // v1.5 clean break: getEffectivePinMode no longer infers from legacy pinnedTabId.
+  // upgradeAutoToTaskAtChatStart now reads pinnedTabs[] (not pinnedTabId) to
+  // determine whether a session is already task-pinned. This legacy scenario
+  // (pinnedTabId set, no pinnedTabs) is removed from the runtime model; Task 2
+  // migrates upgradeAutoToTaskAtChatStart in storage.ts and removes this test.
+  it.skip("does NOT upgrade legacy session with stepIndex>0 (resumed task)", async () => {
     // Legacy in-flight session — getEffectivePinMode infers 'task',
     // upgrade is a no-op, original pin preserved.
     const id = "legacy-in-flight";

@@ -9,102 +9,97 @@
 //             end. R7 registry includes. Drift check skipped (user intent
 //             is fixed by definition).
 //
-// Migration: legacy sessions (pinMode field undefined) go through
-// getEffectivePinMode which infers from agent.stepIndex (in-flight legacy
-// session = 'task'; otherwise = 'auto'). Storage layer then persists the
-// inferred mode on next setSessionMeta write (lazy normalization).
+// v1.5 (Path A multi-pin): helpers operate exclusively on `pinnedTabs[]`.
+// Legacy `pinnedTabId` / `pinnedOrigin` fields are @deprecated and no longer
+// written or read by these helpers. Consumers migrate in Tasks 2-9; Task 10
+// deletes the deprecated field declarations.
 
 import type { SessionMeta, SessionAgentState } from "./types";
 
 export type PinMode = "auto" | "task" | "user";
+export type Pin = { tabId: number; origin: string };
+
+/** Read the primary (oldest) pin. Returns undefined when no pin. */
+export function getPrimaryPin(meta: SessionMeta): Pin | undefined {
+  if (meta.pinnedTabs && meta.pinnedTabs.length > 0) return meta.pinnedTabs[0];
+  return undefined;
+}
 
 /**
- * Returns the effective pin mode for a session.
- *
- * - If `meta.pinMode` is set, return it verbatim.
- * - Else infer from legacy fields:
- *    - has `pinnedTabId` AND agent has `stepIndex > 0` (in-flight) → 'task'
- *    - otherwise → 'auto' (next setSessionMeta will clear stale legacy pin)
- *
- * The agent parameter is null when the caller doesn't have access to agent
- * state (e.g. UI components reading meta only). In that case we default to
- * 'auto' rather than guessing — the storage normalize-on-write path will
- * upgrade to 'task' later if it has the agent state available.
+ * Append a pin. Idempotent on duplicate tabId. Caller is responsible for
+ * pinMode (open_url during agent execution invariantly has mode='task').
+ */
+export function addPinToMeta(meta: SessionMeta, pin: Pin): SessionMeta {
+  const current = meta.pinnedTabs ?? [];
+  if (current.some((p) => p.tabId === pin.tabId)) return meta;
+  return { ...meta, pinnedTabs: [...current, pin] };
+}
+
+/** Remove the entry matching tabId. No-op when absent. */
+export function removePinFromMeta(meta: SessionMeta, tabId: number): SessionMeta {
+  const current = meta.pinnedTabs ?? [];
+  if (!current.some((p) => p.tabId === tabId)) return meta;
+  return { ...meta, pinnedTabs: current.filter((p) => p.tabId !== tabId) };
+}
+
+/**
+ * Effective pin mode. Reads explicit pinMode if set; else infers:
+ *   - non-empty pinnedTabs[] AND in-flight agent → 'task'
+ *   - otherwise → 'auto'
  */
 export function getEffectivePinMode(
   meta: SessionMeta,
   agent: SessionAgentState | null,
 ): PinMode {
   if (meta.pinMode) return meta.pinMode;
-  if (
-    typeof meta.pinnedTabId === "number" &&
-    agent !== null &&
-    agent.stepIndex > 0
-  ) {
-    return "task";
-  }
+  const hasPin = meta.pinnedTabs !== undefined && meta.pinnedTabs.length > 0;
+  if (hasPin && agent !== null && agent.stepIndex > 0) return "task";
   return "auto";
 }
 
 /**
- * emitDone helper — if the session is currently in 'task' mode (or legacy
- * with a stale pin), downgrade to 'auto' and clear pinnedTabId/Origin.
- *
- * Idempotent: 'auto' / 'user' modes are returned unchanged (identity).
- *
- * Legacy session with no explicit pinMode but a leftover pinnedTabId is
- * treated as a 'task' that just ended — clears the pin to keep storage
- * consistent with the post-M5 invariant ("auto mode never has pinnedTabId").
+ * emitDone helper. Task mode → flip to auto + clear array. user/auto → identity.
  */
 export function clearTaskPinIfActive(meta: SessionMeta): SessionMeta {
-  // Already auto and clean — nothing to do.
-  if (meta.pinMode === "auto") return meta;
-  // User mode is the user's explicit choice — never auto-clear.
-  if (meta.pinMode === "user") return meta;
-  // Fresh session with no pin to clear — nothing to do.
-  if (
-    meta.pinMode === undefined &&
-    meta.pinnedTabId === undefined &&
-    meta.pinnedOrigin === undefined
-  ) {
-    return meta;
-  }
-  // task mode OR legacy session with stale pin → downgrade to auto + clear.
+  if (meta.pinMode !== "task") return meta;
   const next: SessionMeta = { ...meta, pinMode: "auto" };
-  delete next.pinnedTabId;
-  delete next.pinnedOrigin;
+  delete next.pinnedTabs;
   return next;
 }
 
 /**
- * UI dropdown handler — set a user-locked pin. Overrides any prior task or
- * user pin. Mode becomes 'user'; subsequent task-end clears do not affect
- * this pin.
+ * UI dropdown handler — toggle a tab's membership in user-mode pinnedTabs[].
+ *
+ * Semantics:
+ *   - From `auto`: adds pin, flips mode → `user`.
+ *   - From `user` containing pin: removes pin. If pinnedTabs becomes empty,
+ *     flips back to `auto` (clears the array).
+ *   - From `user` not containing pin: appends pin (multi-select).
+ *   - From `task`: refuses (returns identity) — loop owns task-mode pins.
  */
-export function setUserPin(
-  meta: SessionMeta,
-  pin: { tabId: number; origin: string },
-): SessionMeta {
-  return {
-    ...meta,
-    pinMode: "user",
-    pinnedTabId: pin.tabId,
-    pinnedOrigin: pin.origin,
-  };
+export function togglePinTabUserMode(meta: SessionMeta, pin: Pin): SessionMeta {
+  if (meta.pinMode === "task") return meta;
+  const current = meta.pinnedTabs ?? [];
+  const has = current.some((p) => p.tabId === pin.tabId);
+  if (has) {
+    const remaining = current.filter((p) => p.tabId !== pin.tabId);
+    if (remaining.length === 0) {
+      const next: SessionMeta = { ...meta, pinMode: "auto" };
+      delete next.pinnedTabs;
+      return next;
+    }
+    return { ...meta, pinMode: "user", pinnedTabs: remaining };
+  }
+  return { ...meta, pinMode: "user", pinnedTabs: [...current, pin] };
 }
 
 /**
- * UI dropdown handler — user clicked the "Auto" option. Only meaningful
- * when the current mode is 'user' (the only mode the user manages directly).
- *
- * No-op for 'task' mode — the loop owns task-mode pins, the UI shouldn't
- * yank them out from under an in-flight task. (If the user wants to abort
- * the task, they use the Stop button; emitDone then clears the pin.)
+ * UI dropdown "Auto" row handler — flip user → auto, clear all pins.
+ * No-op for non-user modes (loop owns task-mode pins; auto is already cleared).
  */
 export function clearUserPin(meta: SessionMeta): SessionMeta {
   if (meta.pinMode !== "user") return meta;
   const next: SessionMeta = { ...meta, pinMode: "auto" };
-  delete next.pinnedTabId;
-  delete next.pinnedOrigin;
+  delete next.pinnedTabs;
   return next;
 }
