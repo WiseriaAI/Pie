@@ -11,7 +11,8 @@
     "https://openrouter.ai/*",
     "https://api.minimax.chat/*",
     "https://open.bigmodel.cn/*",
-    "https://dashscope.aliyuncs.com/*"
+    "https://dashscope.aliyuncs.com/*",
+    "https://generativelanguage.googleapis.com/*"
   ],
   "background": {
     "service_worker": "src/background/index.ts",
