@@ -282,14 +282,52 @@ export function installCaptureListener(): () => void {
     });
   };
 
+  // Scroll capture — fires on user scroll on document (also catches programmatic
+  // scroll triggered by user-typed Enter on a search box etc.). Debounced 500ms
+  // because scroll fires every pixel — we only want one action per "scroll
+  // gesture". Records the final scrollY position; replay reuses the existing
+  // scroll tool which scrolls by amount, so the LLM derives the right call from
+  // the natural-language label "向下滚动 / 向上滚动".
+  let scrollTimer: ReturnType<typeof setTimeout> | null = null;
+  let lastEmittedScrollY = window.scrollY;
+  const onScroll = () => {
+    if (scrollTimer !== null) clearTimeout(scrollTimer);
+    scrollTimer = setTimeout(() => {
+      const currentY = window.scrollY;
+      const delta = currentY - lastEmittedScrollY;
+      // Skip noise — ignore tiny scroll bursts (e.g. focus jumps that move
+      // by < 30px). User-intended scroll is typically multiple hundred px.
+      if (Math.abs(delta) < 30) {
+        scrollTimer = null;
+        return;
+      }
+      const direction = delta > 0 ? "向下滚动" : "向上滚动";
+      send({
+        type: "scroll",
+        label: direction,
+        value: String(Math.abs(Math.round(delta))),
+        url: location.href,
+        region: "other",
+      });
+      lastEmittedScrollY = currentY;
+      scrollTimer = null;
+    }, 500);
+  };
+
   document.addEventListener("click", onClick, true);
   document.addEventListener("change", onChange, true);
   document.addEventListener("submit", onSubmit, true);
+  // scroll bubbles only on the element scrolled, not document — but
+  // window-level scroll catches the common page-scroll case. Attaching to
+  // both window and document covers both.
+  window.addEventListener("scroll", onScroll, { passive: true });
 
   return () => {
     document.removeEventListener("click", onClick, true);
     document.removeEventListener("change", onChange, true);
     document.removeEventListener("submit", onSubmit, true);
+    window.removeEventListener("scroll", onScroll);
+    if (scrollTimer !== null) clearTimeout(scrollTimer);
     w.__pieRecordingInstalled = false;
   };
 }

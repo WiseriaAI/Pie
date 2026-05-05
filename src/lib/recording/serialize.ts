@@ -24,7 +24,10 @@ const STEP_TEMPLATES = {
     `第 ${n} 步：在${label}中输入 ${valueExpr}。`,
   select: (n: number, label: string, valueExpr: string) =>
     `第 ${n} 步：在${label}中选择 ${valueExpr}。`,
-  scroll: (n: number) => `第 ${n} 步：滚动页面到下一屏。`,
+  scroll: (n: number, label: string, deltaPx: string | undefined) =>
+    deltaPx
+      ? `第 ${n} 步：${label}约 ${deltaPx}px。`
+      : `第 ${n} 步：${label}到下一屏。`,
   submit: (n: number, label: string) => `第 ${n} 步：提交${label}所属的表单。`,
   navigate: (n: number, url: string) => `第 ${n} 步：导航到 ${url}。`,
 } as const;
@@ -50,13 +53,18 @@ interface SerializeResult {
 
 export function serialize(actions: RecordedAction[]): SerializeResult {
   const params = new Map<string, { type: string; description: string }>();
-  const tools = new Set<string>(["done", "fail"]);
+  // `scroll` is always in baseline allowedTools — it's a read-class operation
+  // (no DOM mutation, no risk), and replay LLM may need to scroll to find an
+  // element even when the original demo didn't trigger scroll capture (debounce
+  // could miss a small scroll, or the element was already in view at record
+  // time but not at replay time on a different viewport).
+  const tools = new Set<string>(["scroll", "done", "fail"]);
 
   if (actions.length === 0) {
     return {
       promptTemplate: "",
       parameters: { type: "object", properties: {}, required: [] },
-      allowedTools: ["done", "fail"],
+      allowedTools: ["done", "fail", "scroll"],
     };
   }
 
@@ -87,7 +95,7 @@ export function serialize(actions: RecordedAction[]): SerializeResult {
         break;
       }
       case "scroll":
-        line = STEP_TEMPLATES.scroll(stepN);
+        line = STEP_TEMPLATES.scroll(stepN, safeLabel, action.value);
         break;
       case "navigate":
         line = STEP_TEMPLATES.navigate(stepN, escapeUntrustedWrappers(action.url));

@@ -18,7 +18,9 @@ describe("serialize", () => {
     const r = serialize([]);
     expect(r.promptTemplate).toBe("");
     expect(r.parameters).toEqual({ type: "object", properties: {}, required: [] });
-    expect(r.allowedTools).toEqual(["done", "fail"]);
+    // scroll is baseline (read-class + helps replay when demo did not trigger
+    // scroll capture); see ALL_KNOWN_BUILT_IN_ALLOWED_TOOL_NAMES + serialize.ts.
+    expect(r.allowedTools).toEqual(["done", "fail", "scroll"]);
   });
 
   it("renders a single click step in Chinese", () => {
