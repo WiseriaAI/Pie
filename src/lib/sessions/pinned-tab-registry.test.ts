@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import "@/test/setup";
 import {
   createSession,
@@ -123,5 +123,54 @@ describe("pinned-tab-registry — getCrossSessionPinnedTabIds", () => {
   it("returns an empty set when the index is empty", async () => {
     const result = await getCrossSessionPinnedTabIds("nonexistent");
     expect(result.size).toBe(0);
+  });
+});
+
+describe("v1.5 multi-pin registry", () => {
+  beforeEach(() => chrome.storage.local.clear());
+
+  it("getActivePinnedTabs expands pinnedTabIds[] into per-tab entries", async () => {
+    await chrome.storage.local.set({
+      session_index: [
+        {
+          id: "sA",
+          lastAccessedAt: 1,
+          status: "active",
+          pinnedTabIds: [12, 13, 14],
+          messageCount: 3,
+        },
+        {
+          id: "sB",
+          lastAccessedAt: 2,
+          status: "active",
+          pinnedTabIds: [99],
+          messageCount: 1,
+        },
+      ],
+    });
+    const all = await getActivePinnedTabs();
+    expect(all).toEqual(
+      expect.arrayContaining([
+        { sessionId: "sA", tabId: 12, status: "active" },
+        { sessionId: "sA", tabId: 13, status: "active" },
+        { sessionId: "sA", tabId: 14, status: "active" },
+        { sessionId: "sB", tabId: 99, status: "active" },
+      ]),
+    );
+    expect(all).toHaveLength(4);
+  });
+
+  it("getCrossSessionPinnedTabIds returns the union excluding caller", async () => {
+    await chrome.storage.local.set({
+      session_index: [
+        { id: "self", lastAccessedAt: 1, status: "active", pinnedTabIds: [10, 11], messageCount: 1 },
+        { id: "other", lastAccessedAt: 2, status: "active", pinnedTabIds: [20, 21], messageCount: 1 },
+      ],
+    });
+    const set = await getCrossSessionPinnedTabIds("self");
+    expect(set.has(20)).toBe(true);
+    expect(set.has(21)).toBe(true);
+    expect(set.has(10)).toBe(false);
+    expect(set.has(11)).toBe(false);
   });
 });

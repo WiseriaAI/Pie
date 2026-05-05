@@ -78,29 +78,29 @@ export interface SessionMeta {
   /** LLM-generated short title (M2-U3). Falls back to first-message prefix
    *  when LLM call fails or is in flight. */
   title?: string;
-  /** Pinned tab captured at session creation (M3-U2). M1-U1 does not write
-   *  this yet; createSession accepts it so M3-U2 doesn't have to widen the
-   *  signature later.
+  /**
+   * v1.5 multi-pin (Path A) — array of pinned tabs owned by this session.
    *
-   *  M5 — semantics now depend on `pinMode`:
-   *    - pinMode='auto'      → these MUST be undefined (UI live-previews active tab)
-   *    - pinMode='task'      → set at chat-start, cleared at emitDone
-   *    - pinMode='user'      → set by UI dropdown, cleared by UI "Auto" option
-   *    - pinMode=undefined   → legacy session; getEffectivePinMode infers
-   *  Always read via getPrimaryPinFromMeta or getEffectivePinMode in pin-state.ts. */
-  pinnedTabId?: number;
-  pinnedOrigin?: string;
+   * Lifecycle invariants:
+   *   - pinMode='auto'  → empty / undefined
+   *   - pinMode='task'  → pinnedTabs[0] = chat-start capture; pinnedTabs[1..N]
+   *                       = open_url-created tabs in chronological order
+   *   - pinMode='user'  → ≥1 entries; user-toggled via PinnedTabDropdown.
+   *
+   * Replaces pre-v1.5 single-pin fields (removed in Task 10).
+   */
+  pinnedTabs?: Array<{ tabId: number; origin: string }>;
   /**
    * M5 — Pin mode state machine. Optional for backwards compatibility with
    * pre-M5 sessions; `getEffectivePinMode` in `pin-state.ts` infers the
-   * mode from legacy fields when this is undefined.
+   * mode when this is undefined.
    *
    *  - `auto`: pin is not persisted; UI live-previews the active tab. R7
    *    cross-session registry skips this session (other sessions can freely
    *    operate on its prior tab). Default for new + post-task sessions.
    *  - `task`: pin frozen to the tab/origin captured at chat-start. SW
    *    transitions auto→task during chat-start; emitDone transitions
-   *    task→auto and clears pinnedTabId/Origin. R7 registry includes this.
+   *    task→auto and clears pinnedTabs[]. R7 registry includes this.
    *  - `user`: user explicitly picked a tab via the PinnedTabDropdown.
    *    Survives task end. R7 registry includes this. Drift check skipped
    *    (user intent is fixed; if origin changes, that's the user's call).
@@ -185,6 +185,13 @@ export interface SessionAgentState {
    *  SW startup before any other recovery work. */
   pendingConfirm?: PendingConfirmRecord | null;
   /**
+   * v1.5 — task-scoped pointer to the currently-focused tab among
+   * `SessionMeta.pinnedTabs[]`. Snapshot is taken on this tab each
+   * iteration. Mutated by `focus_tab` tool; reset to pinnedTabs[0].tabId
+   * at chat-start; cleared at task end (via tombstone).
+   */
+  currentFocusTabId?: number;
+  /**
    * U3 (Half B SW-side synth) — synthesized assistant turn from the last
    * completed agent task. Moved from `SessionMeta` to `SessionAgentState`
    * (AD1 fix) so both writers to this key are SW-only: `emitDone` sets it
@@ -212,15 +219,18 @@ export interface SessionAgentState {
  * lastAccessedAt is high enough that we don't want to also write the
  * origin string on every access; consumers that need pinnedOrigin
  * (close_tabs cross-session check via plan D9) read from the per-session
- * meta. `pinnedTabId` is here because cross-session
- * `getActivePinnedTabs()` (M3-U4) wants index-only access.
+ * meta. `pinnedTabIds[]` carries the cross-session R7 lock set.
  */
 export interface SessionIndexEntry {
   id: string;
   lastAccessedAt: number;
   status: SessionStatus;
   title?: string;
-  pinnedTabId?: number;
+  /**
+   * v1.5 multi-pin — flat list of pinned tab ids for cross-session R7 lock
+   * lookup.
+   */
+  pinnedTabIds?: number[];
   /**
    * Number of DisplayMessages persisted to the session. Used by the
    * sidepanel to hide empty active sessions from the SessionDrawer

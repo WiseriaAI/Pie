@@ -10,8 +10,9 @@ import {
   updateLastAccessed,
 } from "@/lib/sessions/storage";
 import { hardDeleteSession } from "@/lib/sessions/lifecycle";
-import type { SessionStatus } from "@/lib/sessions/types";
+import type { SessionMeta, SessionStatus } from "@/lib/sessions/types";
 import { deriveTitleFromMessages } from "@/lib/sessions/title";
+import { togglePinTabUserMode } from "@/lib/sessions/pin-state";
 
 /**
  * useSession — single-source-of-truth for the active session's messages,
@@ -133,17 +134,14 @@ export interface UseSession {
    *  'Resume task' affordance. Updated via storage onChanged so a SW
    *  cold-start mark transitions the UI without panel reload. */
   status: SessionStatus | null;
-  /** M3-U2 (post-acceptance) — persisted pinned-tab origin from the
-   *  active session's meta, or null when the session has no pin yet
-   *  (brand-new empty session). Chat reads this to decide whether to
-   *  display a frozen pin (messages.length > 0 → locked) or a live
-   *  preview of the user's currently-active tab (empty session → free).
-   *  Updated on bootstrap, setActive, and chrome.storage onChanged for
-   *  the active session's meta key. */
-  pinnedOrigin: string | null;
-  /** M5 — persisted pinned tab id (for filtering chrome.tabs.onUpdated
-   *  events in the pageChanged effect). null when no pin or auto mode. */
-  pinnedTabId: number | null;
+  /** v1.5 — persisted pinned tabs array from the active session's meta.
+   *  null when the session has no pin yet (brand-new empty session or auto
+   *  mode). Chat reads this to decide whether to display a frozen pin
+   *  (messages.length > 0 → locked) or a live preview of the user's
+   *  currently-active tab (empty session → free). Updated on bootstrap,
+   *  setActive, and chrome.storage onChanged for the active session's
+   *  meta key. Replaces single pinnedOrigin + pinnedTabId fields. */
+  pinnedTabs: ReadonlyArray<{ tabId: number; origin: string }> | null;
   /** M5 — pin state machine: 'auto' / 'task' / 'user' (or null pre-bootstrap).
    *  Drives Chat.tsx's isLocked decision and per-effect listener wiring. */
   pinMode: "auto" | "task" | "user" | null;
@@ -188,13 +186,14 @@ export interface UseSession {
    */
   createAndActivate: () => Promise<string | null>;
   /**
-   * M5 — user picks a tab from the PinnedTabDropdown. Writes pinMode='user'
-   * + pinnedTabId/Origin to active session's meta. Persists across task end.
-   * No-op when no active session. */
-  setUserPin: (tabId: number, origin: string) => Promise<void>;
+   * v1.5 — user toggles a tab's membership in user-mode pinnedTabs[].
+   * From auto: adds pin, flips mode → user. From user + existing pin:
+   * removes pin (if last, flips back to auto). From user + new tab: appends.
+   * From task: no-op (loop owns task-mode pins). No-op when no active session. */
+  togglePinTab: (tabId: number, origin: string) => Promise<void>;
   /**
    * M5 — user clicks "Auto" in dropdown. Reverts pinMode='user' to 'auto'
-   * and removes pinnedTabId/Origin. No-op for 'task' mode (loop-managed)
+   * and removes all pinned tabs. No-op for 'task' mode (loop-managed)
    * or already-auto sessions. */
   clearUserPin: () => Promise<void>;
 }
@@ -202,11 +201,10 @@ export interface UseSession {
 export function useSession(): UseSession {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [status, setStatus] = useState<SessionStatus | null>(null);
-  const [pinnedOrigin, setPinnedOriginState] = useState<string | null>(null);
-  // M5 — pinned tab id (for filtering chrome.tabs.onUpdated events; previously
-  // Chat.tsx watched all active-tab url changes which caused the page-changed
-  // banner to false-positive whenever the user switched tabs).
-  const [pinnedTabId, setPinnedTabIdState] = useState<number | null>(null);
+  // v1.5 — pinnedTabs[] replaces single pinnedOrigin/pinnedTabId state.
+  const [pinnedTabsState, setPinnedTabsState] = useState<
+    ReadonlyArray<{ tabId: number; origin: string }> | null
+  >(null);
   // M5 — pin mode state machine: auto / task / user. Drives the Chat.tsx
   // isLocked decision (was: messages.length > 0; now: pinMode !== 'auto').
   const [pinMode, setPinModeState] = useState<"auto" | "task" | "user" | null>(
@@ -421,6 +419,7 @@ export function useSession(): UseSession {
           riskReason,
           metaSkillPreview,
           screenshotPreview,
+          openUrlPreview,
         } = message;
         setMessages((prev) => {
           // Idempotent — if the same confirmationId is already in
@@ -444,6 +443,10 @@ export function useSession(): UseSession {
               // Phase 5 — pre-captured thumbnail bytes for screenshot tools.
               // Wire-only; never persisted (would blow 8 MB chrome.storage quota).
               ...(screenshotPreview ? { screenshotPreview } : {}),
+              // v1.5 — open_url confirm extras (URL, host, origin, active flag).
+              // Small text; safe to include — omitted here by conditional so
+              // the DisplayMessage stays minimal for non-open_url tools.
+              ...(openUrlPreview ? { openUrlPreview } : {}),
               resolved: undefined,
             },
           ];
@@ -581,8 +584,7 @@ export function useSession(): UseSession {
         if (cancelled) return;
         setSessionId(meta.id);
         setStatus(meta.status);
-        setPinnedOriginState(null);
-        setPinnedTabIdState(null);
+        setPinnedTabsState(null);
         setPinModeState(meta.pinMode ?? "auto");
         setMessages([]);
         portRef.current = connectPortFor(meta.id);
@@ -618,8 +620,7 @@ export function useSession(): UseSession {
         | {
             messages?: DisplayMessage[];
             status?: SessionStatus;
-            pinnedOrigin?: string;
-            pinnedTabId?: number;
+            pinnedTabs?: Array<{ tabId: number; origin: string }>;
             pinMode?: "auto" | "task" | "user";
           }
         | undefined;
@@ -627,10 +628,10 @@ export function useSession(): UseSession {
       // active→failed) must land even mid-stream (e.g. SW cold-start marking
       // a task paused while the panel thinks it's still running).
       if (newMeta?.status !== undefined) setStatus(newMeta.status);
-      // M5 — propagate pinMode + pinnedTabId/Origin. Subtle invariant:
+      // v1.5 — propagate pinMode + pinnedTabs[]. Subtle invariant:
       // when SW transitions task → auto via clearTaskPinIfActive, it
-      // `delete`s pinnedTabId/Origin from the meta object. The deleted
-      // fields are NOT present in newValue, so a `newMeta?.pinnedOrigin
+      // `delete`s pinnedTabs from the meta object. The deleted
+      // field is NOT present in newValue, so a `newMeta?.pinnedTabs
       // !== undefined` check would never fire and panel state would
       // retain the stale pin. Fix: when pinMode flips to 'auto' explicitly,
       // force-clear pin state to match the storage invariant ("auto mode
@@ -639,16 +640,13 @@ export function useSession(): UseSession {
       if (newMeta?.pinMode !== undefined) {
         setPinModeState(newMeta.pinMode);
         if (newMeta.pinMode === "auto") {
-          // Auto mode invariant: pin fields are absent. Mirror that in panel state.
-          setPinnedOriginState(null);
-          setPinnedTabIdState(null);
+          // Auto mode invariant: pinnedTabs is absent. Mirror that in panel state.
+          setPinnedTabsState(null);
         }
       }
-      if (newMeta?.pinnedOrigin !== undefined) {
-        setPinnedOriginState(newMeta.pinnedOrigin || null);
-      }
-      if (newMeta?.pinnedTabId !== undefined) {
-        setPinnedTabIdState(newMeta.pinnedTabId);
+      if (newMeta?.pinnedTabs !== undefined) {
+        const pins = newMeta.pinnedTabs;
+        setPinnedTabsState(pins.length > 0 ? pins : null);
       }
       if (newMeta?.messages !== undefined) {
         // P1-6 + Bug-fix-A — prevent self-write echo AND stale SW write-back
@@ -808,7 +806,7 @@ export function useSession(): UseSession {
       // path untouched.
       //
       // First-task ordering note: SW's handleChatStream may read meta
-      // BEFORE the pin patch lands → ctx.pinned is undefined → the
+      // BEFORE the pin patch lands → ctx.pinnedTabs is empty → the
       // loop falls back to chrome.tabs.query active-tab. That fallback
       // returns the same tab the user just sent from (no tab switch in
       // the microsecond gap), so the first task pins to the right tab
@@ -819,26 +817,26 @@ export function useSession(): UseSession {
           try {
             const meta = await getSessionMeta(id);
             if (!meta || meta.status === "archived") return;
-            if (meta.pinnedTabId !== undefined && meta.pinnedOrigin) return;
+            // v1.5 — skip if already has pinnedTabs[]
+            if (meta.pinnedTabs && meta.pinnedTabs.length > 0) return;
             const pin = await captureActivePinned();
             if (!pin) return;
             // Re-read in case something else patched in the meantime.
             const fresh = await getSessionMeta(id);
             if (!fresh || fresh.status === "archived") return;
-            if (fresh.pinnedTabId !== undefined && fresh.pinnedOrigin) return;
+            if (fresh.pinnedTabs && fresh.pinnedTabs.length > 0) return;
+            const pinEntry = { tabId: pin.pinnedTabId, origin: pin.pinnedOrigin };
             await setSessionMeta({
               ...fresh,
               // M5 — first-message capture is the task-mode upgrade. Set
               // pinMode='task' so the storage normalize-on-write invariant
-              // (auto mode never persists pin) doesn't strip it. Unit 5
-              // will move this capture to the SW chat-start path.
+              // (auto mode never persists pin) doesn't strip it.
               pinMode: "task",
-              pinnedTabId: pin.pinnedTabId,
-              pinnedOrigin: pin.pinnedOrigin,
+              // v1.5 — write source-of-truth pinnedTabs[].
+              pinnedTabs: [pinEntry],
               lastAccessedAt: Date.now(),
             });
-            setPinnedOriginState(pin.pinnedOrigin);
-            setPinnedTabIdState(pin.pinnedTabId);
+            setPinnedTabsState([pinEntry]);
             setPinModeState("task");
           } catch (e) {
             console.warn("[useSession] pin patch on first send failed:", e);
@@ -987,12 +985,14 @@ export function useSession(): UseSession {
     let metaForActivate = meta;
     let didMigrate = false;
     const sessionHasContent = (meta.messages?.length ?? 0) > 0;
+    // v1.5 — use pinnedTabs[] presence check (falls back gracefully for legacy sessions)
     if (
       sessionHasContent &&
-      (meta.pinnedTabId === undefined || !meta.pinnedOrigin)
+      (!meta.pinnedTabs || meta.pinnedTabs.length === 0)
     ) {
       const pinned = await captureActivePinned();
       if (pinned) {
+        const pinEntry = { tabId: pinned.pinnedTabId, origin: pinned.pinnedOrigin };
         const patched = {
           ...meta,
           // M5 — legacy session backfill = treat as task-mode pin (the user
@@ -1000,8 +1000,8 @@ export function useSession(): UseSession {
           // resume/send needs an anchor). Without explicit pinMode the
           // storage normalize-on-write would strip the pin.
           pinMode: "task" as const,
-          pinnedTabId: pinned.pinnedTabId,
-          pinnedOrigin: pinned.pinnedOrigin,
+          // v1.5 — write source-of-truth pinnedTabs[].
+          pinnedTabs: [pinEntry],
           lastAccessedAt: Date.now(),
         };
         await setSessionMeta(patched);
@@ -1033,8 +1033,8 @@ export function useSession(): UseSession {
     // Load the session's messages into React state
     setSessionId(id);
     setStatus(metaForActivate.status);
-    setPinnedOriginState(metaForActivate.pinnedOrigin ?? null);
-    setPinnedTabIdState(metaForActivate.pinnedTabId ?? null);
+    const activatePins = metaForActivate.pinnedTabs;
+    setPinnedTabsState(activatePins && activatePins.length > 0 ? activatePins : null);
     setPinModeState(metaForActivate.pinMode ?? "auto");
     setMessages(metaForActivate.messages ?? []);
     setError(null);
@@ -1084,8 +1084,7 @@ export function useSession(): UseSession {
     sessionIdRef.current = meta.id;
     setSessionId(meta.id);
     setStatus(meta.status);
-    setPinnedOriginState(null); // brand new session — no pin yet
-    setPinnedTabIdState(null);
+    setPinnedTabsState(null); // brand new session — no pin yet
     setPinModeState("auto");
     setMessages([]);
     setError(null);
@@ -1096,27 +1095,24 @@ export function useSession(): UseSession {
     return meta.id;
   }, [connectPortFor]);
 
-  // M5 — PinnedTabDropdown actions. Direct storage writes (panel can write
+  // v1.5 — PinnedTabDropdown actions. Direct storage writes (panel can write
   // session_${id}_meta) — no need to round-trip through SW. The storage
   // onChanged listener in this same hook picks up the change and updates
   // local state, mirroring the user's choice instantly.
-  const setUserPin = useCallback(
+  const togglePinTab = useCallback(
     async (tabId: number, origin: string): Promise<void> => {
       const id = sessionIdRef.current;
       if (!id) return;
       const meta = await getSessionMeta(id);
       if (!meta) return;
-      await setSessionMeta({
-        ...meta,
-        pinMode: "user",
-        pinnedTabId: tabId,
-        pinnedOrigin: origin,
-      });
+      const next = togglePinTabUserMode(meta, { tabId, origin });
+      if (next === meta) return; // no-op (e.g. task mode)
+      await setSessionMeta(next);
       // Mirror in local state immediately so UI reflects the choice without
       // waiting for storage onChanged round-trip.
-      setPinModeState("user");
-      setPinnedTabIdState(tabId);
-      setPinnedOriginState(origin);
+      const nextPins = next.pinnedTabs;
+      setPinnedTabsState(nextPins && nextPins.length > 0 ? nextPins : null);
+      setPinModeState(next.pinMode ?? "auto");
     },
     [],
   );
@@ -1127,24 +1123,24 @@ export function useSession(): UseSession {
     const meta = await getSessionMeta(id);
     if (!meta) return;
     if (meta.pinMode !== "user") return; // only user mode is user-clearable
-    // Strip pin and revert mode. Storage normalize-on-write enforces the
-    // auto-mode-no-pin invariant, so passing an explicit pinMode='auto' is
-    // sufficient — but we strip the fields here for clarity.
+    // v1.5 — `delete next.pinnedTabs` is LOAD-BEARING here (not cosmetic):
+    // storage's syncLegacyFromArray dual-write shim re-synthesizes legacy
+    // pinnedTabId/pinnedOrigin from `pinnedTabs[0]` on every persist. If we
+    // left `pinnedTabs` on the meta and only flipped pinMode to 'auto', the
+    // shim would resurrect the legacy fields from the leftover array, leaving
+    // the session pinned despite the user's clear-pin action.
     const next = { ...meta, pinMode: "auto" as const };
-    delete (next as { pinnedTabId?: number }).pinnedTabId;
-    delete (next as { pinnedOrigin?: string }).pinnedOrigin;
+    delete (next as { pinnedTabs?: SessionMeta["pinnedTabs"] }).pinnedTabs;
     await setSessionMeta(next);
     setPinModeState("auto");
-    setPinnedTabIdState(null);
-    setPinnedOriginState(null);
+    setPinnedTabsState(null);
   }, []);
 
   return {
     sessionId,
     ready,
     status,
-    pinnedOrigin,
-    pinnedTabId,
+    pinnedTabs: pinnedTabsState,
     pinMode,
     messages,
     streaming,
@@ -1161,7 +1157,7 @@ export function useSession(): UseSession {
     clearToast,
     setActive,
     createAndActivate,
-    setUserPin,
+    togglePinTab,
     clearUserPin,
   };
 }

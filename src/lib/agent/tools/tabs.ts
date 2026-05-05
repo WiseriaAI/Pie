@@ -391,22 +391,26 @@ const closeTabsTool: Tool = {
       };
     }
 
-    // K-9 (M5 revision): only refuse close on a USER-locked pinned tab.
+    // K-9 (v1.5): user-locked pin protects ALL pinnedTabs[] entries from agent close.
     // 'task' mode = the loop captured the pin at chat-start; the user has
     // already given high-risk confirm consent for this close, and the
     // per-iteration origin check will gracefully abort the task if the
     // pinned tab disappears (observation: "Page origin changed").
-    // 'user' mode = the user explicitly pinned this tab via the dropdown;
-    // closing it would yank their explicit choice — refuse upfront.
+    // 'user' mode = the user explicitly pinned these tabs via the dropdown;
+    // closing any of them would yank their explicit choice — refuse upfront.
     // 'auto' mode = no persistent pin (ctx.tabId is the loop's anchor for
     // this task only; same logic as 'task').
-    if (ctx.pinMode === "user" && a.tabIds.includes(ctx.tabId)) {
-      return {
-        success: false,
-        error:
-          "close_tabs cannot close the user's explicitly pinned tab (pinMode=user). " +
-          "Use the PINNED dropdown to clear or change the pin, then retry.",
-      };
+    if (ctx.pinMode === "user" && ctx.pinnedTabs && ctx.pinnedTabs.length > 0) {
+      const pinnedIds = new Set(ctx.pinnedTabs.map((p) => p.tabId));
+      const blocked = a.tabIds.filter((id) => pinnedIds.has(id));
+      if (blocked.length > 0) {
+        return {
+          success: false,
+          error:
+            `close_tabs cannot close user-pinned tab(s) [${blocked.join(", ")}] (pinMode=user). ` +
+            `Use the PINNED dropdown to clear or change the pin, then retry.`,
+        };
+      }
     }
 
     const result: PartialCompletionResult = { ok: [], skipped: [], errors: [] };
@@ -1015,6 +1019,190 @@ const getTabContentTool: Tool = {
 
 export { GET_TAB_CONTENT_PREVIEW_BYTES };
 
+// ── v1.5 Unit 6 — focus_tab ───────────────────────────────────────────────────
+
+/**
+ * focus_tab — mutates the session's internal focus pointer so the NEXT
+ * iteration's snapshot targets a different pinned tab. Low-risk: no
+ * observable tab or page side effect; only the session agent state changes.
+ *
+ * Risk = always-low (ALWAYS_LOW_TAB_TOOLS in risk.ts, G-1 gate updated).
+ * Class = read (mutates only the internal focus pointer, not tab state).
+ *
+ * Note: focus_tab updates the loop's focused-tab pointer; ctx.tabId is
+ * re-resolved per iteration. CDP keyboard tools route to ctx.tabId, so
+ * keyboard input correctly follows focus changes. The ownerToken.tabId
+ * (loop.ts ownerToken) stays at task-start value but is metadata only —
+ * it does not gate keyboard routing.
+ */
+const focusTabTool: Tool = {
+  name: "focus_tab",
+  description:
+    "Switch the agent's snapshot focus to one of the session's pinned tabs. " +
+    "Takes effect on the NEXT iteration (the current iteration's snapshot was " +
+    "already taken). Use this to operate across multiple pinned tabs in a " +
+    "single task: focus_tab(N), then on the next response use click/type/" +
+    "get_tab_content/etc. against tab N. Pinned tabs are listed in the " +
+    "system prompt; tabs created by open_url are added to that list.",
+  parameters: {
+    type: "object",
+    properties: {
+      tabId: {
+        type: "integer",
+        description: "Tab id to switch focus to. Must already be one of the session's pinned tabs.",
+      },
+    },
+    required: ["tabId"],
+    additionalProperties: false,
+  },
+  handler: async (args, ctx) => {
+    const a = (args ?? {}) as { tabId?: number };
+    if (typeof a.tabId !== "number") {
+      return { success: false, error: "focus_tab requires a numeric tabId" };
+    }
+    if (!ctx.pinnedTabs || ctx.pinnedTabs.length === 0) {
+      return {
+        success: false,
+        error: "focus_tab: no pinned tabs in this session (auto mode?).",
+      };
+    }
+    const target = ctx.pinnedTabs.find((p) => p.tabId === a.tabId);
+    if (!target) {
+      const ids = ctx.pinnedTabs.map((p) => p.tabId).join(", ");
+      return {
+        success: false,
+        error: `focus_tab: tab ${a.tabId} not in pinnedTabs (current: [${ids}]). Use open_url to create a new pinned tab, or pick an existing one.`,
+      };
+    }
+    if (!ctx.setCurrentFocusTabId) {
+      return {
+        success: false,
+        error: "focus_tab: handler context missing setCurrentFocusTabId (test/legacy harness).",
+      };
+    }
+    await ctx.setCurrentFocusTabId(a.tabId);
+    return {
+      success: true,
+      observation:
+        `focus changed to tab ${a.tabId} (origin ${target.origin}). ` +
+        `The new tab's page snapshot will be available on the next iteration; ` +
+        `do NOT batch click/type/scroll on this tab in the same response.`,
+    };
+  },
+};
+
+export { focusTabTool };
+
+// ── v1.5 Unit 7 — open_url ────────────────────────────────────────────────────
+
+const OPEN_URL_MAX_LEN = 4096;
+
+/**
+ * open_url — creates a new browser tab loading the given http/https URL.
+ *
+ * Security invariants:
+ *   - Strict http: / https: allowlist via URL constructor + protocol check.
+ *     All other schemes (javascript:, data:, file:, chrome:, blob:, ftp:,
+ *     ws:, mailto:, view-source:, etc.) are rejected with "unsafe-url-scheme".
+ *   - URL length capped at OPEN_URL_MAX_LEN (4096) chars.
+ *   - Must be an absolute URL (relative paths throw in `new URL()`).
+ *
+ * Pin integration:
+ *   - On success, calls ctx.appendPinnedTab to push the new tab into the
+ *     session's pinnedTabs array. The agent must then call
+ *     focus_tab(newTabId) on the NEXT iteration to operate on the tab.
+ *   - If appendPinnedTab is absent (test/legacy harness), the tab is still
+ *     created; the observation mentions the gap so the harness caller is aware.
+ *
+ * Risk: always high (ALWAYS_HIGH_TAB_TOOLS). Each call requires user
+ * approval. Confirm card UI variant is Task 8.
+ *
+ * G-1 gate: open_url is in TAB_TOOL_NAMES AND ALWAYS_HIGH_TAB_TOOLS.
+ */
+const openUrlTool: Tool = {
+  name: "open_url",
+  description:
+    "Open a new browser tab loading the given URL. Each call requires user " +
+    "approval (high risk). The new tab is added to this session's pinned tab " +
+    "list — use focus_tab(newTabId) on the next iteration to operate on it. " +
+    "Only http: and https: are allowed; other schemes are rejected.",
+  parameters: {
+    type: "object",
+    properties: {
+      url: {
+        type: "string",
+        description: `Absolute http: or https: URL to open. Max ${OPEN_URL_MAX_LEN} chars.`,
+      },
+      active: {
+        type: "boolean",
+        description:
+          "If true, the new tab takes focus (steals the user's view). Default false (loads in background).",
+      },
+    },
+    required: ["url"],
+    additionalProperties: false,
+  },
+  handler: async (args, ctx) => {
+    const a = (args ?? {}) as { url?: unknown; active?: unknown };
+    if (typeof a.url !== "string" || a.url.length === 0) {
+      return { success: false, error: "open_url: url must be a non-empty string" };
+    }
+    if (a.url.length > OPEN_URL_MAX_LEN) {
+      return {
+        success: false,
+        error: `open_url: url-too-long (>${OPEN_URL_MAX_LEN} chars)`,
+      };
+    }
+    let parsed: URL;
+    try {
+      parsed = new URL(a.url);
+    } catch {
+      return { success: false, error: "open_url: invalid URL" };
+    }
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      return {
+        success: false,
+        error: `open_url: unsafe-url-scheme "${parsed.protocol}" (only http: and https: are allowed)`,
+      };
+    }
+    const active = a.active === true;
+    let newTab: chrome.tabs.Tab;
+    try {
+      newTab = await chrome.tabs.create({ url: a.url, active });
+    } catch (e) {
+      return {
+        success: false,
+        error: `open_url: chrome.tabs.create failed — ${e instanceof Error ? e.message : String(e)}`,
+      };
+    }
+    if (typeof newTab.id !== "number" || newTab.id < 0) {
+      return { success: false, error: "open_url: chrome returned no tab id" };
+    }
+    if (ctx.appendPinnedTab) {
+      try {
+        await ctx.appendPinnedTab({ tabId: newTab.id, origin: parsed.origin });
+      } catch (e) {
+        return {
+          success: true,
+          observation:
+            `Opened tab ${newTab.id} at ${parsed.origin}, but failed to add it ` +
+            `to the session's pinnedTabs (${e instanceof Error ? e.message : String(e)}). ` +
+            `Use focus_tab(${newTab.id}) anyway; if it fails, retry open_url next iteration.`,
+        };
+      }
+    }
+    return {
+      success: true,
+      observation:
+        `Opened tab ${newTab.id} at ${parsed.origin}` +
+        (active ? " (focused: stole user's view)" : " (background)") +
+        `. Added to pinnedTabs[]; call focus_tab(${newTab.id}) on the next iteration to operate on it.`,
+    };
+  },
+};
+
+export { openUrlTool };
+
 export const TAB_TOOLS: Tool[] = [
   listTabsTool,
   closeTabsTool,
@@ -1023,4 +1211,6 @@ export const TAB_TOOLS: Tool[] = [
   ungroupTabsTool,
   moveTabsTool,
   getTabContentTool,
+  focusTabTool,
+  openUrlTool,
 ];

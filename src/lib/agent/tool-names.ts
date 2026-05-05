@@ -44,6 +44,8 @@ export const TAB_TOOL_NAMES = [
   "group_tabs",
   "ungroup_tabs",
   "move_tabs",
+  "focus_tab", // v1.5 multi-pin
+  "open_url",  // v1.5
 ] as const;
 
 // Phase 5 screenshot tools (always present in BUILT_IN_TOOLS).
@@ -131,6 +133,8 @@ export const TOOL_CLASSES: Readonly<Record<string, ToolClass>> = {
   group_tabs: "write",
   ungroup_tabs: "write",
   move_tabs: "write",
+  focus_tab: "read", // mutates only internal session pointer, no tab state change
+  open_url: "write", // creates a new tab; mutates browser state
   // Phase 2.5 CDP keyboard tools
   dispatch_keyboard_input: "write",
   press_key: "write",

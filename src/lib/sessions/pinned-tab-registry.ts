@@ -2,17 +2,18 @@
 //
 // Reads the lightweight session_index (D9) — the same key the drawer
 // uses to render the session list — to enumerate every active session's
-// pinnedTabId. Used by the SW dispatcher to compute
+// pinned tab ids. Used by the SW dispatcher to compute
 // `crossSessionPinnedTabIds` per chat-start / resume-task and by
 // write-class tools (R7 lock) to refuse operations on a tab another
 // session legitimately owns (close_tabs cross-session intent =
 // "session A should not be allowed to close session B's pinned tab").
 //
 // Why session_index and not per-session meta:
-//   - session_index already carries pinnedTabId (see
-//     SessionIndexEntry.pinnedTabId in types.ts). It's the canonical
-//     light-weight registry and is updated atomically with meta writes
-//     via D9 single-call set().
+//   - session_index already carries pinned tab ids (see
+//     `SessionIndexEntry.pinnedTabIds[]` in types.ts — v1.5 multi-pin
+//     replaced the single `pinnedTabId` field with this flat array).
+//     It's the canonical light-weight registry and is updated atomically
+//     with meta writes via D9 single-call set().
 //   - Reading per-session meta for every active session would multiply
 //     storage round-trips on every chat-start; the index is one read.
 //
@@ -48,8 +49,11 @@ const OWNING_STATUSES: ReadonlySet<SessionIndexEntry["status"]> = new Set([
 ]);
 
 /**
- * Returns every active/paused session's pinnedTabId. Sessions without a
- * pinnedTabId (M1 / M2 legacy that never got migrated) are skipped.
+ * Returns every active/paused session's pinned tab entries. Sessions without
+ * any pinned tabs (M1/M2 legacy, or auto-mode sessions) are skipped.
+ *
+ * v1.5: reads from `pinnedTabIds[]` (written by Task 2's indexEntryFromMeta).
+ * Each tabId in the array yields one ActivePinnedTab entry.
  *
  * Single read of session_index — O(N) in the number of session entries;
  * fine to call per chat-start.
@@ -59,12 +63,14 @@ export async function getActivePinnedTabs(): Promise<ActivePinnedTab[]> {
   const out: ActivePinnedTab[] = [];
   for (const entry of index) {
     if (!OWNING_STATUSES.has(entry.status)) continue;
-    if (typeof entry.pinnedTabId !== "number") continue;
-    out.push({
-      sessionId: entry.id,
-      tabId: entry.pinnedTabId,
-      status: entry.status as "active" | "paused",
-    });
+    const tabIds = entry.pinnedTabIds ?? [];
+    for (const tabId of tabIds) {
+      out.push({
+        sessionId: entry.id,
+        tabId,
+        status: entry.status as "active" | "paused",
+      });
+    }
   }
   return out;
 }

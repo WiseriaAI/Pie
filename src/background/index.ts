@@ -17,7 +17,11 @@ import type {
   ModelConfig,
 } from "@/lib/model-router";
 import { getActiveProvider, getProviderConfig } from "@/lib/storage";
-import { runAgentLoop, safeParseOrigin } from "@/lib/agent/loop";
+import {
+  runAgentLoop,
+  safeParseOrigin,
+  mergeSessionAgentSnapshot,
+} from "@/lib/agent/loop";
 import type { RoleViolation } from "@/lib/agent/history-validation";
 import { logHistoryRepaired } from "@/lib/agent/history-validation-telemetry";
 import { getEnabledSkills, resolveSkillToTools } from "@/lib/skills";
@@ -48,7 +52,7 @@ import {
 import { KEYBOARD_SIMULATION_STORAGE_KEY } from "@/lib/keyboard-simulation";
 import { runSessionMigrations } from "@/lib/sessions/migration";
 import { getCrossSessionPinnedTabIds } from "@/lib/sessions/pinned-tab-registry";
-import { getEffectivePinMode } from "@/lib/sessions/pin-state";
+import { getEffectivePinMode, getPrimaryPin } from "@/lib/sessions/pin-state";
 import { chat } from "@/lib/model-router";
 import { generateTitle, maybeUpgradeFallbackTitle } from "@/lib/sessions/title-generator";
 // Phase 5 — image cache lifecycle + pre-capture (Task 12 wiring)
@@ -68,7 +72,7 @@ import {
 } from "@/lib/agent/tools/screenshot";
 import { makeCdpAdapterForScreenshot } from "./cdp-adapter";
 import { makeResolveEffectivePinned } from "./effective-pinned";
-import type { ScreenshotConfirmExtras } from "@/types";
+import type { ScreenshotConfirmExtras, OpenUrlConfirmExtras } from "@/types";
 import type { ImageAttachment } from "@/lib/images";
 
 // Phase 5 follow-up — shared resolver for the screenshot first-task pin race
@@ -409,7 +413,7 @@ async function handlePanelMounted(
  * `escapeUntrustedWrappers` before they reach the panel (P3-G family).
  */
 async function checkPinnedDrift(
-  meta: { pinnedTabId?: number; pinnedOrigin?: string; messages: DisplayMessage[] },
+  meta: { pinnedTabs?: Array<{ tabId: number; origin: string }>; messages: DisplayMessage[] },
   agentStepIndex: number,
 ): Promise<PinnedTabDriftPayload | null> {
   // Pull the original task from the first user message if available.
@@ -417,7 +421,10 @@ async function checkPinnedDrift(
   const rawTask = firstUser && firstUser.role === "user" ? firstUser.content : "";
   const originalTask = escapeUntrustedWrappers(rawTask);
 
-  if (meta.pinnedTabId === undefined || !meta.pinnedOrigin) {
+  // v1.5 — Walk all pinnedTabs[] entries. Return on first drift detected.
+  const pins = meta.pinnedTabs ?? [];
+
+  if (pins.length === 0) {
     // M1 sessions don't have pinned anchored at creation (M3-U2
     // ships that). No drift can be detected — treat as drift=null
     // and let the loop's per-round origin check pick up real drift
@@ -425,32 +432,34 @@ async function checkPinnedDrift(
     return null;
   }
 
-  let tab: chrome.tabs.Tab | null = null;
-  try {
-    tab = await chrome.tabs.get(meta.pinnedTabId);
-  } catch {
-    return {
-      reason: "tab-closed",
-      originalTask,
-      lastPinnedTabTitle: "",
-      pinnedOrigin: meta.pinnedOrigin,
-      lastStepIndex: agentStepIndex,
-    };
-  }
+  for (const pin of pins) {
+    let tab: chrome.tabs.Tab;
+    try {
+      tab = await chrome.tabs.get(pin.tabId);
+    } catch {
+      return {
+        reason: "tab-closed",
+        originalTask,
+        lastPinnedTabTitle: "",
+        pinnedOrigin: pin.origin,
+        lastStepIndex: agentStepIndex,
+      };
+    }
 
-  const currentUrl = tab.url ?? "";
-  const currentOrigin = safeParseOrigin(currentUrl);
-  const lastPinnedTabTitle = escapeUntrustedWrappers(tab.title ?? "");
+    const currentUrl = tab.url ?? "";
+    const currentOrigin = safeParseOrigin(currentUrl);
+    const lastPinnedTabTitle = escapeUntrustedWrappers(tab.title ?? "");
 
-  if (!currentOrigin || currentOrigin !== meta.pinnedOrigin) {
-    return {
-      reason: "origin-changed",
-      originalTask,
-      lastPinnedTabTitle,
-      pinnedOrigin: meta.pinnedOrigin,
-      currentOrigin: currentOrigin ?? undefined,
-      lastStepIndex: agentStepIndex,
-    };
+    if (!currentOrigin || currentOrigin !== pin.origin) {
+      return {
+        reason: "origin-changed",
+        originalTask,
+        lastPinnedTabTitle,
+        pinnedOrigin: pin.origin,
+        currentOrigin: currentOrigin ?? undefined,
+        lastStepIndex: agentStepIndex,
+      };
+    }
   }
 
   return null;
@@ -576,10 +585,8 @@ async function handleResumeRequest(
   // M3-U2 — same pin injection as chat-start path. checkPinnedDrift
   // already validated the pin against current tab state above; the loop
   // itself will re-check on every iteration.
-  const pinned =
-    meta.pinnedTabId !== undefined && meta.pinnedOrigin
-      ? { tabId: meta.pinnedTabId, origin: meta.pinnedOrigin }
-      : undefined;
+  // v1.5 — use getPrimaryPin to read from pinnedTabs[] (falls back to legacy fields via storage shim).
+  const pinned = getPrimaryPin(meta);
 
   // Reuse the chat-stream sendConfirmRequest pattern. Same persist +
   // scrub flow applies to confirms during the resumed task.
@@ -665,6 +672,29 @@ async function handleResumeRequest(
       }
     }
 
+    // v1.5 — pre-parse URL for open_url confirm card (K-1 informed-approval).
+    // URL.host returns punycode for IDN — defense against homograph attacks.
+    // Small text: safe to persist in storage (unlike screenshotPreview bytes).
+    let openUrlPreview: OpenUrlConfirmExtras | undefined;
+    if (payload.tool === "open_url") {
+      const args = payload.args as { url?: string; active?: boolean };
+      let host = "(invalid)";
+      let origin = "(invalid)";
+      try {
+        const u = new URL(args.url ?? "");
+        host = u.host;
+        origin = u.origin;
+      } catch {
+        // Shouldn't happen — handler validates upstream; defensive fallback.
+      }
+      openUrlPreview = {
+        url: args.url ?? "",
+        host,
+        origin,
+        active: args.active === true,
+      };
+    }
+
     try {
       await setPendingConfirm(sessionId, {
         confirmationId,
@@ -683,6 +713,8 @@ async function handleResumeRequest(
             : {}),
           // screenshotPreview intentionally omitted from storage — bytes must
           // not reach chrome.storage (8 MB quota). Panel renders from wire only.
+          // openUrlPreview is small text — safe to persist for R4 re-emit.
+          ...(openUrlPreview ? { openUrlPreview } : {}),
         },
       });
     } catch (e) {
@@ -729,6 +761,7 @@ async function handleResumeRequest(
           confirmationId,
           ...payload,
           ...(screenshotPreview ? { screenshotPreview } : {}),
+          ...(openUrlPreview ? { openUrlPreview } : {}),
           sessionId,
         } satisfies AgentConfirmRequestMessage);
       });
@@ -775,7 +808,10 @@ async function handleResumeRequest(
     resumedSkillScopeStack: agent.skillExecutionScopeStack,
     // Phase 5 — propagate prior hasImageContent flag across resume.
     resumedHasImageContent: agent.hasImageContent,
-    pinned,
+    // v1.5 multi-pin: replace single `pinned` with the full array.
+    // Resume path restores currentFocusTabId from persisted agent state.
+    pinnedTabs: meta.pinnedTabs ?? [],
+    initialFocusTabId: agent.currentFocusTabId ?? meta.pinnedTabs?.[0]?.tabId,
     // Phase 5 — per-task screenshot budget key.
     taskId: resumeTaskId,
     // M3-U4 (TOCTOU fix) — refresh per dispatch; see chat-start twin.
@@ -834,9 +870,11 @@ async function handleDiscardRequest(
   const lastStepIndex = agent?.stepIndex ?? 0;
 
   let recapTitle = "(unknown)";
-  if (meta.pinnedTabId !== undefined) {
+  // v1.5 — use getPrimaryPin to read primary pinned tab from pinnedTabs[].
+  const primaryPinForRecap = getPrimaryPin(meta);
+  if (primaryPinForRecap !== undefined) {
     try {
-      const tab = await chrome.tabs.get(meta.pinnedTabId);
+      const tab = await chrome.tabs.get(primaryPinForRecap.tabId);
       recapTitle = escapeUntrustedWrappers(tab.title ?? "");
     } catch {
       recapTitle = "(closed)";
@@ -894,7 +932,20 @@ async function handleDiscardRequest(
  */
 function makeStepSnapshotHandler(sessionId: string) {
   return async (snapshot: import("@/lib/sessions/types").SessionAgentState) => {
-    await setSessionAgent(sessionId, snapshot);
+    // v1.5: merge with existing state so fields written between snapshots
+    // (e.g., currentFocusTabId via setCurrentFocusTabId, pendingConfirm via
+    // setPendingConfirm) are preserved across the per-step boundary. The
+    // snapshot helper only carries history/stepIndex/skillStack/hasImageContent;
+    // any field the loop writes via a separate writer must survive the
+    // setSessionAgent full-key REPLACE that powers the snapshot path.
+    //
+    // Side effect: pendingConfirm now stays in storage even if a snapshot
+    // lands AFTER setPendingConfirm. Previous behavior was correct only by
+    // luck (the loop is suspended during user-confirm wait so no snapshot
+    // fired); the merge makes the invariant explicit.
+    const existing = await getSessionAgent(sessionId);
+    const merged = mergeSessionAgentSnapshot(existing, snapshot);
+    await setSessionAgent(sessionId, merged);
     if (snapshot.stepIndex % 5 === 0) {
       updateLastAccessed(sessionId).catch((e) => {
         console.warn(
@@ -1062,14 +1113,11 @@ async function handleChatStream(
     // inject into the loop context. Legacy sessions without a pin fall
     // through to the loop's active-tab fallback (already handled there).
     // AD1 fix: synthMeta was fetched in parallel with synthAgent above
-    // (Promise.all) — reuse it here for pinnedTabId/pinnedOrigin.
+    // (Promise.all) — reuse it here for pinnedTabs[].
     const sessionMeta = synthMeta;
-    // M3-U2 — both-or-neither: only construct the pin object when both
-    // fields are present (defends against partially-corrupted meta).
-    const pinned =
-      sessionMeta?.pinnedTabId !== undefined && sessionMeta.pinnedOrigin
-        ? { tabId: sessionMeta.pinnedTabId, origin: sessionMeta.pinnedOrigin }
-        : undefined;
+    // v1.5 — use getPrimaryPin to read primary pin from pinnedTabs[] (storage
+    // shim maintains legacy field back-compat for older sessions).
+    const pinned = sessionMeta != null ? getPrimaryPin(sessionMeta) : undefined;
     // M5 — pin mode at chat-start. Frozen for the loop's lifetime; downstream
     // close_tabs K-9 reads this to refuse user-locked pin closes. Defaults
     // to 'auto' when meta is missing (M1 cold-start corner cases).
@@ -1186,6 +1234,29 @@ async function handleChatStream(
         }
       }
 
+      // v1.5 — pre-parse URL for open_url confirm card (K-1 informed-approval).
+      // URL.host returns punycode for IDN — defense against homograph attacks.
+      // Small text: safe to persist in storage (unlike screenshotPreview bytes).
+      let openUrlPreview: OpenUrlConfirmExtras | undefined;
+      if (payload.tool === "open_url") {
+        const args = payload.args as { url?: string; active?: boolean };
+        let host = "(invalid)";
+        let origin = "(invalid)";
+        try {
+          const u = new URL(args.url ?? "");
+          host = u.host;
+          origin = u.origin;
+        } catch {
+          // Shouldn't happen — handler validates upstream; defensive fallback.
+        }
+        openUrlPreview = {
+          url: args.url ?? "",
+          host,
+          origin,
+          active: args.active === true,
+        };
+      }
+
       try {
         await setPendingConfirm(sessionId, {
           confirmationId,
@@ -1204,6 +1275,8 @@ async function handleChatStream(
               : {}),
             // screenshotPreview intentionally omitted from storage — bytes must
             // not reach chrome.storage (8 MB quota). Panel renders from wire only.
+            // openUrlPreview is small text — safe to persist for R4 re-emit.
+            ...(openUrlPreview ? { openUrlPreview } : {}),
           },
         });
       } catch (e) {
@@ -1248,6 +1321,7 @@ async function handleChatStream(
             confirmationId,
             ...payload,
             ...(screenshotPreview ? { screenshotPreview } : {}),
+            ...(openUrlPreview ? { openUrlPreview } : {}),
             sessionId,
           } satisfies AgentConfirmRequestMessage);
         });
@@ -1280,7 +1354,11 @@ async function handleChatStream(
       // (see makeStepSnapshotHandler). Errors caught + logged inside
       // runAgentLoop; this wrapper only does the storage calls.
       onStepSnapshot: makeStepSnapshotHandler(sessionId),
-      pinned,
+      // v1.5 multi-pin: replace single `pinned` with the full array.
+      // synthMeta is post-upgradeAutoToTaskAtChatStart (fetched after the
+      // upgrade at line 1035), so pinnedTabs[] reflects the upgraded state.
+      pinnedTabs: sessionMeta?.pinnedTabs ?? [],
+      initialFocusTabId: sessionMeta?.pinnedTabs?.[0]?.tabId,
       // Phase 5 — per-task screenshot budget key.
       taskId: chatTaskId,
       // M3-U4 (TOCTOU fix) — refresh the cross-session pinned-tab

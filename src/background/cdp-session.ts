@@ -56,8 +56,17 @@ export class CdpAttachError extends Error {
  *
  * `tabId` here is redundant with the sessionMap key, but keeping it
  * inside the tuple means a future per-session-multiple-tabs design
- * doesn't need a schema change. For now the invariant holds: tabId in
- * ownerToken === tabId in sessionMap key === ctx.pinnedTabId.
+ * doesn't need a schema change.
+ *
+ * v1.5 multi-pin note: the prior invariant "ownerToken.tabId === sessionMap
+ * key === ctx.pinnedTabId" is **relaxed** in multi-pin mode. After the agent
+ * calls `focus_tab` mid-task, `ctx.tabId` switches to the new focused pin
+ * but `ownerToken.tabId` stays at the task-start tabId. This is benign:
+ *   - Keyboard tools route via `ctx.tabId`, NOT `ownerToken.tabId`.
+ *   - The sessionMap key still uniquely identifies the attached debuggee.
+ *   - `ownerToken.tabId` is metadata-only (cross-session conflict messages,
+ *     debug logging). No security-critical path depends on equality.
+ * v1.5.1 backlog: refresh ownerToken on focus_tab as defense-in-depth.
  */
 export interface CdpOwnerToken {
   sessionId: string;

@@ -95,7 +95,9 @@ function indexEntryFromMeta(meta: SessionMeta): SessionIndexEntry {
     messageCount: meta.messages.length,
   };
   if (meta.title !== undefined) entry.title = meta.title;
-  if (meta.pinnedTabId !== undefined) entry.pinnedTabId = meta.pinnedTabId;
+  if (meta.pinnedTabs && meta.pinnedTabs.length > 0) {
+    entry.pinnedTabIds = meta.pinnedTabs.map((p) => p.tabId);
+  }
   return entry;
 }
 
@@ -110,13 +112,35 @@ function upsertIndexEntry(
 // ── Public API ──────────────────────────────────────────────────────────────
 
 export interface CreateSessionOptions {
-  /** Pinned tab captured at session creation (M3-U2). M1 callers omit. */
+  /**
+   * v1.5 — Native multi-pin option. Preferred over legacy fields.
+   * Pinned tabs captured at session creation.
+   *
+   * Precedence: when both `pinnedTabs[]` and legacy `pinnedTabId`/
+   * `pinnedOrigin` are provided, `pinnedTabs[]` wins; legacy is ignored.
+   * When only one of `pinnedTabId`/`pinnedOrigin` is provided (without the
+   * matching twin), both are silently dropped — partial legacy options are
+   * not converted.
+   */
+  pinnedTabs?: Array<{ tabId: number; origin: string }>;
+  /**
+   * @deprecated v1.5 — Use `pinnedTabs[]` instead. Accepted here for
+   * back-compat with existing test fixtures and pre-migration callers.
+   * Internally converted to `pinnedTabs:[{tabId, origin}]` only when BOTH
+   * `pinnedTabId` AND `pinnedOrigin` are present; otherwise silently dropped.
+   * Never persisted as a legacy field directly — storage's dual-write shim
+   * re-synthesizes legacy fields from `pinnedTabs[0]`.
+   */
   pinnedTabId?: number;
+  /**
+   * @deprecated v1.5 — Use `pinnedTabs[]` instead. See `pinnedTabId` for
+   * the both-required-or-dropped precedence rule.
+   */
   pinnedOrigin?: string;
-  /** M5 — Explicit pin mode. If omitted: defaults to 'user' when
-   *  pinnedTabId+pinnedOrigin are passed (back-compat for existing tests
-   *  that use createSession to set up a pinned session as a fixture);
-   *  defaults to 'auto' when no pin is passed. */
+  /** M5 — Explicit pin mode. If omitted: defaults to 'user' when a pin
+   *  is passed (back-compat for existing tests that use createSession to
+   *  set up a pinned session as a fixture); defaults to 'auto' when no
+   *  pin is passed. */
   pinMode?: "auto" | "task" | "user";
   /** Initial messages, e.g. for migration scenarios. M1 callers omit. */
   messages?: SessionMeta["messages"];
@@ -136,18 +160,25 @@ export async function createSession(
   const id = crypto.randomUUID();
   const now = options.now ?? Date.now();
 
+  // v1.5 — Resolve pinnedTabs[] from either the native option or legacy
+  // back-compat fields. Legacy pinnedTabId+pinnedOrigin (both required) are
+  // converted to a single-element array here and never persisted as legacy.
+  const resolvedPinnedTabs: Array<{ tabId: number; origin: string }> =
+    options.pinnedTabs ??
+    (typeof options.pinnedTabId === "number" &&
+    typeof options.pinnedOrigin === "string"
+      ? [{ tabId: options.pinnedTabId, origin: options.pinnedOrigin }]
+      : []);
+
   // M5 — pinMode default policy:
   //   - explicit options.pinMode wins
-  //   - else if pinnedTabId+pinnedOrigin given → 'user' (back-compat: existing
-  //     tests pass a pin to set up a fixture; user is the right default since
-  //     it persists and includes the session in the cross-session registry)
+  //   - else if a pin is provided → 'user' (back-compat: existing tests pass a
+  //     pin to set up a fixture; user is the right default since it persists
+  //     and includes the session in the cross-session registry)
   //   - else → 'auto' (no pin)
   const pinMode: "auto" | "task" | "user" =
     options.pinMode ??
-    (typeof options.pinnedTabId === "number" &&
-    typeof options.pinnedOrigin === "string"
-      ? "user"
-      : "auto");
+    (resolvedPinnedTabs.length > 0 ? "user" : "auto");
 
   const rawMeta: SessionMeta = {
     id,
@@ -156,11 +187,8 @@ export async function createSession(
     status: "active",
     messages: options.messages ?? [],
     pinMode,
-    ...(pinMode !== "auto" && options.pinnedTabId !== undefined
-      ? { pinnedTabId: options.pinnedTabId }
-      : {}),
-    ...(pinMode !== "auto" && options.pinnedOrigin !== undefined
-      ? { pinnedOrigin: options.pinnedOrigin }
+    ...(pinMode !== "auto" && resolvedPinnedTabs.length > 0
+      ? { pinnedTabs: resolvedPinnedTabs }
       : {}),
   };
 
@@ -235,52 +263,7 @@ function scrubAttachmentBytes(meta: SessionMeta): SessionMeta {
 }
 
 /**
- * M5 — pinMode normalize-on-write.
- *
- *   - pinMode='auto' → strip pinnedTabId/Origin (invariant: auto never persists pin)
- *   - pinMode undefined → infer via getEffectivePinMode (reads agent state once);
- *     'auto' inference also strips pin (lazy migration of legacy session).
- *   - pinMode='task' or 'user' → pass through unchanged
- *
- * Returns the (possibly new) meta and a sentinel indicating whether mutation
- * happened (callers can skip allocation if not).
- */
-async function normalizePinModeForWrite(
-  meta: SessionMeta,
-): Promise<SessionMeta> {
-  if (meta.pinMode === undefined) {
-    // Legacy session without explicit pinMode — read agent state and infer.
-    // One extra storage round-trip on the cold path; subsequent writes hit
-    // the explicit-mode branches below and skip this read.
-    const agentRecord = await chrome.storage.local.get(agentKey(meta.id));
-    const agent = (agentRecord[agentKey(meta.id)] as
-      | SessionAgentState
-      | undefined) ?? null;
-    const inferred = getEffectivePinMode(meta, agent);
-    if (inferred === "auto") {
-      const next: SessionMeta = { ...meta, pinMode: "auto" };
-      delete next.pinnedTabId;
-      delete next.pinnedOrigin;
-      return next;
-    }
-    return { ...meta, pinMode: inferred };
-  }
-  if (
-    meta.pinMode === "auto" &&
-    (meta.pinnedTabId !== undefined || meta.pinnedOrigin !== undefined)
-  ) {
-    // Invariant guard — auto mode must never persist a pin. Strip them
-    // even if the caller forgot to.
-    const next: SessionMeta = { ...meta };
-    delete next.pinnedTabId;
-    delete next.pinnedOrigin;
-    return next;
-  }
-  return meta;
-}
-
-/**
- * Persist session meta. If `status`, `pinnedTabId`, `lastAccessedAt`, or
+ * Persist session meta. If `status`, `pinnedTabIds`, `lastAccessedAt`, or
  * `title` differ from what's currently in the index, the index is updated
  * in the same atomic batch (D9). If the session is missing from the index
  * altogether (e.g. createSession was bypassed in a test) it is added.
@@ -288,13 +271,9 @@ async function normalizePinModeForWrite(
  * R10 — strips `ImageAttachment.data` bytes from `meta.messages` before
  * persisting. Bytes live in the in-memory image cache; placeholders survive
  * in storage so identity is preserved for warm-resume hydration.
- *
- * M5 — also normalizes pinMode (lazy migration for legacy sessions; invariant
- * guard for auto mode never carrying a persisted pin).
  */
 export async function setSessionMeta(meta: SessionMeta): Promise<void> {
-  const pinNormalizedMeta = await normalizePinModeForWrite(meta);
-  const scrubbedMeta = scrubAttachmentBytes(pinNormalizedMeta);
+  const scrubbedMeta = scrubAttachmentBytes(meta);
   const index = await readIndex();
   const nextEntry = indexEntryFromMeta(scrubbedMeta);
   const existingEntry = index.find((e) => e.id === scrubbedMeta.id);
@@ -304,7 +283,7 @@ export async function setSessionMeta(meta: SessionMeta): Promise<void> {
     existingEntry.lastAccessedAt !== nextEntry.lastAccessedAt ||
     existingEntry.status !== nextEntry.status ||
     existingEntry.title !== nextEntry.title ||
-    existingEntry.pinnedTabId !== nextEntry.pinnedTabId ||
+    JSON.stringify(existingEntry.pinnedTabIds) !== JSON.stringify(nextEntry.pinnedTabIds) ||
     existingEntry.messageCount !== nextEntry.messageCount;
 
   const batch: WriteBatch = { [metaKey(scrubbedMeta.id)]: scrubbedMeta };
@@ -379,25 +358,57 @@ export async function updateLastAccessed(
     now?: number;
     status?: SessionStatus;
     title?: string;
+    /**
+     * v1.5 — Native multi-pin patch. Preferred over legacy fields.
+     *
+     * Precedence: when both `pinnedTabs[]` and legacy `pinnedTabId`/
+     * `pinnedOrigin` are provided, `pinnedTabs[]` wins; legacy is ignored.
+     * When only one of `pinnedTabId`/`pinnedOrigin` is provided (without the
+     * matching twin), both are silently dropped — partial legacy patches are
+     * not converted.
+     */
+    pinnedTabs?: Array<{ tabId: number; origin: string }>;
+    /**
+     * @deprecated v1.5 — Use `pinnedTabs[]` instead. Accepted here for
+     * back-compat with existing callers. When both `pinnedTabId` AND
+     * `pinnedOrigin` are provided, they are converted to a single-element
+     * `pinnedTabs[]` entry; storage's dual-write shim then re-synthesizes
+     * legacy fields from `pinnedTabs[0]` on persist. When only one is
+     * provided, the pin patch is a silent no-op (partial legacy patch is
+     * not supported).
+     */
     pinnedTabId?: number;
+    /**
+     * @deprecated v1.5 — Use `pinnedTabs[]` instead. See `pinnedTabId` for
+     * the both-required-or-dropped precedence rule.
+     */
     pinnedOrigin?: string;
-    /** M5 — explicit pin mode. When pinnedTabId is patched without a pinMode,
-     *  the effective mode defaults to 'user' (back-compat with M3 first-message
-     *  capture path; the new SW chat-start upgrade path passes 'task' explicitly). */
+    /** M5 — explicit pin mode. When pinnedTabs is patched and non-empty without
+     *  a pinMode, the effective mode defaults to 'user' (back-compat with M3
+     *  first-message capture path; the new SW chat-start upgrade path passes
+     *  'task' explicitly). */
     pinMode?: "auto" | "task" | "user";
   } = {},
 ): Promise<boolean> {
   const meta = await getSessionMeta(id);
   if (!meta) return false;
 
-  // M5 — if caller patches pinnedTabId but doesn't pass pinMode, default to
-  // 'user' so the auto-mode invariant guard in setSessionMeta doesn't strip
-  // the patch (auto mode never persists pin). Existing M3-U2 first-message
-  // capture path (panel-side) thus continues working without code change at
-  // call sites; Unit 5's SW chat-start path passes pinMode='task' explicitly.
+  // v1.5 — Resolve pinnedTabs from either native option or legacy back-compat.
+  // Both pinnedTabId AND pinnedOrigin must be present for legacy conversion;
+  // a partial legacy patch (only one field) is a no-op for the pin.
+  const resolvedPinnedTabs: Array<{ tabId: number; origin: string }> | undefined =
+    options.pinnedTabs ??
+    (typeof options.pinnedTabId === "number" &&
+    typeof options.pinnedOrigin === "string"
+      ? [{ tabId: options.pinnedTabId, origin: options.pinnedOrigin }]
+      : undefined);
+
+  // M5 — if caller patches pin but doesn't pass pinMode, default to 'user'.
   const inferredPinMode =
     options.pinMode ??
-    (options.pinnedTabId !== undefined ? "user" : undefined);
+    (resolvedPinnedTabs !== undefined && resolvedPinnedTabs.length > 0
+      ? "user"
+      : undefined);
 
   const updated: SessionMeta = {
     ...meta,
@@ -405,11 +416,8 @@ export async function updateLastAccessed(
     ...(options.status !== undefined ? { status: options.status } : {}),
     ...(options.title !== undefined ? { title: options.title } : {}),
     ...(inferredPinMode !== undefined ? { pinMode: inferredPinMode } : {}),
-    ...(options.pinnedTabId !== undefined
-      ? { pinnedTabId: options.pinnedTabId }
-      : {}),
-    ...(options.pinnedOrigin !== undefined
-      ? { pinnedOrigin: options.pinnedOrigin }
+    ...(resolvedPinnedTabs !== undefined
+      ? { pinnedTabs: resolvedPinnedTabs }
       : {}),
   };
 
@@ -508,8 +516,7 @@ export async function upgradeAutoToTaskAtChatStart(
   await setSessionMeta({
     ...meta,
     pinMode: "task",
-    pinnedTabId: pin.tabId,
-    pinnedOrigin: pin.origin,
+    pinnedTabs: [{ tabId: pin.tabId, origin: pin.origin }],
   });
   return pin;
 }

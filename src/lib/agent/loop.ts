@@ -44,6 +44,13 @@ import type {
   TabContentPreview,
 } from "../../types/messages";
 import type { SessionAgentState } from "../sessions/types";
+import {
+  getSessionMeta,
+  setSessionMeta,
+  getSessionAgent,
+  setSessionAgent,
+} from "../sessions/storage";
+import { addPinToMeta } from "../sessions/pin-state";
 import { synthesizeAgentTurnText, type TerminationReason } from "./synthesize-agent-turn";
 // setLastTaskSynth removed from emitDone — lastTaskSynth is now folded into
 // the tombstone write by buildSessionAgentTombstone(synth) to prevent the
@@ -162,28 +169,22 @@ export interface AgentLoopContext {
    */
   taskId?: string;
   /**
-   * M3-U2 — pre-anchored pinned tab + origin. Captured by the panel at
-   * session creation / activation and stored on the session meta; the
-   * SW dispatcher (`handleChatStream` / `handleResumeRequest`) reads
-   * the meta fields and constructs this object. When present the loop
-   * SKIPS the legacy `chrome.tabs.query({active:true,currentWindow:true})`
-   * anchor step — sessions are pinned to "what the user was looking at
-   * when they created the session", not to "whatever happens to be
-   * active the moment chat-start arrives" (which would race the user's
-   * tab switches and produce surprising cross-origin pins).
+   * v1.5 multi-pin — full set of pinned tabs owned by this session.
+   * Index 0 is the chat-start capture; later indices are open_url
+   * pushes (Task 7). The loop's per-iteration snapshot is taken on the tab
+   * whose id matches `SessionAgentState.currentFocusTabId` (default =
+   * pinnedTabs[0].tabId). Task 6's focus_tab tool mutates that pointer.
    *
-   * Single object so the both-or-neither contract is enforced at the
-   * type level (the previous design used two independent optionals,
-   * relying on JSDoc + runtime truthiness for what the type system
-   * could express directly).
-   *
-   * Undefined (legacy M1 / M2 sessions whose meta was written before
-   * this field existed): the loop falls back to the active-tab anchor —
-   * backward compatible. The panel's setActive / bootstrap migration
-   * backfills missing pins on the first activation under M3 so the
-   * legacy path is rarely hit.
+   * Undefined (legacy sessions without pinnedTabs[]): the loop falls back
+   * to the active-tab anchor — backward compatible with pre-v1.5 sessions.
    */
-  pinned?: { tabId: number; origin: string };
+  pinnedTabs?: Array<{ tabId: number; origin: string }>;
+  /**
+   * v1.5 — initial focus on chat-start. Defaults to pinnedTabs[0].tabId.
+   * Resume path passes the persisted SessionAgentState.currentFocusTabId;
+   * chat-start passes pinnedTabs[0].tabId fresh.
+   */
+  initialFocusTabId?: number;
   /**
    * M5 — current session's pin mode at chat-start. SW dispatcher computes
    * this via getEffectivePinMode(meta, agent) and threads it through to
@@ -696,6 +697,109 @@ export function buildSessionAgentTombstone(lastTaskSynth?: string | null): Sessi
 }
 
 /**
+ * v1.5 — pure helper: merge a fresh per-step snapshot with the existing
+ * persisted SessionAgentState so fields written between snapshots survive
+ * the per-step boundary.
+ *
+ * Background: `buildSessionAgentSnapshot` constructs a fresh state with
+ * only `agentMessages / stepIndex / skillExecutionScopeStack /
+ * hasImageContent`. Tools that mutate other fields via separate writers
+ * (e.g. `setCurrentFocusTabId` from focus_tab in Task 6, `pendingConfirm`
+ * from setPendingConfirm) would have their writes silently overwritten
+ * if the snapshot were applied as a full key REPLACE (`writeAtomic` is
+ * a key-level atomic replace in `setSessionAgent`).
+ *
+ * Merge strategy: spread `existing` first, then `snapshot`, so snapshot
+ * fields always win for the four fields it carries — but any field
+ * present on `existing` but NOT on `snapshot` (currentFocusTabId,
+ * pendingConfirm) is preserved.
+ *
+ * Tombstone exception: a tombstone is the explicit "no in-flight task"
+ * marker (`stepIndex === 0 && agentMessages.length === 0`). On tombstone
+ * we MUST clear carry-over fields so a fresh task starts with fresh focus
+ * (currentFocusTabId reset, pendingConfirm cleared). Detect by the shape
+ * `buildSessionAgentTombstone` produces and bypass the merge — full replace.
+ *
+ * Exported for unit testing.
+ */
+export function mergeSessionAgentSnapshot(
+  existing: SessionAgentState | null,
+  snapshot: SessionAgentState,
+): SessionAgentState {
+  if (!existing) return snapshot;
+  // Tombstone signature: stepIndex 0 AND empty agentMessages. This is the
+  // unambiguous "fresh task reset" shape produced by buildSessionAgentTombstone.
+  // (A live task at stepIndex 1+ never has an empty agentMessages array.)
+  const isTombstone = snapshot.stepIndex === 0 && snapshot.agentMessages.length === 0;
+  if (isTombstone) return snapshot;
+  return { ...existing, ...snapshot };
+}
+
+/**
+ * v1.5 — pure helper: given pinnedTabs[] and a currentFocusTabId, resolve
+ * which tab the loop should snapshot and operate on this iteration.
+ *
+ * Semantics:
+ *   - pinnedTabs empty / undefined → returns undefined (loop will fall back
+ *     to legacy active-tab anchor).
+ *   - currentFocusTabId undefined → returns pinnedTabs[0] (primary).
+ *   - currentFocusTabId set → returns the matching entry, falling back to
+ *     pinnedTabs[0] if not found (stale focus pointer; graceful degradation).
+ *
+ * Exported for unit testing.
+ */
+export function resolveFocusedPin(
+  pinnedTabs: ReadonlyArray<{ tabId: number; origin: string }> | undefined,
+  currentFocusTabId: number | undefined,
+): { tabId: number; origin: string } | undefined {
+  if (!pinnedTabs || pinnedTabs.length === 0) return undefined;
+  const primary = pinnedTabs[0]!;
+  if (currentFocusTabId === undefined) return primary;
+  return pinnedTabs.find((p) => p.tabId === currentFocusTabId) ?? primary;
+}
+
+/**
+ * v1.5 Task 6+7 — per-iteration focus refresh helper.
+ *
+ * Re-reads storage so that:
+ *   - (Task 6) a focus_tab call in the previous iteration takes effect here
+ *     (currentFocusTabId lives on SessionAgentState; mutated by focus_tab
+ *     via setCurrentFocusTabId).
+ *   - (Task 7) a new pin appended by open_url is observable in the very
+ *     next iteration (pinnedTabs lives on SessionMeta; mutated by open_url
+ *     via addPinToMeta + setSessionMeta). ctx.pinnedTabs is captured at
+ *     task-start and is FROZEN inside the loop closure, so we re-read meta
+ *     to pick up newly opened pins.
+ *
+ * resolveFocusedPin falls back to pinnedTabs[0] when currentFocusTabId is
+ * undefined (auto/legacy mode) or stale (target pin was removed).
+ *
+ * Returns undefined when there is no pinned tab to resolve (legacy active-tab
+ * fallback path).
+ *
+ * IMPORTANT field-path constraint (regression guard):
+ *   - currentFocusTabId lives on SessionAgentState, NOT SessionMeta
+ *   - pinnedTabs       lives on SessionMeta,       NOT SessionAgentState
+ * Both Promises MUST be awaited; the historical bug was reading
+ * `getSessionAgent(...).currentFocusTabId` (Promise without await → always
+ * undefined → focus_tab silently no-ops on every iteration).
+ *
+ * Exported so the integration regression tests can exercise the exact
+ * storage round-trip the loop uses.
+ */
+export async function readFocusFromStorage(
+  sessionId: string,
+  ctxPinnedTabs: ReadonlyArray<{ tabId: number; origin: string }> | undefined,
+): Promise<{ tabId: number; origin: string } | undefined> {
+  const [agentSnap, metaSnap] = await Promise.all([
+    getSessionAgent(sessionId),
+    getSessionMeta(sessionId),
+  ]);
+  const refreshedPins = metaSnap?.pinnedTabs ?? ctxPinnedTabs ?? [];
+  return resolveFocusedPin(refreshedPins, agentSnap?.currentFocusTabId);
+}
+
+/**
  * M3-U4 — pure helper: collect tab ids that this tool call would write
  * to AND that are pinned by another active session. Returns an empty
  * array when the tool is read-class, has no explicit cross-session
@@ -908,25 +1012,25 @@ export async function runAgentLoop(ctx: AgentLoopContext): Promise<void> {
 
   // 1. Anchor tab + origin at task start.
   //
-  // M3-U2 — preferred path: ctx carries the panel-captured pin (set at
-  // session creation / activation). Trust it without re-querying active
-  // tab; the per-iteration origin re-check (loop body, ~line 705) handles
-  // any drift between session creation and chat-start. Re-querying here
-  // would race the user's tab focus and produce surprising "the agent
-  // pinned to the wrong tab" outcomes (e.g. user typed a task in session
-  // A while focused on an unrelated tab).
+  // v1.5 multi-pin — preferred path: ctx carries the panel-captured pinnedTabs[].
+  // resolveFocusedPin selects the focused tab (per initialFocusTabId, defaulting
+  // to pinnedTabs[0]). The per-iteration origin re-check (loop body) handles any
+  // drift between session creation and chat-start.
   //
-  // Legacy fallback: M1 / M2 sessions whose meta was written before
-  // M3-U2 won't carry a pin. Fall through to the historical active-tab
-  // anchor; the panel's backfill migration covers most of these on
-  // first M3 activation, but the fallback ensures correctness if a
-  // session somehow reaches runAgentLoop without one.
+  // Task 6 note: currentFocusTabId is read once at task-start here. Task 6's
+  // focus_tab tool will need to reassign pinnedTabId/pinnedOrigin mid-loop
+  // (or refresh from agent state at the top of each iteration) — that's Task 6
+  // territory. The scaffold wires the storage writer via ToolHandlerContext.
+  //
+  // Legacy fallback: sessions without pinnedTabs[] fall through to the
+  // historical active-tab anchor — backward compatible with pre-v1.5 sessions.
   let pinnedTabId: number;
   let pinnedOrigin: string;
 
-  if (ctx.pinned) {
-    pinnedTabId = ctx.pinned.tabId;
-    pinnedOrigin = ctx.pinned.origin;
+  const focusedAtStart = resolveFocusedPin(ctx.pinnedTabs, ctx.initialFocusTabId);
+  if (focusedAtStart) {
+    pinnedTabId = focusedAtStart.tabId;
+    pinnedOrigin = focusedAtStart.origin;
   } else {
     try {
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -965,6 +1069,16 @@ export async function runAgentLoop(ctx: AgentLoopContext): Promise<void> {
   // M3-U3 — bind ownerToken now that pinnedTabId is final. acquireSessionForTask
   // (defined below) closes over this; first invocation happens inside the
   // for-loop after this assignment, so the timing is safe.
+  //
+  // Note: ownerToken.tabId is captured once at task-start. After focus_tab
+  // mutates the focused tab, keyboard tools (dispatch_keyboard_input /
+  // press_key) ROUTE CORRECTLY to the new focused tab — they read ctx.tabId,
+  // not ownerToken.tabId. The ownerToken's tabId only drives the cdp-session
+  // sessionMap key (metadata for the M3-U3 owner-attached invariant); routing
+  // to the live focused tab is unchanged. The "ownerToken.tabId === ctx.tabId"
+  // invariant is now relaxed in multi-pin mode, but no security-critical path
+  // depends on it. v1.5.1 backlog: refresh ownerToken on focus_tab as
+  // defense-in-depth.
   ownerToken = { sessionId, tabId: pinnedTabId };
 
   // Curried CdpSession factory — passed to keyboard tools via closure.
@@ -1019,12 +1133,15 @@ export async function runAgentLoop(ctx: AgentLoopContext): Promise<void> {
       task,
       keyboardSimEnabledAtStart,
       /* hasMetaTools */ true,
-      // M3-U2 — pass the authoritative pinned tab id + origin so
-      // the LLM can call get_tab_content({tabId}) directly for
-      // "summarize / read this page" tasks instead of burning a
-      // list_tabs round-trip + a confirm card just to discover
-      // its own tab id.
-      { tabId: pinnedTabId, origin: pinnedOrigin },
+      // v1.5 M3-U2 — pass the full pinnedTabs array + initial focus.
+      // Single-entry: back-compat phrasing ("a specific browser tab").
+      // Multi-entry: lists all tabs with "← current focus" marker and
+      // explains focus_tab. The LLM can call get_tab_content({tabId})
+      // directly for read tasks; the focus marker reflects task-start
+      // focus only (system prompt is static per task; see focus_tab
+      // handler for per-iteration refresh semantics).
+      ctx.pinnedTabs ?? [],
+      pinnedTabId,
     ),
   };
 
@@ -1078,6 +1195,16 @@ export async function runAgentLoop(ctx: AgentLoopContext): Promise<void> {
     for (let stepIndex = startStepIndex; stepIndex <= MAX_STEPS; stepIndex++) {
       lastStepIndex = stepIndex;
       if (signal.aborted) return; // → finally
+
+      // v1.5 Task 6+7 — per-iteration focus refresh.
+      const refreshedFocus = await readFocusFromStorage(
+        sessionId,
+        ctx.pinnedTabs,
+      );
+      if (refreshedFocus) {
+        pinnedTabId = refreshedFocus.tabId;
+        pinnedOrigin = refreshedFocus.origin;
+      }
 
       // Origin check
       let currentUrl: string;
@@ -1741,7 +1868,8 @@ export async function runAgentLoop(ctx: AgentLoopContext): Promise<void> {
         }
 
         const riskCtx: RiskClassifyContext = {
-          pinnedOrigin,
+          // v1.5: direct multi-pin array — no synthesis shim needed.
+          pinnedTabs: ctx.pinnedTabs ?? [],
           allTabsCache: tabTargetsToOriginCache(tabTargets),
         };
 
@@ -1958,6 +2086,19 @@ export async function runAgentLoop(ctx: AgentLoopContext): Promise<void> {
             // M5 — frozen at chat-start (passed via AgentLoopContext.pinMode);
             // close_tabs K-9 reads this to refuse closing user-locked pins.
             pinMode: ctx.pinMode,
+            // v1.5 — full pinnedTabs array for validation + mutation by
+            // focus_tab (Task 6) and open_url (Task 7).
+            pinnedTabs: ctx.pinnedTabs,
+            appendPinnedTab: async (pin) => {
+              const meta = await getSessionMeta(sessionId);
+              if (!meta) return;
+              await setSessionMeta(addPinToMeta(meta, pin));
+            },
+            setCurrentFocusTabId: async (tabId) => {
+              const cur = await getSessionAgent(sessionId);
+              if (!cur) return;
+              await setSessionAgent(sessionId, { ...cur, currentFocusTabId: tabId });
+            },
           });
         } catch (e) {
           result = {
