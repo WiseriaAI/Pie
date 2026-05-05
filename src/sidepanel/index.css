@@ -120,6 +120,7 @@
   --color-warning: var(--c-warning);
   --color-warning-tint: var(--c-warning-tint);
   --color-warning-line: var(--c-warning-line);
+  --color-pending: var(--c-pending);
   --color-overlay: var(--c-overlay);
 
   --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;

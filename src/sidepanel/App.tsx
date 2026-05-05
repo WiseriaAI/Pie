@@ -12,7 +12,6 @@ import { normalizeSkillSlashKey } from "@/lib/skills";
 import { useSession } from "@/sidepanel/hooks/useSession";
 import { useRecording } from "@/sidepanel/hooks/useRecording";
 import RecordingMode from "@/sidepanel/components/RecordingMode";
-import TopBarRecordButton from "@/sidepanel/components/TopBarRecordButton";
 import { listSessionIndex } from "@/lib/sessions/storage";
 import { hardDeleteExpired } from "@/lib/sessions/lifecycle";
 import type { SessionIndexEntry, SessionAgentState } from "@/lib/sessions/types";
@@ -292,18 +291,9 @@ export default function App() {
           {sessionTitle}
         </span>
 
-        {/* Record button */}
-        <TopBarRecordButton
-          active={recording.active}
-          disabled={!session.sessionId || session.streaming || pendingRecording !== null}
-          onClick={() => {
-            if (recording.active) {
-              recording.finishRecording();
-            } else {
-              recording.startRecording();
-            }
-          }}
-        />
+        {/* Recording v1: REC button moved to Composer (within input field).
+            See Chat.tsx <Composer onStartRecording={...} /> + RecordingMode
+            footer Recording bar (Cancel/Finish). */}
 
         {/* Theme toggle (light / dark / system cycle) */}
         <TopBarThemeButton mode={themeMode} onModeChange={setThemeMode} />
@@ -340,6 +330,11 @@ export default function App() {
             session={session}
             pendingRecording={pendingRecording}
             onPendingRecordingConsumed={handlePendingRecordingConsumed}
+            onStartRecording={
+              session.sessionId && !session.streaming
+                ? recording.startRecording
+                : undefined
+            }
           />
         ) : (
           <Settings

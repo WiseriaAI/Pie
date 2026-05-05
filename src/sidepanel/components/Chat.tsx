@@ -79,6 +79,10 @@ interface ChatProps {
   pendingRecording?: { trace: string; stepCount: number } | null;
   /** Called when user × the chip OR Send consumes the trace. */
   onPendingRecordingConsumed?: () => void;
+  /** Recording v1 — Composer renders the [● REC] button when this is provided.
+   *  Click triggers a recording-start; the panel switches to RecordingMode on
+   *  the next broadcast. */
+  onStartRecording?: () => void;
 }
 
 function filterAndSortSkillsForSlash(
@@ -121,6 +125,7 @@ export default function Chat({
   session,
   pendingRecording,
   onPendingRecordingConsumed,
+  onStartRecording,
 }: ChatProps) {
   const {
     ready,
@@ -1074,6 +1079,8 @@ After the skill completes, briefly summarize what was created (the user will see
         onAttachClick={() => fileInputRef.current?.click()}
         onPasteFiles={(files) => void addFiles(files)}
         onDropFiles={(files) => void addFiles(files)}
+        onStartRecording={onStartRecording}
+        recordingDisabled={pendingRecording !== null}
       />
     </div>
   );
@@ -1233,6 +1240,8 @@ function Composer({
   onAttachClick,
   onPasteFiles,
   onDropFiles,
+  onStartRecording,
+  recordingDisabled,
 }: {
   input: string;
   streaming: boolean;
@@ -1250,6 +1259,13 @@ function Composer({
   onAttachClick: () => void;
   onPasteFiles: (files: File[]) => void;
   onDropFiles: (files: File[]) => void;
+  /** Recording v1 — when present, render the [● REC] button next to Send.
+   *  Click triggers recording-start; the panel switches to RecordingMode
+   *  on the next broadcast (no UI feedback inside Composer is needed). */
+  onStartRecording?: () => void;
+  /** Disabled while a pendingRecording chip is sitting in the input
+   *  (you'd send the existing chip first) or when no active session. */
+  recordingDisabled?: boolean;
 }) {
   return (
     <div className="flex flex-shrink-0 flex-col gap-2 border-t border-line bg-canvas px-4 pb-4 pt-3">
@@ -1350,14 +1366,32 @@ function Composer({
               STOP
             </button>
           ) : (
-            <button
-              onClick={onSend}
-              disabled={!input.trim()}
-              className="flex items-center gap-1.5 self-end rounded border border-line px-2.5 py-1 text-[11px] text-fg-2 hover:border-fg-3 hover:text-fg-1 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              <span>Send</span>
-              <span className="font-mono text-[10px] text-fg-3">↵</span>
-            </button>
+            <>
+              {/* Recording v1 — REC button sits next to Send when a startRecording
+                  handler is provided. Disabled while pendingRecording chip is up
+                  or no active session. */}
+              {onStartRecording && (
+                <button
+                  type="button"
+                  onClick={onStartRecording}
+                  disabled={recordingDisabled}
+                  title="Record DOM actions on this tab"
+                  aria-label="Start recording"
+                  className="flex items-center gap-1.5 self-end rounded border border-line px-2 py-1 font-mono text-[10px] tracking-[0.08em] text-fg-2 hover:border-fg-3 hover:text-fg-1 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  <span className="inline-block h-[5px] w-[5px] rounded-full bg-fg-3" />
+                  <span>REC</span>
+                </button>
+              )}
+              <button
+                onClick={onSend}
+                disabled={!input.trim()}
+                className="flex items-center gap-1.5 self-end rounded border border-line px-2.5 py-1 text-[11px] text-fg-2 hover:border-fg-3 hover:text-fg-1 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <span>Send</span>
+                <span className="font-mono text-[10px] text-fg-3">↵</span>
+              </button>
+            </>
           )}
         </div>
       </div>
