@@ -4,88 +4,9 @@ import type { PageSnapshot } from "./types";
  * Self-contained function injected via chrome.scripting.executeScript.
  * NO imports, NO closures, NO outer-scope references at runtime.
  * All helpers are nested inside this function.
- *
- * Issue #27 — async with two settle waits before extraction:
- *
- * Symptom: after a click that triggers a navigation (Turbo/Hotwire form
- * submit, SPA route change, or a real cross-document nav), the next loop
- * iteration's observation reported the NEW `Current URL:` (from
- * chrome.tabs.get) but the OLD interactive elements list (from this
- * function via chrome.scripting.executeScript). Two Chrome APIs see
- * different moments of the navigation lifecycle: tab metadata updates at
- * commit / pushState, while the scripting target's DOM may still be the
- * outgoing document or be mid-swap. The model treated this as "page
- * unchanged" and re-clicked the submit button — issue #27.
- *
- * Fix: page-side stability wait inside the injected function so the
- * snapshot only reads DOM after the page has settled. Two phases:
- *   1. readyState !== 'complete' → await `load` event (max 2000ms)
- *   2. MutationObserver on document.body until 200ms of quiet
- *      childList/subtree mutations, capped at 1500ms
- *
- * MV3 chrome.scripting.executeScript awaits Promises returned by `func`;
- * the resolved value lands in `results[0].result`. No call-site change in
- * loop.ts needed. Steady-state cost is ~200ms (the quiet window) per
- * iteration; on a navigation the worst case is ~3500ms but it eliminates
- * the "stale snapshot" failure mode entirely.
- *
- * Order matters: stability waits run BEFORE the cleanup of the
- * `data-chrome-ai-agent-idx` attribute. If cleanup ran first the
- * MutationObserver would observe its own attribute removals as page
- * activity and never reach the quiet threshold.
  */
-export async function snapshotInteractiveElements(): Promise<PageSnapshot> {
+export function snapshotInteractiveElements(): PageSnapshot {
   // ── Helpers (all nested; captured when Chrome serializes this function) ──
-
-  function waitForReadyComplete(maxMs: number): Promise<void> {
-    return new Promise<void>((resolve) => {
-      if (document.readyState === "complete") {
-        resolve();
-        return;
-      }
-      let done = false;
-      const finish = () => {
-        if (done) return;
-        done = true;
-        window.removeEventListener("load", finish);
-        resolve();
-      };
-      window.addEventListener("load", finish, { once: true });
-      // Hard cap so a stuck `load` (e.g. a hung sub-resource) doesn't
-      // wedge the agent loop. The page may still snapshot correctly even
-      // without `load` having fired — readyState 'interactive' usually
-      // has the interactive elements in place.
-      setTimeout(finish, maxMs);
-    });
-  }
-
-  function waitForDomStable(quietMs: number, maxMs: number): Promise<void> {
-    return new Promise<void>((resolve) => {
-      // No body yet (very early page state) — nothing to observe; let the
-      // extraction below handle the empty-DOM case.
-      if (!document.body) {
-        resolve();
-        return;
-      }
-      let lastMutationAt = Date.now();
-      const startedAt = lastMutationAt;
-      const observer = new MutationObserver(() => {
-        lastMutationAt = Date.now();
-      });
-      observer.observe(document.body, { childList: true, subtree: true });
-      const tick = () => {
-        const now = Date.now();
-        if (now - lastMutationAt >= quietMs || now - startedAt >= maxMs) {
-          observer.disconnect();
-          resolve();
-          return;
-        }
-        setTimeout(tick, 50);
-      };
-      setTimeout(tick, 50);
-    });
-  }
-
 
   function sanitizeText(str: string, maxLen: number): string {
     if (!str) return "";
@@ -191,18 +112,6 @@ export async function snapshotInteractiveElements(): Promise<PageSnapshot> {
   ].join(", ");
 
   const MAX_ELEMENTS = 200;
-
-  // Issue #27 — wait for the page to settle BEFORE the cleanup-then-stamp
-  // pass below. The cleanup itself mutates DOM (removes data-chrome-ai-agent-idx
-  // attributes), so running it before the MutationObserver-based stability
-  // check would self-trigger the observer and indefinitely defer the quiet
-  // window. Both helpers are no-throw / capped so they can't wedge the loop.
-  try {
-    await waitForReadyComplete(2000);
-    await waitForDomStable(200, 1500);
-  } catch {
-    // best-effort settle; fall through to extraction even if waits fail
-  }
 
   // Clean up any previously stamped attributes first
   // Namespaced attribute reduces collision with pages that use their own idx attributes.
