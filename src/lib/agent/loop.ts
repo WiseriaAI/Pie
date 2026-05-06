@@ -43,6 +43,7 @@ import type {
   TabTarget,
   TabContentPreview,
 } from "../../types/messages";
+import { ORIGIN_CHANGE_TOOL_SENTINEL } from "../../types/messages";
 import type { SessionAgentState } from "../sessions/types";
 import {
   getSessionMeta,
@@ -797,6 +798,85 @@ export async function readFocusFromStorage(
 }
 
 /**
+ * Issue #33 follow-up — origin-change confirm helper.
+ *
+ * The loop's per-iteration origin check used to abort the task on any
+ * cross-origin navigation (`Page origin changed, agent stopped for
+ * safety`). This helper turns that hard stop into a confirm: the user
+ * sees a card showing the from/to origin + new URL/title and decides
+ * whether to keep going. On approve, the new origin is persisted to
+ * `SessionMeta.pinnedTabs` so the same tab won't re-prompt on every
+ * subsequent iteration. On reject, callers treat it as the original
+ * abort path.
+ *
+ * The global skip-permissions toggle short-circuits the card *inside*
+ * `sendConfirmRequest` on the SW side (same path as tool confirms), so
+ * this helper itself is agnostic to the toggle — it only sees the
+ * resolved `{approved: boolean}` outcome.
+ *
+ * Exported so the unit tests can exercise it without spinning up the
+ * full agent loop.
+ */
+export async function handleOriginChange(args: {
+  sessionId: string;
+  tabId: number;
+  fromOrigin: string;
+  toOrigin: string;
+  newUrl: string;
+  newTitle: string;
+  sendConfirmRequest: (
+    confirmationId: string,
+    payload: Omit<AgentConfirmRequestMessage, "type" | "confirmationId">,
+  ) => Promise<{
+    approved: boolean;
+    reason?: "flood-limit" | "user-reject" | "aborted" | "pre-capture-failed";
+  }>;
+}): Promise<{ approved: boolean; reason?: string }> {
+  const {
+    sessionId,
+    tabId,
+    fromOrigin,
+    toOrigin,
+    newUrl,
+    newTitle,
+    sendConfirmRequest,
+  } = args;
+  const confirmationId = crypto.randomUUID();
+  const result = await sendConfirmRequest(confirmationId, {
+    tool: ORIGIN_CHANGE_TOOL_SENTINEL,
+    args: {},
+    resolvedElement: { text: "", tag: "" },
+    riskReason:
+      `The pinned tab navigated from ${fromOrigin} to ${toOrigin}. ` +
+      `Approve only if you initiated this jump — rejecting stops the agent for safety.`,
+    originChangePreview: {
+      fromOrigin,
+      toOrigin,
+      newUrl,
+      newTitle,
+      tabId,
+    },
+  });
+  if (!result.approved) {
+    return { approved: false, reason: result.reason };
+  }
+  // Persist the approved origin to SessionMeta.pinnedTabs so subsequent
+  // iterations don't re-prompt for the same tab. Missing meta (raced
+  // delete / fresh test harness) is graceful — the loop's in-memory
+  // pinnedOrigin update is the source of truth for THIS iteration; we
+  // do NOT downgrade an approved confirm into a reject just because
+  // persistence failed.
+  const meta = await getSessionMeta(sessionId);
+  if (meta && meta.pinnedTabs && meta.pinnedTabs.length > 0) {
+    const next = meta.pinnedTabs.map((p) =>
+      p.tabId === tabId ? { ...p, origin: toOrigin } : p,
+    );
+    await setSessionMeta({ ...meta, pinnedTabs: next });
+  }
+  return { approved: true };
+}
+
+/**
  * M3-U4 — pure helper: collect tab ids that this tool call would write
  * to AND that are pinned by another active session. Returns an empty
  * array when the tool is read-class, has no explicit cross-session
@@ -1202,6 +1282,9 @@ export async function runAgentLoop(ctx: AgentLoopContext): Promise<void> {
       try {
         const currentTab = await chrome.tabs.get(pinnedTabId);
         if (!currentTab.url || isRestrictedUrl(currentTab.url)) {
+          // Restricted URLs (chrome://, chrome-extension://, file:// etc.)
+          // are an absolute hard stop — no confirm path, the agent simply
+          // can't run there.
           await emitDone({
             type: "agent-done-task",
             success: false,
@@ -1211,7 +1294,9 @@ export async function runAgentLoop(ctx: AgentLoopContext): Promise<void> {
           return;
         }
         const currentOrigin = safeParseOrigin(currentTab.url);
-        if (!currentOrigin || currentOrigin !== pinnedOrigin) {
+        if (!currentOrigin) {
+          // Unparseable URL on a non-restricted scheme — treat as a hard
+          // stop (we have nothing meaningful to show in a confirm card).
           await emitDone({
             type: "agent-done-task",
             success: false,
@@ -1219,6 +1304,36 @@ export async function runAgentLoop(ctx: AgentLoopContext): Promise<void> {
             stepCount: stepIndex - 1,
           }, "abort");
           return;
+        }
+        if (currentOrigin !== pinnedOrigin) {
+          // Issue #33 follow-up — convert the hard origin-lock abort into
+          // a user confirm. `handleOriginChange` sends a confirm card via
+          // sendConfirmRequest (skip-permissions short-circuits inside SW
+          // for auto-approve) and persists the new origin to
+          // SessionMeta.pinnedTabs on approve so subsequent iterations on
+          // the same tab don't re-prompt.
+          const decision = await handleOriginChange({
+            sessionId,
+            tabId: pinnedTabId,
+            fromOrigin: pinnedOrigin,
+            toOrigin: currentOrigin,
+            newUrl: currentTab.url,
+            newTitle: currentTab.title ?? "",
+            sendConfirmRequest: ctx.sendConfirmRequest,
+          });
+          if (!decision.approved) {
+            await emitDone({
+              type: "agent-done-task",
+              success: false,
+              summary: "Page origin changed, agent stopped for safety",
+              stepCount: stepIndex - 1,
+            }, "abort");
+            return;
+          }
+          // Approved — adopt the new origin for the rest of this loop.
+          // SessionMeta.pinnedTabs was updated inside handleOriginChange;
+          // the next readFocusFromStorage call will see it.
+          pinnedOrigin = currentOrigin;
         }
         currentUrl = currentTab.url;
       } catch {

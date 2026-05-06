@@ -1,5 +1,10 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import "@/test/setup";
+import {
+  ORIGIN_CHANGE_TOOL_SENTINEL,
+  type AgentConfirmRequestMessage,
+  type DisplayMessage,
+} from "@/types";
 
 // Cross-layer integration tests for issue #26 wire→panel propagation.
 // Uses the same test harness pattern as loop.test.ts — pure function
@@ -94,5 +99,104 @@ describe("Cross-layer wire → DisplayMessage propagation (#26)", () => {
       // R10 would have triggered here, but it's removed — no confirm.
     }
     expect(confirmRequests.find((r) => r.includes("first run"))).toBeUndefined();
+  });
+});
+
+// Cross-layer wire → DisplayMessage for the origin-change confirm card
+// (#33 follow-up). Mirrors `useSession.ts:413-456` dispatch logic: the
+// wire carries `originChangePreview` from SW's sendConfirmRequest
+// payload; useSession spreads it into the agent-confirm DisplayMessage
+// so AgentConfirmCard can render the origin-change card variant.
+//
+// The actual SW dispatch (`background/index.ts` setPendingConfirm with
+// `kind: "agent-origin-change"`) is exercised end-to-end in a real
+// browser; here we only verify the wire shape contract — same harness
+// style as the #26 tests above.
+describe("Cross-layer wire → DisplayMessage for origin-change confirm (#33 follow-up)", () => {
+  function buildAgentConfirmDisplayMessage(
+    wire: AgentConfirmRequestMessage,
+  ): DisplayMessage {
+    const {
+      confirmationId,
+      tool,
+      args,
+      resolvedElement,
+      riskReason,
+      metaSkillPreview,
+      screenshotPreview,
+      openUrlPreview,
+      originChangePreview,
+    } = wire;
+    return {
+      role: "agent-confirm",
+      confirmationId,
+      tool,
+      args,
+      resolvedElement,
+      riskReason,
+      metaSkillPreview,
+      ...(screenshotPreview ? { screenshotPreview } : {}),
+      ...(openUrlPreview ? { openUrlPreview } : {}),
+      ...(originChangePreview ? { originChangePreview } : {}),
+      resolved: undefined,
+    };
+  }
+
+  const sampleOriginChangeWire: AgentConfirmRequestMessage = {
+    type: "agent-confirm-request",
+    confirmationId: "c-origin-1",
+    tool: ORIGIN_CHANGE_TOOL_SENTINEL,
+    args: {},
+    resolvedElement: { text: "", tag: "" },
+    riskReason:
+      "The pinned tab navigated from https://example.com to https://www.iana.org. " +
+      "Approve only if you initiated this jump — rejecting stops the agent for safety.",
+    originChangePreview: {
+      fromOrigin: "https://example.com",
+      toOrigin: "https://www.iana.org",
+      newUrl: "https://www.iana.org/help/example-domains",
+      newTitle: "Example Domains - IANA",
+      tabId: 42,
+    },
+    sessionId: "sess-origin-1",
+  };
+
+  it("originChangePreview survives wire → DisplayMessage", () => {
+    const display = buildAgentConfirmDisplayMessage(sampleOriginChangeWire);
+    expect(display.role).toBe("agent-confirm");
+    if (display.role !== "agent-confirm") return; // type narrow
+
+    expect(display.tool).toBe(ORIGIN_CHANGE_TOOL_SENTINEL);
+    expect(display.originChangePreview).toEqual({
+      fromOrigin: "https://example.com",
+      toOrigin: "https://www.iana.org",
+      newUrl: "https://www.iana.org/help/example-domains",
+      newTitle: "Example Domains - IANA",
+      tabId: 42,
+    });
+  });
+
+  it("non-origin-change confirms do NOT carry originChangePreview", () => {
+    const wire: AgentConfirmRequestMessage = {
+      type: "agent-confirm-request",
+      confirmationId: "c-click-1",
+      tool: "click",
+      args: { elementIndex: 0 },
+      resolvedElement: { text: "Submit", tag: "button" },
+      riskReason: "submitting form on cross-origin tab",
+      sessionId: "sess-1",
+    };
+    const display = buildAgentConfirmDisplayMessage(wire);
+    if (display.role !== "agent-confirm") return;
+    expect(display.originChangePreview).toBeUndefined();
+    expect(display.tool).toBe("click");
+  });
+
+  it("ORIGIN_CHANGE_TOOL_SENTINEL is the wire-only sentinel string", () => {
+    // The sentinel is the contract between loop.ts (sender), SW
+    // sendConfirmRequest (kind dispatch), and AgentConfirmCard
+    // (variant dispatch). All three sites must compare against the
+    // SAME exported constant — never duplicate the literal.
+    expect(ORIGIN_CHANGE_TOOL_SENTINEL).toBe("__origin_change__");
   });
 });

@@ -74,6 +74,7 @@ import {
 import { makeCdpAdapterForScreenshot } from "./cdp-adapter";
 import { makeResolveEffectivePinned } from "./effective-pinned";
 import type { ScreenshotConfirmExtras, OpenUrlConfirmExtras } from "@/types";
+import { ORIGIN_CHANGE_TOOL_SENTINEL } from "@/types";
 import type { ImageAttachment } from "@/lib/images";
 import {
   handleRecordingStart,
@@ -417,10 +418,14 @@ async function handlePanelMounted(
   // post to a Map that's been cleared by SW restart).
   if (!pendingConfirmations.has(confirmationId)) return;
 
-  if (kind === "agent-tool") {
+  if (kind === "agent-tool" || kind === "agent-origin-change") {
     // Re-emit the original AgentConfirmRequestMessage shape. The
     // payload was persisted with explicit field listing in
-    // sendConfirmRequest, so it carries the right shape verbatim.
+    // sendConfirmRequest, so it carries the right shape verbatim
+    // (including originChangePreview when kind === "agent-origin-change").
+    // Issue #33 follow-up: agent-origin-change uses the same wire
+    // shape with `tool: ORIGIN_CHANGE_TOOL_SENTINEL` so the panel
+    // dispatches to the origin-change card variant.
     const p = payload as Omit<
       AgentConfirmRequestMessage,
       "type" | "confirmationId"
@@ -768,10 +773,15 @@ async function handleResumeRequest(
       return { approved: true };
     }
 
+    // Issue #33 follow-up — origin-change confirms reuse this confirm
+    // pipeline but persist under a distinct PendingConfirmRecord.kind so
+    // panel re-mount can dispatch the right card variant.
+    const isOriginChange = payload.tool === ORIGIN_CHANGE_TOOL_SENTINEL;
+
     try {
       await setPendingConfirm(sessionId, {
         confirmationId,
-        kind: "agent-tool",
+        kind: isOriginChange ? "agent-origin-change" : "agent-tool",
         payload: {
           tool: payload.tool,
           args: payload.args,
@@ -788,6 +798,9 @@ async function handleResumeRequest(
           // not reach chrome.storage (8 MB quota). Panel renders from wire only.
           // openUrlPreview is small text — safe to persist for R4 re-emit.
           ...(openUrlPreview ? { openUrlPreview } : {}),
+          ...(payload.originChangePreview
+            ? { originChangePreview: payload.originChangePreview }
+            : {}),
         },
       });
     } catch (e) {
@@ -1366,10 +1379,15 @@ async function handleChatStream(
         return { approved: true };
       }
 
+      // Issue #33 follow-up — origin-change confirms reuse this confirm
+      // pipeline but persist under a distinct PendingConfirmRecord.kind so
+      // panel re-mount can dispatch the right card variant.
+      const isOriginChange = payload.tool === ORIGIN_CHANGE_TOOL_SENTINEL;
+
       try {
         await setPendingConfirm(sessionId, {
           confirmationId,
-          kind: "agent-tool",
+          kind: isOriginChange ? "agent-origin-change" : "agent-tool",
           payload: {
             tool: payload.tool,
             args: payload.args,
@@ -1386,6 +1404,9 @@ async function handleChatStream(
             // not reach chrome.storage (8 MB quota). Panel renders from wire only.
             // openUrlPreview is small text — safe to persist for R4 re-emit.
             ...(openUrlPreview ? { openUrlPreview } : {}),
+            ...(payload.originChangePreview
+              ? { originChangePreview: payload.originChangePreview }
+              : {}),
           },
         });
       } catch (e) {

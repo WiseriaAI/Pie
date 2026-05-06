@@ -1,5 +1,13 @@
 import { useState } from "react";
-import type { ResolvedElement, TabTarget, TabContentPreview, ScreenshotConfirmExtras, OpenUrlConfirmExtras } from "@/types";
+import type {
+  ResolvedElement,
+  TabTarget,
+  TabContentPreview,
+  ScreenshotConfirmExtras,
+  OpenUrlConfirmExtras,
+  OriginChangeConfirmExtras,
+} from "@/types";
+import { ORIGIN_CHANGE_TOOL_SENTINEL } from "@/types";
 import type { SkillDefinition } from "@/lib/skills";
 
 interface AgentConfirmCardProps {
@@ -18,6 +26,7 @@ interface AgentConfirmCardProps {
   contentPreview?: TabContentPreview;
   screenshotPreview?: ScreenshotConfirmExtras;
   openUrlPreview?: OpenUrlConfirmExtras;
+  originChangePreview?: OriginChangeConfirmExtras;
 }
 
 function redactArgsForDisplay(tool: string, args: unknown, riskReason: string): unknown {
@@ -162,6 +171,52 @@ function TabContentPreviewDetails({ preview }: { preview: TabContentPreview }) {
 }
 
 const OPEN_URL_FOLD_THRESHOLD = 1024;
+
+function OriginChangeConfirmContent({ preview }: { preview: OriginChangeConfirmExtras }) {
+  const [expanded, setExpanded] = useState(false);
+  const long = preview.newUrl.length >= OPEN_URL_FOLD_THRESHOLD;
+  const fromHost = preview.fromOrigin.replace(/^https?:\/\//, "");
+  const toHost = preview.toOrigin.replace(/^https?:\/\//, "");
+  return (
+    <div
+      role="region"
+      aria-label="Origin change preview"
+      className="flex flex-col gap-2 rounded border border-line bg-field p-2.5"
+    >
+      <div className="text-[12px] text-fg-2">Page navigated:</div>
+      <div className="flex flex-wrap items-center gap-1.5 text-[12px]">
+        <code className="font-mono text-fg-1">{fromHost}</code>
+        <span className="text-fg-3">→</span>
+        <code className="font-mono text-fg-1">{toHost}</code>
+      </div>
+      {preview.newTitle ? (
+        <div className="text-[11px] text-fg-3">
+          <span className="text-fg-3">title </span>
+          <span className="text-fg-2">{preview.newTitle}</span>
+        </div>
+      ) : null}
+      <div className="font-mono text-[11px] break-all text-fg-1">
+        {long && !expanded ? (
+          <>
+            {preview.newUrl.slice(0, 256)}{"…"}
+            <button
+              type="button"
+              onClick={() => setExpanded(true)}
+              className="ml-2 text-accent underline"
+            >
+              show full URL
+            </button>
+          </>
+        ) : (
+          preview.newUrl
+        )}
+      </div>
+      <div className="text-[11px] text-fg-3">
+        Approve only if you initiated this jump. Rejecting stops the agent.
+      </div>
+    </div>
+  );
+}
 
 function OpenUrlConfirmContent({ preview }: { preview: OpenUrlConfirmExtras }) {
   const [expanded, setExpanded] = useState(false);
@@ -329,7 +384,9 @@ export default function AgentConfirmCard({
   contentPreview,
   screenshotPreview,
   openUrlPreview,
+  originChangePreview,
 }: AgentConfirmCardProps) {
+  const isOriginChange = tool === ORIGIN_CHANGE_TOOL_SENTINEL;
   function handleKeyDown(e: React.KeyboardEvent) {
     if (e.key === "Enter") {
       e.preventDefault();
@@ -339,7 +396,13 @@ export default function AgentConfirmCard({
   const isMeta = isSkillMetaTool(tool);
   const hasTabTargets = !!tabTargets && tabTargets.length > 0;
   const headingId = `agent-confirm-heading-${tool}`;
-  const actionSummary = describeAction(tool, resolvedElement, tabTargets, openUrlPreview);
+  // Issue #33 follow-up — origin-change confirms render a different
+  // title/body shape (no resolvedElement, no args block) since the
+  // confirm is about a navigation, not a tool call.
+  const displayToolLabel = isOriginChange ? "page navigated" : tool;
+  const actionSummary = isOriginChange && originChangePreview
+    ? `${originChangePreview.fromOrigin.replace(/^https?:\/\//, "")} → ${originChangePreview.toOrigin.replace(/^https?:\/\//, "")}`
+    : describeAction(tool, resolvedElement, tabTargets, openUrlPreview);
 
   return (
     <div
@@ -354,7 +417,7 @@ export default function AgentConfirmCard({
         <span aria-hidden="true" className="text-warning">
           ⚠
         </span>
-        <code className="font-mono text-fg-1">{tool}</code>
+        <code className="font-mono text-fg-1">{displayToolLabel}</code>
         {actionSummary && (
           <>
             <span className="text-fg-3">·</span>
@@ -370,6 +433,14 @@ export default function AgentConfirmCard({
 
       {/* Risk reason — one short paragraph, never truncated. */}
       <div className="text-[12px] leading-[18px] text-fg-2">{riskReason}</div>
+
+      {/* Issue #33 follow-up — origin-change preview rendered above the
+          details block so the from/to origin + new URL is visible
+          without expanding. No resolvedElement / args section is shown
+          because the confirm is about a navigation, not a tool call. */}
+      {isOriginChange && originChangePreview ? (
+        <OriginChangeConfirmContent preview={originChangePreview} />
+      ) : null}
 
       {/* Phase 5 — screenshot preview thumbnail (K-1 informed-approval).
           Rendered BEFORE the foldable details block so the user sees the
@@ -396,7 +467,9 @@ export default function AgentConfirmCard({
       {/* Foldable details. All previously always-visible blocks (resolvedElement
           attributes, args JSON, skill diff, tab list, content preview) live
           here so the default card stays small. The user can still see
-          everything before approving — informed-spending preserved. */}
+          everything before approving — informed-spending preserved.
+          Skipped for origin-change confirms (no tool args / element to inspect). */}
+      {!isOriginChange ? (
       <details className="group">
         <summary className="flex cursor-pointer select-none items-center gap-1 self-start font-mono text-[10px] uppercase tracking-[0.08em] text-fg-3 hover:text-fg-2">
           <span className="transition-transform group-open:rotate-90">›</span>
@@ -467,6 +540,7 @@ export default function AgentConfirmCard({
           ) : null}
         </div>
       </details>
+      ) : null}
 
       {resolved ? (
         <div
