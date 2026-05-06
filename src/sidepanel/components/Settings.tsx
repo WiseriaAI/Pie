@@ -6,6 +6,11 @@ import {
   setActiveInstance, getActiveInstance, updateInstance,
   type DecryptedInstance,
 } from "@/lib/instances";
+import {
+  getProviderCustomModels,
+  addProviderCustomModel,
+  removeProviderCustomModel,
+} from "@/lib/provider-custom-models";
 import { getProviderMeta } from "@/lib/model-router/providers/registry";
 import type { ModelMeta } from "@/lib/model-router";
 import { isKeyboardSimulationEnabled, setKeyboardSimulationEnabled } from "@/lib/keyboard-simulation";
@@ -29,10 +34,17 @@ export default function Settings({ onBack, onRunSkill }: Props) {
   const [showWizard, setShowWizard] = useState(false);
   const [keyboardSim, setKeyboardSim] = useState(false);
   const [testResult, setTestResult] = useState<Record<string, { ok: boolean; message: string }>>({});
+  // Per-provider custom models pool — sticky across instances of the same provider.
+  const [providerPools, setProviderPools] = useState<Record<string, string[]>>({});
 
   const reload = useCallback(async () => {
-    setInstances(await listInstances());
+    const list = await listInstances();
+    setInstances(list);
     setActiveId(await getActiveInstance());
+    // Refresh pool for every provider currently represented in the instance list.
+    const providers = Array.from(new Set(list.map((i) => i.provider)));
+    const pools = await Promise.all(providers.map((p) => getProviderCustomModels(p).then((v) => [p, v] as const)));
+    setProviderPools(Object.fromEntries(pools));
   }, []);
 
   useEffect(() => {
@@ -132,6 +144,13 @@ export default function Settings({ onBack, onRunSkill }: Props) {
                 renderForm={(id) => {
                   const inst = instances.find((i) => i.id === id)!;
                   const result = testResult[id];
+                  // Merge per-instance customModels (back-compat) with the
+                  // per-provider sticky pool so newly-typed ids show up across
+                  // instances of the same provider.
+                  const pool = providerPools[inst.provider] ?? [];
+                  const mergedCustomModels = Array.from(
+                    new Set([...(inst.customModels ?? []), ...pool]),
+                  );
                   return (
                     <>
                       <InstanceForm
@@ -139,7 +158,7 @@ export default function Settings({ onBack, onRunSkill }: Props) {
                         provider={inst.provider}
                         initialNickname={inst.nickname}
                         initialModel={inst.model}
-                        initialCustomModels={inst.customModels ?? []}
+                        initialCustomModels={mergedCustomModels}
                         fetchedModels={inst.fetchedModels}
                         fetchedAt={inst.fetchedAt}
                         maskedKey={maskKey(inst.apiKey)}
@@ -148,13 +167,17 @@ export default function Settings({ onBack, onRunSkill }: Props) {
                         onTest={(p) => handleTest(id, inst.provider, p)}
                         onDelete={() => handleDelete(id)}
                         onAddCustomModel={async (mid) => {
-                          const next = [...(inst.customModels ?? []), mid];
-                          await updateInstance(id, { customModels: next });
+                          // Persist to BOTH the instance (for back-compat) AND the provider pool.
+                          const nextInst = [...(inst.customModels ?? []), mid];
+                          await updateInstance(id, { customModels: nextInst });
+                          await addProviderCustomModel(inst.provider, mid);
                           await reload();
                         }}
                         onRemoveCustomModel={async (mid) => {
-                          const next = (inst.customModels ?? []).filter((x) => x !== mid);
-                          await updateInstance(id, { customModels: next });
+                          // Remove from BOTH layers so the model truly disappears.
+                          const nextInst = (inst.customModels ?? []).filter((x) => x !== mid);
+                          await updateInstance(id, { customModels: nextInst });
+                          await removeProviderCustomModel(inst.provider, mid);
                           await reload();
                         }}
                         onRefreshModels={async () => {

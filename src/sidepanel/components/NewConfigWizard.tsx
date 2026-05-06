@@ -1,6 +1,11 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import type { Provider } from "@/lib/model-router";
 import { PROVIDER_REGISTRY, getProviderMeta } from "@/lib/model-router/providers/registry";
+import {
+  getProviderCustomModels,
+  addProviderCustomModel,
+  removeProviderCustomModel,
+} from "@/lib/provider-custom-models";
 import InstanceForm, { type InstanceFormPayload } from "./InstanceForm";
 
 interface Props {
@@ -12,6 +17,14 @@ interface Props {
 export default function NewConfigWizard(props: Props) {
   const [step, setStep] = useState<1 | 2>(1);
   const [provider, setProvider] = useState<Provider | null>(null);
+  // Provider-level custom models pool — pre-populates the form's dropdown
+  // so user sees previously-typed custom ids carry across instances.
+  const [pool, setPool] = useState<string[]>([]);
+
+  useEffect(() => {
+    if (!provider) return;
+    getProviderCustomModels(provider).then(setPool).catch(() => setPool([]));
+  }, [provider]);
 
   if (step === 1 || !provider) {
     return (
@@ -55,9 +68,18 @@ export default function NewConfigWizard(props: Props) {
         mode="create"
         provider={provider}
         initialNickname={meta.name}
+        initialCustomModels={pool}
         saveLabel="Create"
         onSave={(p) => props.onCreate(provider, p)}
         onTest={(p) => props.onTest(provider, p)}
+        onAddCustomModel={async (id) => {
+          const next = await addProviderCustomModel(provider, id);
+          setPool(next);
+        }}
+        onRemoveCustomModel={async (id) => {
+          const next = await removeProviderCustomModel(provider, id);
+          setPool(next);
+        }}
         renderActions={({ canSave, triggerSave, triggerTest, saveLabel }) => (
           <div className="flex flex-wrap items-center gap-1.5 border-t border-line px-3.5 py-3">
             <button
