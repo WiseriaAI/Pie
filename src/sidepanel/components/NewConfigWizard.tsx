@@ -16,7 +16,9 @@ export default function NewConfigWizard(props: Props) {
   if (step === 1 || !provider) {
     return (
       <div className="flex flex-col gap-3 rounded-lg border border-line bg-canvas p-3.5">
-        <div className="font-mono text-[10px] uppercase tracking-[0.12em] text-fg-3">STEP 1 — 选 PROVIDER</div>
+        <div className="flex items-center justify-between">
+          <div className="font-mono text-[10px] uppercase tracking-[0.12em] text-fg-3">STEP 1 — 选 PROVIDER</div>
+        </div>
         <div className="flex flex-col gap-1.5">
           {PROVIDER_REGISTRY.map((p) => (
             <button
@@ -30,9 +32,15 @@ export default function NewConfigWizard(props: Props) {
             </button>
           ))}
         </div>
-        <button onClick={props.onCancel} className="self-start text-[11px] text-fg-3 hover:text-fg-1">
-          取消
-        </button>
+        <div className="flex pt-1">
+          <button
+            type="button"
+            onClick={props.onCancel}
+            className="rounded border border-line bg-transparent px-3 py-1.5 text-[11px] text-fg-2 hover:border-fg-3 hover:text-fg-1"
+          >
+            取消
+          </button>
+        </div>
       </div>
     );
   }
@@ -51,11 +59,20 @@ export default function NewConfigWizard(props: Props) {
         onSave={(p) => props.onCreate(provider, p)}
         onTest={(p) => props.onTest(provider, p)}
       />
-      <div className="border-t border-line px-3.5 py-2">
-        <button onClick={() => setStep(1)} className="text-[11px] text-fg-3 hover:text-fg-1">
+      <div className="flex items-center gap-2 border-t border-line px-3.5 py-3">
+        <button
+          type="button"
+          onClick={() => setStep(1)}
+          className="rounded border border-line bg-transparent px-3 py-1.5 text-[11px] text-fg-2 hover:border-fg-3 hover:text-fg-1"
+        >
           ← 改 provider
         </button>
-        <button onClick={props.onCancel} className="ml-3 text-[11px] text-fg-3 hover:text-fg-1">
+        <div className="flex-1" />
+        <button
+          type="button"
+          onClick={props.onCancel}
+          className="rounded border border-line bg-transparent px-3 py-1.5 text-[11px] text-fg-2 hover:border-fg-3 hover:text-fg-1"
+        >
           取消
         </button>
       </div>

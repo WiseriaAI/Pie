@@ -100,7 +100,7 @@ export default function InstanceForm(props: Props) {
               <button
                 type="button"
                 onClick={() => { setApiKey(""); setReplacing(false); }}
-                className="self-start text-[11px] text-fg-3 hover:text-fg-1"
+                className="self-start rounded border border-line bg-transparent px-3 py-1.5 text-[11px] text-fg-2 hover:border-fg-3 hover:text-fg-1"
               >
                 Cancel — keep current key
               </button>
