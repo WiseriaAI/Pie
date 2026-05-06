@@ -9,6 +9,17 @@ export interface InstanceFormPayload {
   model: string;
 }
 
+/** Render-prop API exposed when the parent wants to compose a custom action footer
+ *  (e.g. NewConfigWizard merges Test/Create with ← provider/取消 in one row). */
+export interface InstanceFormActionsApi {
+  canSave: boolean;
+  replacing: boolean;
+  triggerSave: () => void;
+  triggerTest: () => void;
+  triggerDelete?: () => void;
+  saveLabel: string;
+}
+
 interface Props {
   mode: "create" | "edit";
   provider: Provider;
@@ -27,6 +38,10 @@ interface Props {
   onRemoveCustomModel?: (id: string) => void;
   onRefreshModels?: () => void;
   saveLabel?: string;
+  /** Optional render-prop replacing the default Test/Save/Forget action row.
+   *  When provided, InstanceForm renders ONLY the form fields; the parent
+   *  is responsible for rendering action buttons via the supplied api. */
+  renderActions?: (api: InstanceFormActionsApi) => React.ReactNode;
 }
 
 export default function InstanceForm(props: Props) {
@@ -44,7 +59,8 @@ export default function InstanceForm(props: Props) {
   const payload: InstanceFormPayload = { nickname, apiKey, model };
 
   return (
-    <div className="flex flex-col gap-3 px-3.5 py-3.5">
+    <div className="flex flex-col">
+      <div className="flex flex-col gap-3 px-3.5 py-3.5">
       <Field label="NICKNAME">
         <input
           aria-label="nickname"
@@ -124,30 +140,41 @@ export default function InstanceForm(props: Props) {
         />
       </Field>
 
-      <div className="flex flex-wrap gap-1.5 pt-1">
-        <button
-          onClick={() => props.onTest(payload)}
-          disabled={!canSave}
-          className="rounded border border-line bg-transparent px-3 py-1.5 text-[11px] text-fg-2 hover:border-fg-3 disabled:opacity-30"
-        >
-          Test
-        </button>
-        <button
-          onClick={() => props.onSave(payload)}
-          disabled={!canSave}
-          className="rounded bg-fg-1 px-3 py-1.5 text-[11px] font-medium text-canvas disabled:opacity-30"
-        >
-          {props.saveLabel ?? "Save"}
-        </button>
-        {props.mode === "edit" && props.onDelete && (
+      {!props.renderActions && (
+        <div className="flex flex-wrap gap-1.5 pt-1">
           <button
-            onClick={() => props.onDelete!()}
-            className="ml-auto rounded border border-warning-line bg-transparent px-3 py-1.5 text-[11px] text-warning hover:bg-warning-tint"
+            onClick={() => props.onTest(payload)}
+            disabled={!canSave}
+            className="rounded border border-line bg-transparent px-3 py-1.5 text-[11px] text-fg-2 hover:border-fg-3 disabled:opacity-30"
           >
-            Forget config
+            Test
           </button>
-        )}
+          <button
+            onClick={() => props.onSave(payload)}
+            disabled={!canSave}
+            className="rounded bg-fg-1 px-3 py-1.5 text-[11px] font-medium text-canvas disabled:opacity-30"
+          >
+            {props.saveLabel ?? "Save"}
+          </button>
+          {props.mode === "edit" && props.onDelete && (
+            <button
+              onClick={() => props.onDelete!()}
+              className="ml-auto rounded border border-warning-line bg-transparent px-3 py-1.5 text-[11px] text-warning hover:bg-warning-tint"
+            >
+              Forget config
+            </button>
+          )}
+        </div>
+      )}
       </div>
+      {props.renderActions && props.renderActions({
+        canSave,
+        replacing,
+        saveLabel: props.saveLabel ?? "Save",
+        triggerSave: () => props.onSave(payload),
+        triggerTest: () => props.onTest(payload),
+        triggerDelete: props.onDelete,
+      })}
     </div>
   );
 }

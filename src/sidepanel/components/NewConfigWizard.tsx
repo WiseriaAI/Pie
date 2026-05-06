@@ -58,24 +58,42 @@ export default function NewConfigWizard(props: Props) {
         saveLabel="Create"
         onSave={(p) => props.onCreate(provider, p)}
         onTest={(p) => props.onTest(provider, p)}
+        renderActions={({ canSave, triggerSave, triggerTest, saveLabel }) => (
+          <div className="flex flex-wrap items-center gap-1.5 border-t border-line px-3.5 py-3">
+            <button
+              type="button"
+              onClick={() => setStep(1)}
+              className="rounded border border-line bg-transparent px-3 py-1.5 text-[11px] text-fg-2 hover:border-fg-3 hover:text-fg-1"
+            >
+              ← 改 provider
+            </button>
+            <div className="flex-1" />
+            <button
+              type="button"
+              onClick={triggerTest}
+              disabled={!canSave}
+              className="rounded border border-line bg-transparent px-3 py-1.5 text-[11px] text-fg-2 hover:border-fg-3 disabled:opacity-30"
+            >
+              Test
+            </button>
+            <button
+              type="button"
+              onClick={triggerSave}
+              disabled={!canSave}
+              className="rounded bg-fg-1 px-3 py-1.5 text-[11px] font-medium text-canvas disabled:opacity-30"
+            >
+              {saveLabel}
+            </button>
+            <button
+              type="button"
+              onClick={props.onCancel}
+              className="rounded border border-line bg-transparent px-3 py-1.5 text-[11px] text-fg-2 hover:border-fg-3 hover:text-fg-1"
+            >
+              取消
+            </button>
+          </div>
+        )}
       />
-      <div className="flex items-center gap-2 border-t border-line px-3.5 py-3">
-        <button
-          type="button"
-          onClick={() => setStep(1)}
-          className="rounded border border-line bg-transparent px-3 py-1.5 text-[11px] text-fg-2 hover:border-fg-3 hover:text-fg-1"
-        >
-          ← 改 provider
-        </button>
-        <div className="flex-1" />
-        <button
-          type="button"
-          onClick={props.onCancel}
-          className="rounded border border-line bg-transparent px-3 py-1.5 text-[11px] text-fg-2 hover:border-fg-3 hover:text-fg-1"
-        >
-          取消
-        </button>
-      </div>
     </div>
   );
 }
