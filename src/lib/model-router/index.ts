@@ -16,7 +16,8 @@ export type Provider =
   | "minimax"
   | "zhipu"
   | "bailian"
-  | "gemini";
+  | "gemini"
+  | "deepseek";
 
 export interface ModelConfig {
   provider: Provider;

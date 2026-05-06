@@ -9,6 +9,7 @@ import { streamChat as zhipuChat } from "./zhipu";
 import { streamChat as bailianChat } from "./bailian";
 import { streamChat as minimaxChat } from "./minimax";
 import { streamChat as geminiChat } from "./gemini";
+import { streamChat as deepseekChat } from "./deepseek";
 
 export type StreamChatFn = (
   config: ModelConfig,
@@ -25,4 +26,5 @@ export const streamChatByProvider: Record<Provider, StreamChatFn> = {
   bailian: bailianChat,
   minimax: minimaxChat,
   gemini: geminiChat,
+  deepseek: deepseekChat,
 };

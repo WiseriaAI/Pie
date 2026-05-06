@@ -107,6 +107,16 @@ export const PROVIDER_REGISTRY: ProviderMeta[] = [
       { id: "gemini-2.5-pro", vision: true, tools: true, maxContextTokens: 1_000_000 },
     ],
   },
+  {
+    id: "deepseek",
+    name: "DeepSeek",
+    defaultBaseUrl: "https://api.deepseek.com",
+    placeholder: "sk-...",
+    models: [
+      { id: "deepseek-v4-flash", vision: false, tools: true, maxContextTokens: 1_000_000 },
+      { id: "deepseek-v4-pro", vision: false, tools: true, maxContextTokens: 1_000_000 },
+    ],
+  },
 ];
 
 export function getProviderMeta(id: Provider): ProviderMeta | undefined {

@@ -26,7 +26,7 @@ describe("ProviderMeta schema", () => {
   });
 
   it("non-OpenRouter providers have non-empty models[] (hardcoded)", () => {
-    const ids = ["anthropic", "openai", "zhipu", "bailian", "minimax", "gemini"] as const;
+    const ids = ["anthropic", "openai", "zhipu", "bailian", "minimax", "gemini", "deepseek"] as const;
     for (const id of ids) {
       const meta = getProviderMeta(id)!;
       expect(meta.models.length).toBeGreaterThan(0);
@@ -36,6 +36,11 @@ describe("ProviderMeta schema", () => {
   it("Gemini is registered", () => {
     expect(getProviderMeta("gemini")).toBeDefined();
     expect(getProviderMeta("gemini")!.defaultBaseUrl).toBe("https://generativelanguage.googleapis.com");
+  });
+
+  it("DeepSeek is registered", () => {
+    expect(getProviderMeta("deepseek")).toBeDefined();
+    expect(getProviderMeta("deepseek")!.defaultBaseUrl).toBe("https://api.deepseek.com");
   });
 });
 
@@ -87,6 +92,12 @@ describe("ModelMeta capability flags (per-model)", () => {
   it("gemini-2.5-pro is registered (not gemini-2.0-pro)", () => {
     expect(getModelMeta("gemini", "gemini-2.5-pro")).toBeDefined();
     expect(getModelMeta("gemini", "gemini-2.0-pro")).toBeUndefined();
+  });
+
+  it("DeepSeek model capability flags", () => {
+    expect(getModelMeta("deepseek", "deepseek-v4-flash")?.tools).toBe(true);
+    expect(getModelMeta("deepseek", "deepseek-v4-flash")?.vision).toBe(false);
+    expect(getModelMeta("deepseek", "deepseek-v4-flash")?.maxContextTokens).toBe(1_000_000);
   });
 });
 
