@@ -12,7 +12,7 @@
 
 | 项 | 来源 | 备注 |
 |---|---|---|
-| **Gemini provider** | design.md L80, L135 | registry pattern 加 entry 即可，差 host_permission |
+| **Gemini provider** | design.md L80, L135 | ✅ **完成** — 与 §7 同期 ship (PR #28)。Native module（`inline_data` + `function_declarations` + `?alt=sse`）+ 7-provider id-keyed dispatch + `generativelanguage.googleapis.com` host_permission。Registry seed: `gemini-2.0-flash` / `gemini-2.5-pro` |
 | **Ollama / 本地模型** | design.md L80–82, L135 | 需 manifest 加 `http://localhost/*`，streaming 协议适配 |
 | **快捷键支持** | design.md L136 | 零结构性风险的打磨项 |
 | **任务状态持久化（SW 重启恢复）** | design.md L91 | ✅ **完成** — M1 PR #8 + M2 PR #9/#10/未编号 + M3 PR #13 全 ship。Single-session SW-restart recovery + tombstone + R11 drift card + multi-session UI drawer + LLM 标题 + LRU archive + per-session sandbox |
@@ -94,34 +94,37 @@
 
 ---
 
-## 7. Provider + Model 能力中心化管理（用户 2026-05-04 报告，Phase 5 验收暴露）
+## 7. Provider + Model 能力中心化管理（用户 2026-05-04 报告）— ✅ **SHIPPED 2026-05-06**
 
-**Status**: 非 Phase 5 范围。Phase 5 multimodal image input 落地后用户反馈：当前 registry 的 `supportsVision: boolean` 是 **per-provider** 粒度，但 vision 能力实际是 **per-model**——同一 provider 不同 model 可能能力差异巨大（智谱 `glm-4-plus` 不支持但 `glm-4v-plus` 支持；百炼 `qwen-max` 不支持但 `qwen-vl-max` 支持；MiniMax `MiniMax-Text-01` 不支持但 `MiniMax-VL` 支持）。
+**Status**: PR #28 merged 2026-05-06，branch `feat/provider-config-center`，21 implementation commits + 多轮 user-feedback polish。700/700 tests pass。
 
-**用户提的两个核心改造诉求**：
+**实际交付（B+ scope）**：
 
-1. **Model list 中心化管理 + UI 下拉选择**：Settings 页用户从 dropdown 选 model，不再手填 `defaultModel` 字段；每个 provider 的 model list + per-model 能力（vision / tools / max-context / audio）一起管理。
-2. **官方推荐 BaseURL 内置，去掉用户填写**：`defaultBaseUrl` 字段升级为唯一 source of truth，Settings UI 删除 BaseURL 输入；用户配置只剩 **Provider + Model + API Key**。
+1. **Multi-instance 配置中心**：同 provider × N instance 独立 nickname / model / apiKey；`instance_${uuid}` + `instances_index` + global `active_instance_id` + per-session `instanceId` override（task-start snapshot 锁 ModelConfig）
+2. **Per-model capability schema**：`ModelMeta { vision, tools, maxContextTokens }` 替代 per-provider boolean；`supportsVision`/`supportsTools` 字段从 ProviderMeta 删除
+3. **BaseURL 完全封装**：`defaultBaseUrl` 唯一 source of truth；UI 删除手填，迁移期静默丢弃
+4. **Provider 模块化**：抽 `_shared/openai-compat-core.ts` + 5 家 OpenAI-compat 各成 thin wrapper（OpenRouter 加 `HTTP-Referer`/`X-OpenRouter-Title`），id-keyed dispatch 替代旧 `meta.type` switch
+5. **Gemini native module**：`inline_data` + `function_declarations` + `?alt=sse`（同期 ship §1 Gemini provider 项）
+6. **DeepSeek provider**：v4-flash + v4-pro，OpenAI-compat 走 thin wrapper
+7. **Model dropdown 数据策略**：6/8 provider 走 registry hardcoded（随发版同步官方 doc）+ `/v1/models` 仅 OpenRouter（公开 endpoint，无需 auth，wizard 选 provider 时预拉）+ per-instance `customModels` + per-provider 黏性 pool（`pcm_${provider}` 跨 instance 共享）
+8. **Settings UI 重写**：list-by-provider → "my configs" + 2-step `+ 新建配置` wizard + 编辑 form（API Key 部分明文 read-only + Replace key 流程）+ ModelDropdown（限高 280px + 搜索 + capability tag）
+9. **Composer InstanceSelector chip**：borderless chip 在 composer action 行（textarea 上下排版）+ 上开 dropdown overlay + locked 态（task in-flight）+ 新会话 fallback 到 active instance
+10. **V1→V2 migration**：silent，schema_version sentinel，老 `provider_*` 转为 instance + 老 baseUrl 静默丢弃；session backfill via `migration_v2_mapping`
 
-**核心难点 — Model list 数据源**：
+**Trace docs**：
+- Spec: `docs/superpowers/specs/2026-05-06-provider-config-center-design.md`
+- Plan: `docs/superpowers/plans/2026-05-06-provider-config-center.md`
+- PR: https://github.com/WiseriaAI/Pie/pull/28
 
-- **海外 provider** 多有官方 `/v1/models` 端点（OpenAI / Anthropic / OpenRouter / xAI / Mistral）；其中 **OpenRouter 最强**——单 endpoint 返回数百 model + per-model `architecture.input_modalities`（含 `image` / `audio` / `video`）+ context_length + pricing，可作为通用元数据源
-- **中国大陆 provider** 各家协议不同：智谱 / 百炼 / MiniMax / Moonshot / Doubao / Hunyuan / Stepfun / DeepSeek 大多 **没有标准化 models API**，得维护静态 JSON 或爬 doc
-- **三选一策略**：(a) 静态 JSON（手维护，季度更新，最低运行成本）/ (b) 启动时拉取 + chrome.storage 缓存 24h（动态准确但首次慢且依赖网络）/ (c) 混合（静态 JSON 兜底 + OpenAI/Anthropic/OpenRouter 启动时 refresh）
+**新增可扩展点**（架构已就位）：
 
-**前置依赖**：
-- 当前 `ProviderMeta.supportsTools` / `supportsVision` 都是 per-provider boolean，需要降到 per-model 维度——schema 升级 `ProviderMeta` 拆 `models: ModelMeta[]` + 每个 ModelMeta 自带 capability flags
-- Settings UI（`Settings.tsx`）当前直接读 `getProviderConfig(provider).baseUrl` 做手填——需改 dropdown + 撤掉 BaseURL field
-- 用户配置数据 migration：现有用户的 `provider_*` config 包含手填 baseUrl + 任意 model 字符串，迁移路径 = 启动检测 → 把手填 baseUrl 与 registry 比对 → 不匹配则提醒用户 confirm 切换到官方 BaseURL（不静默改）
-
-**v1 不动 registry 的原因（继续保留 minimax/zhipu/bailian 默认 model 文本）**：Phase 5 brainstorm 明确把 vision provider 扩展推到 v1.1+；当前 boolean flag 是 default-model 级别保守标记，不是 provider 否定，本身没错。
-
-**建议路径**：单独 `/ce:brainstorm` 收窄三件事——
-- (1) Model list 数据源策略（静态 JSON / 动态拉取 / 混合）的 BYOK trust + 启动延迟权衡；
-- (2) `ProviderMeta` → `ProviderMeta + ModelMeta[]` 的 schema 升级路径；
-- (3) 老用户配置的 BaseURL 手填迁移 UX（强制切换 vs 提醒 confirm vs 保留 advanced override）。
-
-设计落定后单独 `/ce:plan`——预计 scope = registry schema 重写 + Settings UI dropdown + migration handler + 至少 2 家中国 provider 的 model list 静态 JSON 起手集合。
+| 项 | 路径 |
+|---|---|
+| 加新 provider | registry entry + 模块文件 + manifest host_permission（zero dispatch edits） |
+| Per-model vision UI | 已 unblock §8 "MiniMax / 智谱 / 百炼 vision" — schema layer 完成；具体 wire 仍是 per-provider 工作 |
+| OpenRouter routing extras | `provider`/`models`/`transforms` 字段未暴露（用户主动降级），后续单独 backlog |
+| 官方 SDK 接入 | MV3 SW + bundle / CSP 风险未评估，后续单独 brainstorm |
+| Anthropic `cache_control: ephemeral` | §8 backlog 项，可独立 ship |
 
 ---
 
@@ -139,8 +142,8 @@
 | **Resume-with-re-upload for image-bearing paused tasks** | 低 | 当前 R14 强制 failed；用户可点 prompt 提示"上传上次的图继续"再 resume，UX 复杂 |
 | **R13 path (e) explicit-clear UI** | 低 | 4 路径自动 evict 已覆盖；显式 "Clear images" 按钮 v1.1 看用户体验数据再决策 |
 | **Pre-existing Anthropic `tool_result.toolUseId` snake_case audit** | 维护 | Phase 5 review 暴露：`toolUseId` (camelCase) 直接送 Anthropic API（应是 `tool_use_id`）。Phase 5 之前就这样、似乎被 API 容忍；单独审计 + 可能配合 Gemini 时一起改 |
-| **Gemini provider vision** | 大 | Gemini provider entry 本身未交付 (§1)；image 需要 `inline_data` 协议 + manifest host_permission，与 §7 Provider 中心化协同 brainstorm |
-| **MiniMax / 智谱 / 百炼 vision** | 中 | 各家协议不同；与 §7 Model list 中心化协同（per-model vision flag 后才能展开） |
+| **Gemini provider vision** | 大 | ✅ **完成** — §7/§1 同期 ship (PR #28)。Gemini native module 含 `inline_data` 协议；registry seed `gemini-2.0-flash` / `gemini-2.5-pro` 标 `vision: true` |
+| **MiniMax / 智谱 / 百炼 vision** | 中 | **Schema unblocked** by §7 (PR #28) — registry 已加 `glm-4v-plus` / `qwen-vl-max` / `MiniMax-VL-01` 标 `vision: true`；wire 层仍走 OpenAI-compat（image_url base64 inline）共享 path，需各家 vision endpoint 实测确认兼容性。**剩余工作 = 测 + 文档**，不是新协议适配 |
 
 ## 9. M3 残余 advisory 项（M3 ship 后未实现的可选优化）
 
@@ -179,16 +182,34 @@ ce:review autofix sweep 时已提但未做的项，不影响 R24/R25/R26 accepta
 
 ---
 
+## 11. Provider 配置中心 v0.6 follow-ups（§7 ship 后已知 deferred）
+
+来源 PR #28 ship 后梳理 + 用户 acceptance 期间反馈但未 inline 修。
+
+| 项 | 价值 | 备注 |
+|---|---|---|
+| **OpenRouter `provider` routing / `models` fallback / `transforms` 字段暴露** | 中 | 用户 brainstorm 期间主动降级；BYOK + OpenRouter 高级用户的真实需求待证伪 |
+| **官方 provider SDK 接入（`@openrouter/sdk` / `@anthropic-ai/sdk` / `openai`）** | 中 | MV3 SW + bundle size + CSP 风险未评估；当前自研 fetch+SSE 已稳定，单独 brainstorm 后再决定 |
+| **Anthropic `cache_control: ephemeral` on image content blocks** | 大 | 与 §8 同条目；Phase 5 v1.1 backlog；当前一张图持续 6 round task = ~9.4K 重复 vision token |
+| **MiniMax / 智谱 / 百炼 vision 实测验收** | 中 | §7 ship 已加 schema flag + registry seed (`glm-4v-plus` / `qwen-vl-max` / `MiniMax-VL-01` 标 vision: true)；wire 走 OpenAI-compat image_url base64 — 需各家真 key 实测确认 |
+| **Per-instance maxTokens override UI 字段** | 低 | StoredInstance.maxTokens 字段保留但 UI 不暴露；用户反馈需要再加 |
+| **InstanceForm React state 复杂度审计** | 维护 | `customModels` 本地 state + `setReplacing` + `setApiKey` + parent reload 多个异步路径；race-safe useEffect merge 已加但代码读起来重；未来如增需求可考虑 reducer 重写 |
+| **OpenRouter dropdown 无 vision provider 时 attach button 提示** | 低 | 当前 attach button hide-on-no-vision 已 OK；可考虑 hover tooltip 解释为啥 disabled |
+| **Provider doc 同步流程文档化** | 低 | 当前每发版需手扫 7 家 provider 官方 doc 更新 registry seed；可写一个 release checklist 流程文 |
+| **`migration_v2_mapping` 永久保留** vs GC | 低 | <1KB，永远 lazy backfill 用；不构成 storage 压力。除非 v3 schema 来时考虑废弃 |
+
+---
+
 ## 推荐推进顺序
 
 按"用户痛感 × 解锁后续能力"性价比（已纳入 §5 4-way 评估结果）：
 
 1. **多轮对话上下文（§6）** — ✅ **SHIPPED 2026-05-04**：PR #15 (Half A + Half B hybrid synth) + PR #16 (3 P1 residual)；plan completed；R1/R2 全闭环
 2. **多模态输入图片（§5 #1）** — ✅ **PR #20 merged 2026-05-04**：15 task / 339→461 tests (+122 net) / R1-R15 全闭环；user acceptance 期间发现 2 个跨层集成 bug（first-task pin race + screenshotPreview wire transit）— 修复并 push (commits `0927031` + `517435d`) 已合并。Phase 5 v1.1 backlog 见 §8
-3. **Provider + Model 能力中心化管理（§7）** — 用户 2026-05-04 反馈；Settings 改 dropdown + 删手填 BaseURL；解锁中国 provider vision 完整接入路径
+3. **Provider + Model 能力中心化管理（§7）** — ✅ **SHIPPED 2026-05-06** as PR #28 (B+ scope)：multi-instance 配置中心 + per-model capability schema + Provider 模块化（`_shared/openai-compat-core` + 5 wrapper）+ Gemini native module + DeepSeek provider + V1→V2 silent migration + Composer InstanceSelector chip。21 commits / 700 tests pass。同时关闭 §1 Gemini provider 项 + §8 vision 子项的 schema 部分
 4. **Chrome narrow（§5 #3）** — ✅ **SHIPPED 2026-05-05** as v1.5 Path A: `open_url` + `focus_tab` + multi-pin schema. 10 task / 572 tests pass / manifest 0.5.2 / PR #21. v1.5.1 backlog 详见 §10。Engineering patterns（4 个跨切层 type migration 模式）沉淀在 `docs/solutions/2026-05-05-cross-cutting-type-migration-lessons.md`
 5. **行为录制 → Skill seed（§5 #4）** — ✅ **SHIPPED 2026-05-05** v1（单 tab + LLM-driven create_skill_from_recording）；v1.1 backlog: cross-tab 录制 / N 行数据循环 / 重录覆盖 UX
-6. **Gemini provider** — 最小补丁；与 §7 协同（自家 inline_data + host_permission 同期评估），独立 SSE 协议另行 brainstorm
+6. **Gemini provider** — ✅ **SHIPPED 2026-05-06** 与 §7 同期（PR #28）。Native module + `inline_data` + `?alt=sse` + `function_declarations` + manifest host_permission
 7. **Ollama 本地模型** — 与 BYOK 定位契合；manifest + streaming 协议适配
 8. **快捷键支持** — 打磨项，零结构性风险
 9. **Skill 脚本化（§5 #2）** — 收窄 (a)/(b)/(c)/(d) 后再决定
