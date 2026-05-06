@@ -87,6 +87,10 @@ import {
 } from "./recording-orchestrator";
 import type { RecordingSession } from "@/lib/recording/types";
 import { migrateV1toV2 } from "@/lib/migration-v2";
+import {
+  createAbortRotation,
+  rotateAbortController,
+} from "./abort-rotation";
 
 // Run V1→V2 migration once on SW load (idempotent via schema_version sentinel).
 migrateV1toV2().catch((e) => console.error("migration v2 failed", e));
@@ -1453,11 +1457,13 @@ async function handleChatStream(
 }
 
 // M3-U1 — port name encodes sessionId: `chat-stream-${sessionId}`. Each
-// connect creates an independent abortController + pendingConfirmations
-// closure (per-port sandbox). The SW supports multiple concurrent ports
-// (e.g. two sidepanels in two Chrome windows, each pinned to its own
-// session); single-panel concurrent task switch remains gated by the
-// M2-U2 streaming guard for now (deferred to a future M3-U6+).
+// connect creates an independent `abortRotation` + pendingConfirmations
+// closure (per-port sandbox). Within a port, the abort controller is
+// rotated per task (chat-start / resume-task) per Issue #24. The SW
+// supports multiple concurrent ports (e.g. two sidepanels in two Chrome
+// windows, each pinned to its own session); single-panel concurrent task
+// switch remains gated by the M2-U2 streaming guard for now (deferred to
+// a future M3-U6+).
 const CHAT_STREAM_PREFIX = "chat-stream-";
 
 chrome.runtime.onConnect.addListener((port) => {
@@ -1477,7 +1483,13 @@ chrome.runtime.onConnect.addListener((port) => {
   // bound to so the active session keeps its warm cache.
   evictOnSetActive(portSessionId);
 
-  const abortController = new AbortController();
+  // Issue #24 (Bug 1) — abort controller is per-task, NOT per-port. An
+  // AbortSignal is one-shot: once `chat-abort` aborts it, the next
+  // chat-start on the same port would inherit an already-aborted signal
+  // and runAgentLoop would bail at line 887 ("任务已取消"), making Stop
+  // permanently lock the session. The rotation helper hands back a fresh
+  // controller before each task dispatch.
+  const abortRotation = createAbortRotation();
 
   // Per-port pending confirmation map.
   // Phase 5 — widened to carry screenshot pre-capture extras so the SW can
@@ -1519,31 +1531,34 @@ chrome.runtime.onConnect.addListener((port) => {
   const inFlightSessionIds = new Set<string>();
 
   // Drain any pending high-risk confirm prompts when the task is aborted
-  // (Stop button, kill-switch, or programmatic abort from inside the
-  // loop). Without this, sendConfirmRequest's promise never resolves and
-  // the whole runAgentLoop hangs — finally never runs, no
-  // agent-done-task is emitted, the Panel just sees streaming stop with
-  // no AgentSummary. port.onDisconnect already drains too, but Stop
-  // does NOT disconnect the port; this listener covers that path.
-  abortController.signal.addEventListener(
-    "abort",
-    () => {
-      // Bug-fix-D — drain with reason='aborted'. Without this, the resolver
-      // would receive the structural-default and loop.ts would treat the
-      // hanging confirm as a user-reject, polluting the K-10 fatigue counter
-      // (3 panel-close-mid-confirm events would auto-terminate the task with
-      // "User repeatedly rejected").
-      for (const [confirmId, resolve] of pendingConfirmations) {
-        // Phase 5 — discard any pending pre-capture (bytes would leak
-        // in memory if not cleaned up).
-        discardPreCapture(confirmId);
-        resolve({ approved: false, reason: "aborted" });
-      }
-      pendingConfirmations.clear();
-      pendingConfirmationsBySession.clear();
-    },
-    { once: true },
-  );
+  // (Stop button, port disconnect, rotation-on-stacked-chat-start). Without
+  // this, sendConfirmRequest's promise never resolves and runAgentLoop hangs
+  // — finally never runs, no agent-done-task is emitted, the panel just
+  // sees streaming stop with no AgentSummary.
+  //
+  // Bug-fix-D — drain with reason='aborted'. Without this, the resolver
+  // would receive the structural-default and loop.ts would treat the
+  // hanging confirm as a user-reject, polluting the K-10 fatigue counter
+  // (3 panel-close-mid-confirm events would auto-terminate the task with
+  // "User repeatedly rejected").
+  //
+  // Issue #24 — previously this lived as `abortController.signal.addEventListener
+  // ("abort", ..., {once:true})`, which fires automatically on any abort. After
+  // the rotation refactor (per-task controllers), explicit call sites are
+  // simpler than re-attaching a listener on every rotation. Only chat-abort
+  // and onDisconnect actually originate aborts that warrant draining; loop-
+  // internal aborts use a separate `internalController` (loop.ts:884) that
+  // doesn't bubble back to ctx.signal.
+  const drainPendingConfirms = () => {
+    for (const [confirmId, resolve] of pendingConfirmations) {
+      // Phase 5 — discard any pending pre-capture (bytes would leak in
+      // memory if not cleaned up).
+      discardPreCapture(confirmId);
+      resolve({ approved: false, reason: "aborted" });
+    }
+    pendingConfirmations.clear();
+    pendingConfirmationsBySession.clear();
+  };
 
   // Keep-alive: reset Service Worker idle timer while streaming
   const keepAliveInterval = setInterval(() => {
@@ -1569,17 +1584,22 @@ chrome.runtime.onConnect.addListener((port) => {
   port.onMessage.addListener((message: PortMessageToWorker) => {
     if (message.type === "chat-start") {
       if (!verifyPortSession(message.sessionId, "chat-start")) return;
+      // Issue #24 (Bug 1) — rotate to a fresh AbortController for the new
+      // task. If a prior task was still running (panel-state desync), the
+      // rotate helper aborts it and drains its pending confirms first.
+      rotateAbortController(abortRotation, drainPendingConfirms);
       inFlightSessionIds.add(message.sessionId);
       handleChatStream(
         port,
         message.messages,
         message.sessionId,
-        abortController,
+        abortRotation.current,
         pendingConfirmations,
         pendingConfirmationsBySession,
       );
     } else if (message.type === "chat-abort") {
-      abortController.abort();
+      abortRotation.current.abort();
+      drainPendingConfirms();
     } else if (message.type === "agent-confirm-response") {
       if (!verifyPortSession(message.sessionId, "agent-confirm-response")) return;
       // P1-4 — verify the response belongs to the session that owns
@@ -1621,11 +1641,15 @@ chrome.runtime.onConnect.addListener((port) => {
       );
     } else if (message.type === "resume-task") {
       if (!verifyPortSession(message.sessionId, "resume-task")) return;
+      // Issue #24 (Bug 1) — same rotation as chat-start; resume is a
+      // task-start equivalent and must not inherit a prior task's aborted
+      // signal.
+      rotateAbortController(abortRotation, drainPendingConfirms);
       inFlightSessionIds.add(message.sessionId);
       handleResumeRequest(
         port,
         message.sessionId,
-        abortController,
+        abortRotation.current,
         pendingConfirmations,
         pendingConfirmationsBySession,
       ).catch((e) => {
@@ -1679,18 +1703,13 @@ chrome.runtime.onConnect.addListener((port) => {
     abortRecordingForSession(port, portSessionId, "panel-disconnect");
     portsBySession.delete(portSessionId);
 
-    abortController.abort();
+    abortRotation.current.abort();
     clearInterval(keepAliveInterval);
     // Drain pending confirmations with reason='aborted' (Bug-fix-D — see
-    // abort-listener twin above for why this matters for K-10 fatigue).
-    // Phase 5 — discard any pending pre-captures before draining resolvers
-    // so bytes don't leak in the screenshot-precapture cache.
-    for (const [confirmId, resolve] of pendingConfirmations) {
-      discardPreCapture(confirmId);
-      resolve({ approved: false, reason: "aborted" });
-    }
-    pendingConfirmations.clear();
-    pendingConfirmationsBySession.clear();
+    // drainPendingConfirms JSDoc for K-10 fatigue rationale). Phase 5 —
+    // discardPreCapture inside drainPendingConfirms cleans up pre-capture
+    // bytes before resolving so they don't leak.
+    drainPendingConfirms();
 
     // Bug-fix-E — panel closed mid-task. The abort above kills the running
     // loop; before it dies the agent state is at stepIndex>0 (no tombstone
