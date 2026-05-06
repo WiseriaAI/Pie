@@ -10,21 +10,23 @@ interface OpenRouterModelEntry {
 /**
  * Fetch + normalise OpenRouter's /v1/models response into our ModelMeta shape.
  *
- * Used by both Settings (existing instance refresh, uses stored apiKey) and
- * NewConfigWizard (just-typed apiKey before instance creation, no storage).
+ * /v1/models is a PUBLIC endpoint per OpenRouter docs — no auth required.
+ * apiKey is optional; when provided it's attached as Authorization header
+ * (some providers may apply per-key rate limit / personalisation, harmless
+ * here). Wizard flow fetches with no key so dropdown is populated before
+ * the user enters anything.
  *
- * Throws on empty key, network error, or non-2xx response — caller decides
- * whether to swallow (current v1 policy: silent retry via UI).
+ * Throws on network error or non-2xx response — caller decides whether to
+ * swallow (current v1 policy: silent retry via UI).
  */
 export async function fetchOpenRouterModels(
   baseUrl: string,
-  apiKey: string,
+  apiKey?: string,
 ): Promise<ModelMeta[]> {
-  if (!apiKey.trim()) throw new Error("API key required");
   const url = `${baseUrl.replace(/\/$/, "")}/v1/models`;
-  const res = await fetch(url, {
-    headers: { authorization: `Bearer ${apiKey}` },
-  });
+  const headers: Record<string, string> = {};
+  if (apiKey && apiKey.trim().length > 0) headers.authorization = `Bearer ${apiKey}`;
+  const res = await fetch(url, { headers });
   if (!res.ok) throw new Error(`OpenRouter /v1/models returned ${res.status}`);
   const data = (await res.json()) as { data?: OpenRouterModelEntry[] };
   return (data.data ?? []).map((m) => ({

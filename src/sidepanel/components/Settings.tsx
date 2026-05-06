@@ -181,11 +181,11 @@ export default function Settings({ onBack, onRunSkill }: Props) {
                           await reload();
                         }}
                         onRefreshModels={async (apiKey) => {
+                          // /v1/models is public — apiKey is optional (forwarded for parity).
                           if (inst.provider !== "openrouter") return;
-                          if (!apiKey.trim()) return;
                           const meta = getProviderMeta("openrouter")!;
                           try {
-                            const fetched = await fetchOpenRouterModels(meta.defaultBaseUrl, apiKey);
+                            const fetched = await fetchOpenRouterModels(meta.defaultBaseUrl, apiKey || undefined);
                             await updateInstance(id, { fetchedModels: fetched, fetchedAt: Date.now() });
                             await reload();
                           } catch {

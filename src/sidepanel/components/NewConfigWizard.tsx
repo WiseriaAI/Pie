@@ -34,6 +34,21 @@ export default function NewConfigWizard(props: Props) {
     // Reset fetched cache when provider changes — different provider, different model list.
     setFetchedModels(undefined);
     setFetchedAt(undefined);
+    // OpenRouter /v1/models is public — pre-fetch immediately on provider select
+    // so the dropdown is populated before the user even opens it.
+    if (provider === "openrouter") {
+      const meta = getProviderMeta("openrouter")!;
+      setIsFetching(true);
+      fetchOpenRouterModels(meta.defaultBaseUrl)
+        .then((list) => {
+          setFetchedModels(list);
+          setFetchedAt(Date.now());
+        })
+        .catch(() => {
+          // silent — user can retry via ↻ refresh
+        })
+        .finally(() => setIsFetching(false));
+    }
   }, [provider]);
 
   if (step === 1 || !provider) {
@@ -95,10 +110,11 @@ export default function NewConfigWizard(props: Props) {
         }}
         onRefreshModels={async (apiKey) => {
           // Only OpenRouter has /v1/models lazy fetch; other providers stay hardcoded.
-          if (provider !== "openrouter" || !apiKey.trim()) return;
+          // /v1/models is public, so apiKey is optional (passed for parity with edit flow).
+          if (provider !== "openrouter") return;
           setIsFetching(true);
           try {
-            const fetched = await fetchOpenRouterModels(meta.defaultBaseUrl, apiKey);
+            const fetched = await fetchOpenRouterModels(meta.defaultBaseUrl, apiKey || undefined);
             setFetchedModels(fetched);
             setFetchedAt(Date.now());
           } catch {
