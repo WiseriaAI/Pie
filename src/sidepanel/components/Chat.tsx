@@ -1338,7 +1338,9 @@ function Composer({
             onPick={onPickSkill}
           />
         )}
-        <div className="flex items-start gap-2 rounded-[10px] border border-line bg-field px-3.5 py-3 focus-within:border-accent-line">
+        {/* Composer box: top-bottom layout */}
+        <div className="flex flex-col gap-2 rounded-[10px] border border-line bg-field px-3.5 py-3 focus-within:border-accent-line">
+          {/* Top row: textarea full width */}
           <textarea
             value={input}
             onChange={(e) => onChange(e.target.value)}
@@ -1346,7 +1348,7 @@ function Composer({
             placeholder="Tell the agent what to do, or type / for skills…"
             rows={3}
             disabled={streaming}
-            className="min-h-[60px] flex-1 resize-none bg-transparent text-[13px] leading-5 text-fg-1 placeholder:text-fg-3 disabled:opacity-50"
+            className="min-h-[60px] resize-none bg-transparent text-[13px] leading-5 text-fg-1 placeholder:text-fg-3 disabled:opacity-50"
             onPaste={(e) => {
               const items = e.clipboardData?.items;
               if (!items) return;
@@ -1383,90 +1385,92 @@ function Composer({
               e.preventDefault();
             }}
           />
-          {/* Phase 5 — paperclip attach button (SVG, not emoji) */}
-          {!streaming && (
-            <button
-              type="button"
-              aria-label="attach image"
-              disabled={!supportsVision || attachmentCount >= MAX_IMAGES_PER_TURN}
-              onClick={onAttachClick}
-              className="self-end rounded border border-line px-1.5 py-1 text-fg-3 hover:border-fg-3 hover:text-fg-2 disabled:cursor-not-allowed disabled:opacity-40"
-              title={
-                !supportsVision
-                  ? "Current provider does not support image input"
-                  : attachmentCount >= MAX_IMAGES_PER_TURN
-                    ? `Max ${MAX_IMAGES_PER_TURN} images per message`
-                    : "Attach image (or paste/drop)"
-              }
-            >
-              {/* Paperclip icon — Heroicons outline style */}
-              <svg
-                width="14"
-                height="14"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                aria-hidden="true"
-              >
-                <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
-              </svg>
-            </button>
-          )}
-          {streaming ? (
-            <button
-              onClick={onStop}
-              className="self-end rounded border border-warning-line bg-transparent px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.08em] text-warning hover:bg-warning-tint"
-              title="Cancel running task"
-            >
-              <span className="mr-1 inline-block h-[5px] w-[5px] rounded-full bg-warning align-middle" />
-              STOP
-            </button>
-          ) : (
-            <>
-              {/* Recording v1 — REC button sits next to Send when a startRecording
-                  handler is provided. Disabled while pendingRecording chip is up
-                  or no active session. */}
-              {onStartRecording && (
-                <button
-                  type="button"
-                  onClick={onStartRecording}
-                  disabled={recordingDisabled}
-                  title="Record DOM actions on this tab"
-                  aria-label="Start recording"
-                  className="flex items-center gap-1.5 self-end rounded border border-line px-2 py-1 font-mono text-[10px] tracking-[0.08em] text-fg-2 hover:border-fg-3 hover:text-fg-1 disabled:cursor-not-allowed disabled:opacity-40"
-                >
-                  <span className="inline-block h-[5px] w-[5px] rounded-full bg-fg-3" />
-                  <span>REC</span>
-                </button>
-              )}
+          {/* Bottom row: action row */}
+          <div className="flex items-center gap-2">
+            <InstanceSelector
+              instances={instances}
+              currentId={currentInstanceId}
+              locked={streaming}
+              onChange={onInstanceChange}
+              onManage={onManageInstances}
+            />
+            <div className="flex-1" />
+            {/* Phase 5 — paperclip attach button (SVG, not emoji) */}
+            {!streaming && (
               <button
-                onClick={onSend}
-                disabled={!input.trim()}
-                className="flex items-center gap-1.5 self-end rounded border border-line px-2.5 py-1 text-[11px] text-fg-2 hover:border-fg-3 hover:text-fg-1 disabled:cursor-not-allowed disabled:opacity-50"
+                type="button"
+                aria-label="attach image"
+                disabled={!supportsVision || attachmentCount >= MAX_IMAGES_PER_TURN}
+                onClick={onAttachClick}
+                className="rounded border border-line px-1.5 py-1 text-fg-3 hover:border-fg-3 hover:text-fg-2 disabled:cursor-not-allowed disabled:opacity-40"
+                title={
+                  !supportsVision
+                    ? "Current provider does not support image input"
+                    : attachmentCount >= MAX_IMAGES_PER_TURN
+                      ? `Max ${MAX_IMAGES_PER_TURN} images per message`
+                      : "Attach image (or paste/drop)"
+                }
               >
-                <span>Send</span>
-                <span className="font-mono text-[10px] text-fg-3">↵</span>
+                {/* Paperclip icon — Heroicons outline style */}
+                <svg
+                  width="14"
+                  height="14"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
+                </svg>
               </button>
-            </>
-          )}
+            )}
+            {streaming ? (
+              <button
+                onClick={onStop}
+                className="rounded border border-warning-line bg-transparent px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.08em] text-warning hover:bg-warning-tint"
+                title="Cancel running task"
+              >
+                <span className="mr-1 inline-block h-[5px] w-[5px] rounded-full bg-warning align-middle" />
+                STOP
+              </button>
+            ) : (
+              <>
+                {/* Recording v1 — REC button sits next to Send when a startRecording
+                    handler is provided. Disabled while pendingRecording chip is up
+                    or no active session. */}
+                {onStartRecording && (
+                  <button
+                    type="button"
+                    onClick={onStartRecording}
+                    disabled={recordingDisabled}
+                    title="Record DOM actions on this tab"
+                    aria-label="Start recording"
+                    className="flex items-center gap-1.5 rounded border border-line px-2 py-1 font-mono text-[10px] tracking-[0.08em] text-fg-2 hover:border-fg-3 hover:text-fg-1 disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    <span className="inline-block h-[5px] w-[5px] rounded-full bg-fg-3" />
+                    <span>REC</span>
+                  </button>
+                )}
+                <button
+                  onClick={onSend}
+                  disabled={!input.trim()}
+                  className="flex items-center gap-1.5 rounded border border-line px-2.5 py-1 text-[11px] text-fg-2 hover:border-fg-3 hover:text-fg-1 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <span>Send</span>
+                  <span className="font-mono text-[10px] text-fg-3">↵</span>
+                </button>
+              </>
+            )}
+          </div>
         </div>
       </div>
-      <div className="flex items-center gap-2 px-0.5">
-        <InstanceSelector
-          instances={instances}
-          currentId={currentInstanceId}
-          locked={streaming}
-          onChange={onInstanceChange}
-          onManage={onManageInstances}
-        />
-        <div className="flex-1" />
-        <div className="flex items-center gap-4 font-mono text-[10px] tracking-[0.08em] text-fg-3">
-          <span>/ skills</span>
-          <span>SHIFT ↵ NEWLINE</span>
-        </div>
+      {/* Hint row OUTSIDE the box — no chip */}
+      <div className="flex items-center gap-4 px-0.5 font-mono text-[10px] tracking-[0.08em] text-fg-3">
+        <span>/ skills</span>
+        <span>SHIFT ↵ NEWLINE</span>
       </div>
     </div>
   );

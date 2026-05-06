@@ -143,6 +143,7 @@ export default function Settings({ onBack, onRunSkill }: Props) {
                         fetchedModels={inst.fetchedModels}
                         fetchedAt={inst.fetchedAt}
                         maskedKey={maskKey(inst.apiKey)}
+                        existingApiKey={inst.apiKey}
                         onSave={(p) => handleSaveEdit(id, p)}
                         onTest={(p) => handleTest(id, inst.provider, p)}
                         onDelete={() => handleDelete(id)}

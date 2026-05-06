@@ -19,6 +19,7 @@ interface Props {
   fetchedAt?: number;
   isFetching?: boolean;
   maskedKey?: string;
+  existingApiKey?: string;
   onSave: (payload: InstanceFormPayload) => void;
   onTest: (payload: InstanceFormPayload) => void;
   onDelete?: () => void;
@@ -34,8 +35,11 @@ export default function InstanceForm(props: Props) {
   const [apiKey, setApiKey] = useState("");
   const [showKey, setShowKey] = useState(false);
   const [model, setModel] = useState(props.initialModel ?? "");
+  // Edit mode: start in read-only partial-reveal; create mode: always in replacing state
+  const [replacing, setReplacing] = useState(props.mode === "create" || !props.existingApiKey);
 
-  const canSave = apiKey.trim().length > 0 && model.trim().length > 0;
+  const requireApiKey = props.mode === "create" || replacing;
+  const canSave = (!requireApiKey || apiKey.trim().length > 0) && model.trim().length > 0;
 
   const payload: InstanceFormPayload = { nickname, apiKey, model };
 
@@ -57,23 +61,52 @@ export default function InstanceForm(props: Props) {
         </div>
       </Field>
 
-      <Field label="API KEY" hint={props.maskedKey ? `Current ${props.maskedKey}` : undefined}>
-        <div className="flex gap-1.5">
-          <input
-            aria-label="api key"
-            type={showKey ? "text" : "password"}
-            value={apiKey}
-            onChange={(e) => setApiKey(e.target.value)}
-            placeholder={meta?.placeholder ?? ""}
-            className="flex-1 rounded border border-line bg-field px-3 py-2 text-[12px] text-fg-1"
-          />
-          <button
-            onClick={() => setShowKey(!showKey)}
-            className="rounded border border-line bg-field px-2.5 text-[11px] text-fg-2"
-          >
-            {showKey ? "Hide" : "Show"}
-          </button>
-        </div>
+      <Field label="API KEY" hint="AES-GCM · LOCAL">
+        {!replacing && props.existingApiKey ? (
+          <div className="flex flex-col gap-1.5">
+            <div className="flex gap-1.5">
+              <div className="flex-1 rounded border border-line bg-field px-3 py-2 font-mono text-[12px] text-fg-1 select-all">
+                {partialReveal(props.existingApiKey)}
+              </div>
+              <button
+                type="button"
+                onClick={() => setReplacing(true)}
+                className="rounded border border-line bg-field px-2.5 text-[11px] text-fg-2 hover:text-fg-1"
+              >
+                Replace key
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div className="flex flex-col gap-1.5">
+            <div className="flex gap-1.5">
+              <input
+                aria-label="api key"
+                type={showKey ? "text" : "password"}
+                value={apiKey}
+                onChange={(e) => setApiKey(e.target.value)}
+                placeholder={meta?.placeholder ?? ""}
+                className="flex-1 rounded border border-line bg-field px-3 py-2 text-[12px] text-fg-1"
+              />
+              <button
+                type="button"
+                onClick={() => setShowKey(!showKey)}
+                className="rounded border border-line bg-field px-2.5 text-[11px] text-fg-2"
+              >
+                {showKey ? "Hide" : "Show"}
+              </button>
+            </div>
+            {props.mode === "edit" && props.existingApiKey && (
+              <button
+                type="button"
+                onClick={() => { setApiKey(""); setReplacing(false); }}
+                className="self-start text-[11px] text-fg-3 hover:text-fg-1"
+              >
+                Cancel — keep current key
+              </button>
+            )}
+          </div>
+        )}
       </Field>
 
       <Field label="MODEL">
@@ -129,4 +162,9 @@ function Field({ label, hint, children }: { label: string; hint?: string; childr
       {children}
     </label>
   );
+}
+
+function partialReveal(key: string): string {
+  if (key.length <= 8) return "•".repeat(8);
+  return `${key.slice(0, 7)}${"•".repeat(Math.max(8, key.length - 11))}${key.slice(-4)}`;
 }
