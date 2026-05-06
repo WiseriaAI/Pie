@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import type { Provider, ModelMeta } from "@/lib/model-router";
 import { getProviderMeta } from "@/lib/model-router";
 import ModelDropdown from "./ModelDropdown";
@@ -55,9 +55,28 @@ export default function InstanceForm(props: Props) {
   // accumulates user's "+ 添加自定义模型" entries during the form session so
   // they appear in the dropdown immediately AND get carried to onSave.
   // Edit-mode parents (Settings.tsx) also persist async via onAddCustomModel
-  // for cross-session durability; on form remount, initialCustomModels prop
-  // re-seeds local state.
+  // for cross-session durability.
   const [customModels, setCustomModels] = useState<string[]>(props.initialCustomModels ?? []);
+  // Sync newly-arrived items from initialCustomModels into local state.
+  // Wizard fetches the provider pool asynchronously on provider select, so the
+  // prop arrives [] first then [X, ...] — without this effect, useState's
+  // one-shot init misses the late arrival. We MERGE (never remove) to avoid
+  // racing against just-added local items whose pool write hasn't resolved yet.
+  useEffect(() => {
+    const incoming = props.initialCustomModels ?? [];
+    if (incoming.length === 0) return;
+    setCustomModels((prev) => {
+      let changed = false;
+      const merged = [...prev];
+      for (const id of incoming) {
+        if (!merged.includes(id)) {
+          merged.push(id);
+          changed = true;
+        }
+      }
+      return changed ? merged : prev;
+    });
+  }, [props.initialCustomModels]);
   // Edit mode: start in read-only partial-reveal; create mode: always in replacing state
   const [replacing, setReplacing] = useState(props.mode === "create" || !props.existingApiKey);
 
