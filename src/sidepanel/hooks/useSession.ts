@@ -1062,7 +1062,16 @@ export function useSession(): UseSession {
   const createAndActivate = useCallback(async (): Promise<string | null> => {
     // P0-1 — refuse when a stream is in flight (no per-session port yet;
     // M3-U1 will allow concurrent sessions with per-session ports).
-    if (streaming) {
+    //
+    // Issue #24 (Bug 2) — read from `streamingRef.current` instead of the
+    // `streaming` state. `useCallback`'s dep array is `[connectPortFor]`
+    // (intentional — `connectPortFor` is stable, so `createAndActivate`
+    // can stay referentially stable across renders). Closing over the
+    // `streaming` state would capture its mount-time value (false) and
+    // never see subsequent flips, so this guard would never fire while
+    // a task is running. `streamingRef` is the documented synchronous
+    // source of truth (see `streamingRef` JSDoc above).
+    if (streamingRef.current) {
       setToast({ level: "warn", text: "Stop the current task before starting a new session." });
       return null;
     }
