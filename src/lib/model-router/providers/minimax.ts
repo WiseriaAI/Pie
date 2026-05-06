@@ -10,6 +10,3 @@ export async function* streamChat(
 ): AsyncGenerator<StreamEvent> {
   yield* streamChatOpenAICompat(config, messages, signal, tools);
 }
-
-// Test-only re-export for back-compat with existing openai.test.ts
-export { _toWireMessagesForTest } from "./_shared/openai-compat-core";

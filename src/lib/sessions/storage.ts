@@ -7,6 +7,7 @@ import type {
 } from "./types";
 import type { ImageAttachment } from "@/lib/images";
 import { getEffectivePinMode, clearTaskPinIfActive } from "./pin-state";
+import { getMigrationMapping } from "@/lib/migration-v2";
 
 // ── Key shape ────────────────────────────────────────────────────────────────
 //
@@ -216,10 +217,31 @@ export async function createSession(
   return meta;
 }
 
+// ── Lazy V1→V2 backfill ──────────────────────────────────────────────────────
+//
+// Pre-migration sessions have a legacy `provider` field (runtime-only, not in
+// the static type) but no `instanceId`. On first access, look up the
+// migration_v2_mapping and rewrite the stored meta with instanceId set and
+// the legacy provider field removed. This is a structural rewrite — we do NOT
+// bump lastAccessedAt to avoid polluting LRU ordering.
+async function backfillInstanceId(meta: SessionMeta & { provider?: string }): Promise<SessionMeta> {
+  if (meta.instanceId || !meta.provider) return meta;
+  const mapping = await getMigrationMapping();
+  const instanceId = mapping[meta.provider];
+  if (!instanceId) return meta;
+  const { provider: _drop, ...rest } = meta as SessionMeta & { provider?: string };
+  void _drop;
+  const next: SessionMeta = { ...rest, instanceId };
+  // Persist the backfill so we don't keep doing it on subsequent reads.
+  await chrome.storage.local.set({ [`session_${meta.id}_meta`]: next });
+  return next;
+}
+
 export async function getSessionMeta(id: string): Promise<SessionMeta | null> {
   const result = await chrome.storage.local.get(metaKey(id));
-  const raw = result[metaKey(id)] as SessionMeta | undefined;
-  return raw ?? null;
+  const raw = result[metaKey(id)] as (SessionMeta & { provider?: string }) | undefined;
+  if (!raw) return null;
+  return backfillInstanceId(raw);
 }
 
 // ── R10 storage scrub ────────────────────────────────────────────────────────

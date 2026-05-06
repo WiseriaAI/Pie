@@ -8,8 +8,10 @@ export async function* streamChat(
   signal?: AbortSignal,
   tools?: ToolDefinition[],
 ): AsyncGenerator<StreamEvent> {
-  yield* streamChatOpenAICompat(config, messages, signal, tools);
+  yield* streamChatOpenAICompat(config, messages, signal, tools, {
+    customHeaders: () => ({
+      "HTTP-Referer": "https://github.com/WiseriaAI/chrome-ai-agent",
+      "X-OpenRouter-Title": "Pie",
+    }),
+  });
 }
-
-// Test-only re-export for back-compat with existing openai.test.ts
-export { _toWireMessagesForTest } from "./_shared/openai-compat-core";

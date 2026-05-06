@@ -16,7 +16,7 @@ import type {
   ContentBlock,
   ModelConfig,
 } from "@/lib/model-router";
-import { getActiveProvider, getProviderConfig } from "@/lib/storage";
+import { getActiveInstance, resolveInstanceToModelConfig } from "@/lib/instances";
 import {
   runAgentLoop,
   safeParseOrigin,
@@ -86,10 +86,14 @@ import {
   recordingState,
 } from "./recording-orchestrator";
 import type { RecordingSession } from "@/lib/recording/types";
+import { migrateV1toV2 } from "@/lib/migration-v2";
 import {
   createAbortRotation,
   rotateAbortController,
 } from "./abort-rotation";
+
+// Run V1→V2 migration once on SW load (idempotent via schema_version sentinel).
+migrateV1toV2().catch((e) => console.error("migration v2 failed", e));
 
 // Phase 5 follow-up — shared resolver for the screenshot first-task pin race
 // (see effective-pinned.ts for the three-tier fallback rationale).
@@ -594,28 +598,34 @@ async function handleResumeRequest(
     return;
   }
 
-  // Drift OK — flip the session back to `active` and restart the loop.
-  await setSessionMeta({ ...meta, status: "active" });
+  // Drift OK — resolve instance config, then flip the session back to `active`.
+  const resumeInstanceId = meta.instanceId ?? (await getActiveInstance());
+  if (!resumeInstanceId) {
+    port.postMessage({
+      type: "chat-error",
+      error: "No config selected. Open Settings to create one.",
+      sessionId,
+    });
+    return;
+  }
+  const resumeModelConfig = await resolveInstanceToModelConfig(resumeInstanceId);
+  if (!resumeModelConfig) {
+    port.postMessage({
+      type: "chat-error",
+      error: "Selected config was deleted. Pick another in the chat header.",
+      sessionId,
+    });
+    return;
+  }
+  const modelConfig: ModelConfig = resumeModelConfig;
 
-  const activeProvider = await getActiveProvider();
-  if (!activeProvider) {
-    port.postMessage({
-      type: "chat-error",
-      error: "No active provider configured.",
-      sessionId,
-    });
-    return;
-  }
-  const config = await getProviderConfig(activeProvider);
-  if (!config) {
-    port.postMessage({
-      type: "chat-error",
-      error: `No API key configured for ${activeProvider}.`,
-      sessionId,
-    });
-    return;
-  }
-  const modelConfig: ModelConfig = config;
+  // Flip session back to `active`, and if we fell back to global active, pin
+  // the instanceId so future resumes don't depend on the global active changing.
+  await setSessionMeta({
+    ...meta,
+    status: "active",
+    ...(meta.instanceId ? {} : { instanceId: resumeInstanceId }),
+  });
 
   // Phase 5 — Task 12: mint a fresh taskId for the resumed loop so the
   // per-task screenshot budget and pre-capture keys are fresh.
@@ -1006,27 +1016,26 @@ async function handleChatStream(
 ) {
   const signal = abortController.signal;
   try {
-    // Get active provider config
-    const activeProvider = await getActiveProvider();
-    if (!activeProvider) {
+    // Resolve instance config for this session (per-session pin → global fallback).
+    const chatSessionMeta = await getSessionMeta(sessionId);
+    const chatInstanceId = chatSessionMeta?.instanceId ?? (await getActiveInstance());
+    if (!chatInstanceId) {
       port.postMessage({
         type: "chat-error",
-        error: "No active provider configured. Please set up an API key in Settings.",
+        error: "No config selected. Open Settings to create one.",
         sessionId,
       });
       return;
     }
-
-    const config = await getProviderConfig(activeProvider);
-    if (!config) {
+    const chatModelConfig = await resolveInstanceToModelConfig(chatInstanceId);
+    if (!chatModelConfig) {
       port.postMessage({
         type: "chat-error",
-        error: `No API key configured for ${activeProvider}. Please check Settings.`,
+        error: "Selected config was deleted. Pick another in the chat header.",
         sessionId,
       });
       return;
     }
-
     // M2-U1 trigger (b) — bump lastAccessedAt when the SW receives a new
     // chat-start for this session. Fire-and-forget; failure is non-fatal.
     updateLastAccessed(sessionId).catch((e) => {
@@ -1052,7 +1061,7 @@ async function handleChatStream(
       if (expectedFallback !== undefined && expectedFallback !== "") {
         const callChat = (
           msgs: Array<{ role: "system" | "user" | "assistant"; content: string }>,
-        ) => chat(config, msgs as ChatMessage[]).then((r) => r.content);
+        ) => chat(chatModelConfig, msgs as ChatMessage[]).then((r) => r.content);
 
         generateTitle(firstUserContent, callChat)
           .then((llmTitle) =>
@@ -1118,7 +1127,12 @@ async function handleChatStream(
     );
 
     // Step 2: read lastTaskSynth from agent state (post-AD1 location).
-    // Read session meta in parallel for pinned tab fields (used below).
+    // AD1 fix: fetch synthMeta in parallel with synthAgent here, AFTER
+    // upgradeAutoToTaskAtChatStart has run above. The early chatSessionMeta
+    // (line ~1016) is stale for auto-mode sessions: upgradeAutoToTaskAtChatStart
+    // writes pinMode='task' + pinnedTabs[] AFTER chatSessionMeta was loaded,
+    // so reusing it would cause getPrimaryPin/getEffectivePinMode to miss the
+    // freshly-captured pin — regression of M5 invariants.
     // Note: title generation (above) uses messages.length === 1 which
     // is evaluated BEFORE this injection, so the injected synth never
     // accidentally counts as a second message for title-gen purposes.
@@ -1126,6 +1140,17 @@ async function handleChatStream(
       getSessionAgent(sessionId),
       getSessionMeta(sessionId),
     ]);
+
+    // Per-session pin: if we fell back to global active, persist instanceId so
+    // future chat-starts for this session don't depend on global active changing.
+    // Placed AFTER upgradeAutoToTaskAtChatStart to avoid clobbering the
+    // upgraded pinMode='task' + pinnedTabs[] (lost-update fix).
+    if (synthMeta && !synthMeta.instanceId && chatInstanceId) {
+      await setSessionMeta({ ...synthMeta, instanceId: chatInstanceId }).catch((e) => {
+        console.warn(`[sw] instanceId pin failed for session=${sessionId}:`, e);
+      });
+    }
+
     const lastTaskSynth = synthAgent?.lastTaskSynth ?? null;
 
     let effectiveMessages = messages;
@@ -1146,7 +1171,7 @@ async function handleChatStream(
       });
     }
 
-    const modelConfig: ModelConfig = config;
+    const modelConfig: ModelConfig = chatModelConfig;
 
     // M3-U2 — read the panel-captured pinned tab/origin from meta and
     // inject into the loop context. Legacy sessions without a pin fall

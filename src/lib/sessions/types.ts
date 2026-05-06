@@ -113,6 +113,17 @@ export interface SessionMeta {
    *  chat-done boundaries (M1-U2); panel reads it on mount and re-renders
    *  on storage onChanged. */
   messages: DisplayMessage[];
+  /**
+   * Per-session instance override (Q6 = Y). Set at session creation by
+   * reading active_instance_id; can be changed by the user via the
+   * InstanceSelector chip in the composer until the first task starts.
+   * Once a task starts, the resolved ModelConfig is snapshotted into the
+   * checkpoint (C1 invariant) and instance changes mid-task are ignored.
+   *
+   * Pre-migration sessions (before V2) lack this field; lazy backfill
+   * happens in getSessionMeta when migration_v2_mapping is present.
+   */
+  instanceId?: string;
 }
 
 /**

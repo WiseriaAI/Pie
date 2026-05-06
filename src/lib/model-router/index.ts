@@ -1,13 +1,13 @@
 // Model Router — unified LLM interface abstraction
 
-import { streamChat as anthropicStreamChat } from "./providers/anthropic";
-import { streamChat as openaiStreamChat } from "./providers/openai";
+import { streamChatByProvider } from "./providers";
 import { getProviderMeta } from "./providers/registry";
 import type { Attachment } from "@/lib/images";
 
 export type { StreamEvent, AgentMessage, ContentBlock, TextBlock, ToolUseBlock, ToolResultBlock, ImageBlock, ToolDefinition } from "./types";
 export { PROVIDER_REGISTRY, getProviderMeta } from "./providers/registry";
-export type { ProviderMeta } from "./providers/registry";
+export type { ProviderMeta, ModelMeta } from "./providers/registry";
+export { getModelMeta } from "./providers/registry";
 
 export type Provider =
   | "anthropic"
@@ -16,8 +16,8 @@ export type Provider =
   | "minimax"
   | "zhipu"
   | "bailian"
-  | "google"
-  | "ollama";
+  | "gemini"
+  | "deepseek";
 
 export interface ModelConfig {
   provider: Provider;
@@ -93,14 +93,7 @@ export async function* streamChat(
     baseUrl: config.baseUrl || meta.defaultBaseUrl,
   };
 
-  switch (meta.type) {
-    case "anthropic":
-      yield* anthropicStreamChat(resolvedConfig, messages, signal, tools);
-      break;
-    case "openai-compatible":
-      yield* openaiStreamChat(resolvedConfig, messages, signal, tools);
-      break;
-  }
+  yield* streamChatByProvider[config.provider](resolvedConfig, messages, signal, tools);
 }
 
 export async function chat(

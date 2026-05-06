@@ -1,5 +1,7 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi, beforeEach } from "vitest";
 import { chromeMock } from "@/test/setup";
+import { migrateV1toV2 } from "@/lib/migration-v2";
+import { encrypt, getOrCreateEncryptionKey } from "@/lib/crypto";
 import {
   createSession,
   getSessionAgent,
@@ -1349,5 +1351,46 @@ describe("v1.5 multi-pin storage", () => {
     });
     expect(meta.pinnedTabs).toEqual([{ tabId: 7, origin: "https://a.com" }]);
     expect(meta.pinMode).toBe("user");
+  });
+});
+
+// ── Task 8 — getSessionMeta lazy backfill ─────────────────────────────────────
+
+describe("getSessionMeta lazy backfill", () => {
+  beforeEach(() => {
+    chromeMock.storage.local.__store = {};
+  });
+
+  it("when meta.instanceId missing but mapping exists, backfills from legacy provider", async () => {
+    // Seed v1 provider config + run migration to populate mapping
+    const key = await getOrCreateEncryptionKey();
+    chromeMock.storage.local.__store["provider_anthropic"] = {
+      encryptedKey: await encrypt("sk-ant", key),
+      model: "claude-opus-4-7",
+    };
+    await migrateV1toV2();
+    const mapping = chromeMock.storage.local.__store["migration_v2_mapping"] as Record<string, string>;
+    const expectedInstanceId = mapping["anthropic"];
+
+    // Seed a pre-migration session that has a legacy provider field but no instanceId
+    chromeMock.storage.local.__store["session_legacy_meta"] = {
+      id: "legacy", createdAt: 1, lastAccessedAt: 1, status: "archived",
+      messages: [],
+      provider: "anthropic", // legacy field
+    };
+
+    const meta = await getSessionMeta("legacy");
+    expect(meta!.instanceId).toBe(expectedInstanceId);
+    // legacy field cleaned up
+    expect(("provider" in (meta as object))).toBe(false);
+  });
+
+  it("session with no provider + no instanceId is left as-is", async () => {
+    chromeMock.storage.local.__store["session_x_meta"] = {
+      id: "x", createdAt: 1, lastAccessedAt: 1, status: "active",
+      messages: [],
+    };
+    const meta = await getSessionMeta("x");
+    expect(meta!.instanceId).toBeUndefined();
   });
 });
