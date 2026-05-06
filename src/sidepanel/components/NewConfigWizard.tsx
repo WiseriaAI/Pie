@@ -70,6 +70,13 @@ export default function NewConfigWizard(props: Props) {
             <div className="flex-1" />
             <button
               type="button"
+              onClick={props.onCancel}
+              className="rounded border border-line bg-transparent px-3 py-1.5 text-[11px] text-fg-2 hover:border-fg-3 hover:text-fg-1"
+            >
+              取消
+            </button>
+            <button
+              type="button"
               onClick={triggerTest}
               disabled={!canSave}
               className="rounded border border-line bg-transparent px-3 py-1.5 text-[11px] text-fg-2 hover:border-fg-3 disabled:opacity-30"
@@ -83,13 +90,6 @@ export default function NewConfigWizard(props: Props) {
               className="rounded bg-fg-1 px-3 py-1.5 text-[11px] font-medium text-canvas disabled:opacity-30"
             >
               {saveLabel}
-            </button>
-            <button
-              type="button"
-              onClick={props.onCancel}
-              className="rounded border border-line bg-transparent px-3 py-1.5 text-[11px] text-fg-2 hover:border-fg-3 hover:text-fg-1"
-            >
-              取消
             </button>
           </div>
         )}
