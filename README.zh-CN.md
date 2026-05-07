@@ -11,7 +11,8 @@
     <a href="#配置">配置</a> ·
     <a href="PRIVACY.md">隐私</a> ·
     <a href="CHANGELOG.md">更新日志</a> ·
-    <a href="docs/ROADMAP.md">路线图</a>
+    <a href="docs/ROADMAP.md">路线图</a> ·
+    <a href="docs/ARCHITECTURE.md">架构</a>
   </p>
 </div>
 
