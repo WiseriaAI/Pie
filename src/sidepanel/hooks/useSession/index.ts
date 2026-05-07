@@ -820,46 +820,24 @@ export function useSession(): UseSession {
    *      any live pendingConfirm for the new session (R4 re-emit path).
    */
   const setActive = useCallback(async (id: string): Promise<string | null> => {
-    // Guard: don't switch mid-stream. M3-U1 ships per-session port wire
-    // identity but keeps the panel-level streaming guard — concurrent
-    // same-panel tasks need streaming-state-per-session plumbing across
-    // accumulatedRef / messagesRef and is deferred to a future M3 unit.
-    if (streaming) return null;
+    // #30 — streaming guard removed: switching sessions no longer kills tasks.
+    // Old port stays connected; SW keeps streaming into its session's slot.
 
     const meta = await getSessionMeta(id);
     if (!meta) return null;
-
-    // No-op if already on this session.
     if (sessionIdRef.current === id) return id;
 
-    // M3-U2 (post-acceptance) — legacy-session pin migration only fires
-    // for sessions that ALREADY have content (messages.length > 0). For
-    // empty sessions the pin will be captured at the first sendMessage
-    // (lock-on-send rule); pre-capturing here would steal that decision
-    // from the user's actual at-send tab focus.
-    //
-    // Legacy = M1/M2 sessions whose meta was written before pin support
-    // existed but which already accumulated messages. Backfilling at
-    // activation lets resume / next-send anchor cleanly.
+    // Legacy-pin migration (M3-U2 post-acceptance) — preserved verbatim.
     let metaForActivate = meta;
     let didMigrate = false;
     const sessionHasContent = (meta.messages?.length ?? 0) > 0;
-    // v1.5 — use pinnedTabs[] presence check (falls back gracefully for legacy sessions)
-    if (
-      sessionHasContent &&
-      (!meta.pinnedTabs || meta.pinnedTabs.length === 0)
-    ) {
+    if (sessionHasContent && (!meta.pinnedTabs || meta.pinnedTabs.length === 0)) {
       const pinned = await captureActivePinned();
       if (pinned) {
         const pinEntry = { tabId: pinned.pinnedTabId, origin: pinned.pinnedOrigin };
         const patched = {
           ...meta,
-          // M5 — legacy session backfill = treat as task-mode pin (the user
-          // is activating a session with content but no pin; the next
-          // resume/send needs an anchor). Without explicit pinMode the
-          // storage normalize-on-write would strip the pin.
           pinMode: "task" as const,
-          // v1.5 — write source-of-truth pinnedTabs[].
           pinnedTabs: [pinEntry],
           lastAccessedAt: Date.now(),
         };
@@ -868,41 +846,43 @@ export function useSession(): UseSession {
         didMigrate = true;
       }
     }
+    if (!didMigrate) await updateLastAccessed(id);
 
-    // Bump lastAccessedAt in storage (M2-U1 three-trigger wiring).
-    // Skip when the legacy-pin migration above already wrote a fresh
-    // lastAccessedAt — otherwise this would issue a redundant second
-    // setSessionMeta with another fresh timestamp.
-    if (!didMigrate) {
-      await updateLastAccessed(id);
-    }
-
-    // M3-U1 — swap to the new session's port. Disconnect old (its
-    // SW-side abortController fires; in-flight task on that session is
-    // killed cleanly because we already streaming-guarded above) and
-    // connect a fresh port whose name carries the new sessionId.
-    // (multi-session: old port stays connected, deletion deferred to Tasks 7+8)
-
-    // Update ref immediately so callers that synchronously follow setActive
-    // (e.g. resumeTask in handleResumeSession) see the new id without
-    // waiting for the React state re-render cycle.
     sessionIdRef.current = id;
-
-    // Load the session's messages into React state
     setSessionId(id);
     setStatus(metaForActivate.status);
     const activatePins = metaForActivate.pinnedTabs;
     setPinnedTabsState(activatePins && activatePins.length > 0 ? activatePins : null);
     setPinModeState(metaForActivate.pinMode ?? "auto");
-    setMessages(metaForActivate.messages ?? []);
-    setError(null);
-    setToast(null);
 
-    // Open the new session's port (sends panel-mounted as part of connect).
-    portsRef.current.set(id, connectPortFor(id));
+    // Multi-session: hydrate slot from storage IFF the slot doesn't already
+    // hold streaming state (a background task on this session would have
+    // a live slot already; do not clobber it with stale storage messages).
+    patchSlot(id, (prev) => {
+      if (prev.streaming) return {}; // keep live slot intact
+      return {
+        messages: metaForActivate.messages ?? [],
+        error: null,
+        toast: null,
+        accumulated: "",
+        streamingText: "",
+        streaming: false,
+        streamFinished: true,
+      };
+    });
+
+    // §3.4 invariant — paused / archived sessions do NOT auto-create a port.
+    // Resume / archived-readonly flows decide explicitly when to connect.
+    if (
+      !portsRef.current.has(id) &&
+      metaForActivate.status !== "archived" &&
+      metaForActivate.status !== "paused"
+    ) {
+      portsRef.current.set(id, connectPortFor(id));
+    }
 
     return id;
-  }, [streaming, connectPortFor]);
+  }, [connectPortFor, patchSlot]);
 
   /**
    * M2-U2 — create a new session and make it active. Returns the new

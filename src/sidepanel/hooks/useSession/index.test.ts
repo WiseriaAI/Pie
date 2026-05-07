@@ -1081,3 +1081,46 @@ describe("useSession — abort", () => {
     expect(() => result.current.abort()).not.toThrow();
   });
 });
+
+describe("setActive — multi-session port lifecycle (#30)", () => {
+  it("does not disconnect the previous session's port on switch", async () => {
+    const { result } = renderHook(() => useSession());
+    await waitFor(() => expect(result.current.ready).toBe(true));
+    const idA = result.current.sessionId!;
+    const portA = chromeMock.runtime.__ports.at(-1)!;
+
+    // Create a second session
+    let idB: string | null = null;
+    await act(async () => {
+      idB = await result.current.createAndActivate();
+    });
+    const portB = chromeMock.runtime.__ports.at(-1)!;
+
+    expect(portA.disconnect).not.toHaveBeenCalled();
+    expect(portB).not.toBe(portA);
+    expect(result.current.sessionId).toBe(idB);
+  });
+
+  it("does not refuse setActive while streaming", async () => {
+    const { result } = renderHook(() => useSession());
+    await waitFor(() => expect(result.current.ready).toBe(true));
+    const idA = result.current.sessionId!;
+
+    // Pre-create a second session in storage
+    const { id: idB } = await createSession({ now: 2000 });
+
+    // Start streaming on session A
+    act(() => {
+      result.current.sendMessage({ content: "hello" });
+    });
+    expect(result.current.streaming).toBe(true);
+
+    // Switch to session B while streaming — should NOT return null (streaming guard removed)
+    let switched: string | null = null;
+    await act(async () => {
+      switched = await result.current.setActive(idB);
+    });
+    expect(switched).not.toBeNull();
+    expect(switched).toBe(idB);
+  });
+});
