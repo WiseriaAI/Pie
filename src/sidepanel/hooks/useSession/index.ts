@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ChatMessage } from "@/lib/model-router";
 import type { ImageAttachment } from "@/lib/images";
 import type { DisplayMessage, PortMessageToPanel } from "@/types";
@@ -13,6 +13,13 @@ import { hardDeleteSession } from "@/lib/sessions/lifecycle";
 import type { SessionMeta, SessionStatus } from "@/lib/sessions/types";
 import { deriveTitleFromMessages } from "@/lib/sessions/title";
 import { togglePinTabUserMode } from "@/lib/sessions/pin-state";
+import {
+  EMPTY_SLOT,
+  deriveActiveView,
+  withSlot,
+  type SessionRuntimeSlot,
+} from "./runtime-map";
+import { createPortHandlers } from "./port-handlers";
 
 /**
  * useSession — single-source-of-truth for the active session's messages,
@@ -242,6 +249,29 @@ export function useSession(): UseSession {
   // persistent listener.
   const accumulatedRef = useRef<string>("");
   const streamFinishedRef = useRef<boolean>(true);
+
+  // Multi-session migration (#30) — all per-task runtime state is keyed by
+  // sessionId. Legacy single-tenant state (streaming, streamingText, error,
+  // toast, messages, accumulatedRef, streamFinishedRef, streamingRef) is
+  // kept alongside during the migration and removed in a single commit
+  // once every reader/writer has been ported.
+  const [slots, setSlots] = useState<Map<string, SessionRuntimeSlot>>(new Map());
+  const slotsRef = useRef<Map<string, SessionRuntimeSlot>>(new Map());
+
+  // patchSlot — sync write to slotsRef (Bug-fix-A truth source) + setSlots
+  // for React commit. Mirrors the contract documented on streamingRef.
+  const patchSlot = useCallback(
+    (
+      id: string,
+      patch:
+        | Partial<SessionRuntimeSlot>
+        | ((s: SessionRuntimeSlot) => Partial<SessionRuntimeSlot>),
+    ) => {
+      slotsRef.current = withSlot(slotsRef.current, id, patch);
+      setSlots(slotsRef.current);
+    },
+    [],
+  );
 
   useEffect(() => {
     sessionIdRef.current = sessionId;
