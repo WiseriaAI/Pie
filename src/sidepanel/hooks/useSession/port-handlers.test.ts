@@ -233,3 +233,28 @@ describe("agent-confirm-request", () => {
     expect(deps.slotsRef.current.get("s1")!.messages).toHaveLength(1);
   });
 });
+
+describe("agent-done-task", () => {
+  it("appends agent-summary, resets streaming, persists", () => {
+    const deps = makeDeps();
+    deps.slotsRef.current.set("s1", { ...EMPTY_SLOT, streaming: true, streamFinished: false });
+    const { handleMessage } = createPortHandlers(deps);
+    handleMessage({
+      type: "agent-done-task",
+      sessionId: "s1",
+      success: true,
+      summary: "ok",
+      stepCount: 3,
+    } as PortMessageToPanel);
+    const slot = deps.slotsRef.current.get("s1")!;
+    expect(slot.messages).toEqual([
+      { role: "agent-summary", success: true, summary: "ok", stepCount: 3 },
+    ]);
+    expect(slot.streaming).toBe(false);
+    expect(slot.streamFinished).toBe(true);
+    expect(deps.persistMessages).toHaveBeenCalledWith(
+      "s1",
+      [{ role: "agent-summary", success: true, summary: "ok", stepCount: 3 }],
+    );
+  });
+});

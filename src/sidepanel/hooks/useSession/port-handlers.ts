@@ -158,6 +158,29 @@ export function createPortHandlers(deps: CreatePortHandlersDeps): PortHandlers {
       return;
     }
 
+    if (msg.type === "agent-done-task") {
+      const prev = slotsRef.current.get(id);
+      const baseMessages = prev?.messages ?? [];
+      const next: DisplayMessage[] = [
+        ...baseMessages,
+        {
+          role: "agent-summary",
+          success: msg.success,
+          summary: msg.summary,
+          stepCount: msg.stepCount,
+        },
+      ];
+      patchSlot(id, {
+        messages: next,
+        accumulated: "",
+        streamingText: "",
+        streaming: false,
+        streamFinished: true,
+      });
+      void persistMessages(id, next);
+      return;
+    }
+
     // Subsequent branches added in Tasks 2c–2g.
   };
 
