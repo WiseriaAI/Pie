@@ -92,6 +92,7 @@ import {
   createAbortRotation,
   rotateAbortController,
 } from "./abort-rotation";
+import { createKeepAlive, type KeepAlive } from "./keep-alive";
 
 // Run V1→V2 migration once on SW load (idempotent via schema_version sentinel).
 migrateV1toV2().catch((e) => console.error("migration v2 failed", e));
@@ -531,8 +532,11 @@ async function handleResumeRequest(
   abortController: AbortController,
   pendingConfirmations: Map<string, (result: { approved: boolean; reason?: "user-reject" | "aborted" | "pre-capture-failed"; screenshotResult?: ImageAttachment; stale?: boolean; failureReason?: string }) => void>,
   pendingConfirmationsBySession: Map<string, string>,
+  inFlightSessionIds: Set<string>,
+  keepAlive: KeepAlive,
 ): Promise<void> {
-  const signal = abortController.signal;
+  try {
+    const signal = abortController.signal;
   const meta = await getSessionMeta(sessionId);
   if (!meta || meta.status !== "paused") {
     // Multi-sidepanel scenario: a sibling sidepanel may have already resumed
@@ -911,6 +915,10 @@ async function handleResumeRequest(
       });
     },
   });
+  } finally {
+    inFlightSessionIds.delete(sessionId);
+    keepAlive.maybeStop();
+  }
 }
 
 /**
@@ -1047,6 +1055,8 @@ async function handleChatStream(
   abortController: AbortController,
   pendingConfirmations: Map<string, (result: { approved: boolean; reason?: "user-reject" | "aborted" | "pre-capture-failed"; screenshotResult?: ImageAttachment; stale?: boolean; failureReason?: string }) => void>,
   pendingConfirmationsBySession: Map<string, string>,
+  inFlightSessionIds: Set<string>,
+  keepAlive: KeepAlive,
 ) {
   const signal = abortController.signal;
   try {
@@ -1519,6 +1529,9 @@ async function handleChatStream(
       error: e instanceof Error ? e.message : "An unexpected error occurred",
       sessionId,
     });
+  } finally {
+    inFlightSessionIds.delete(sessionId);
+    keepAlive.maybeStop();
   }
 }
 
@@ -1626,10 +1639,12 @@ chrome.runtime.onConnect.addListener((port) => {
     pendingConfirmationsBySession.clear();
   };
 
-  // Keep-alive: reset Service Worker idle timer while streaming
-  const keepAliveInterval = setInterval(() => {
-    chrome.runtime.getPlatformInfo();
-  }, 25_000);
+  // #30 — keep-alive scoped to in-flight tasks. ensure() at chat-start /
+  // resume-task; maybeStop() after each task terminal state.
+  const keepAlive = createKeepAlive({
+    tick: () => chrome.runtime.getPlatformInfo(),
+    inFlight: inFlightSessionIds,
+  });
 
   // M3-U1 — every panel→SW message carrying a `sessionId` must match the
   // sessionId encoded in the port name. Mismatch indicates a wire bug
@@ -1655,6 +1670,7 @@ chrome.runtime.onConnect.addListener((port) => {
       // rotate helper aborts it and drains its pending confirms first.
       rotateAbortController(abortRotation, drainPendingConfirms);
       inFlightSessionIds.add(message.sessionId);
+      keepAlive.ensure();
       handleChatStream(
         port,
         message.messages,
@@ -1662,6 +1678,8 @@ chrome.runtime.onConnect.addListener((port) => {
         abortRotation.current,
         pendingConfirmations,
         pendingConfirmationsBySession,
+        inFlightSessionIds,
+        keepAlive,
       );
     } else if (message.type === "chat-abort") {
       abortRotation.current.abort();
@@ -1712,12 +1730,15 @@ chrome.runtime.onConnect.addListener((port) => {
       // signal.
       rotateAbortController(abortRotation, drainPendingConfirms);
       inFlightSessionIds.add(message.sessionId);
+      keepAlive.ensure();
       handleResumeRequest(
         port,
         message.sessionId,
         abortRotation.current,
         pendingConfirmations,
         pendingConfirmationsBySession,
+        inFlightSessionIds,
+        keepAlive,
       ).catch((e) => {
         console.warn(
           `[sw] resume-task handler failed for session=${message.sessionId}:`,
@@ -1770,7 +1791,7 @@ chrome.runtime.onConnect.addListener((port) => {
     portsBySession.delete(portSessionId);
 
     abortRotation.current.abort();
-    clearInterval(keepAliveInterval);
+    keepAlive.stop();
     // Drain pending confirmations with reason='aborted' (Bug-fix-D — see
     // drainPendingConfirms JSDoc for K-10 fatigue rationale). Phase 5 —
     // discardPreCapture inside drainPendingConfirms cleans up pre-capture
