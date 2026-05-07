@@ -220,11 +220,6 @@ export function useSession(): UseSession {
   const [pinMode, setPinModeState] = useState<"auto" | "task" | "user" | null>(
     null,
   );
-  const [messages, setMessages] = useState<DisplayMessage[]>([]);
-  const [streaming, setStreaming] = useState(false);
-  const [streamingText, setStreamingText] = useState("");
-  const [error, setError] = useState<string | null>(null);
-  const [toast, setToast] = useState<{ level: "warn" | "error" | "info"; text: string } | null>(null);
   const [ready, setReady] = useState(false);
 
   // Multi-session (#30) — one Port per sessionId. Switching sessions does
@@ -232,37 +227,13 @@ export function useSession(): UseSession {
   // background tasks via createPortHandlers' single onMessage listener.
   // Cleanup: panel unmount disconnects every entry.
   const portsRef = useRef<Map<string, chrome.runtime.Port>>(new Map());
-  // Mirrors of state for use inside the persistent port listener
-  // (which is attached once at mount and can't depend on stale state
-  // closure).
   const sessionIdRef = useRef<string | null>(null);
-  const messagesRef = useRef<DisplayMessage[]>([]);
-  // Bug-fix-A — mirror of streaming state. MUST be written SYNCHRONOUSLY
-  // (alongside every setStreaming call) rather than via a useEffect
-  // committed-state hook, because the storage onChanged listener can fire
-  // **before the next React commit** when the SW writes meta in response
-  // to chat-start (handleChatStream's fire-and-forget updateLastAccessed
-  // round-trips a stale meta with the prior persisted messages — if the
-  // listener observes streamingRef=false in this window, it would adopt
-  // newMeta.messages and overwrite the just-pushed user message).
-  // The useEffect below is kept as a backstop only; the source of truth
-  // for streamingRef is the manual sync in every setStreaming caller.
-  const streamingRef = useRef<boolean>(false);
-  // Per-stream scratch — reset by sendMessage, mutated by the
-  // persistent listener.
-  const accumulatedRef = useRef<string>("");
-  const streamFinishedRef = useRef<boolean>(true);
 
-  // Multi-session migration (#30) — all per-task runtime state is keyed by
-  // sessionId. Legacy single-tenant state (streaming, streamingText, error,
-  // toast, messages, accumulatedRef, streamFinishedRef, streamingRef) is
-  // kept alongside during the migration and removed in a single commit
-  // once every reader/writer has been ported.
   const [slots, setSlots] = useState<Map<string, SessionRuntimeSlot>>(new Map());
   const slotsRef = useRef<Map<string, SessionRuntimeSlot>>(new Map());
 
   // patchSlot — sync write to slotsRef (Bug-fix-A truth source) + setSlots
-  // for React commit. Mirrors the contract documented on streamingRef.
+  // for React commit.
   const patchSlot = useCallback(
     (
       id: string,
@@ -282,53 +253,6 @@ export function useSession(): UseSession {
   useEffect(() => {
     sessionIdRef.current = sessionId;
   }, [sessionId]);
-  useEffect(() => {
-    messagesRef.current = messages;
-  }, [messages]);
-  useEffect(() => {
-    // Backstop only — production callers sync streamingRef synchronously
-    // before each setStreaming call (see Bug-fix-A above).
-    streamingRef.current = streaming;
-  }, [streaming]);
-
-  // ── Persist helper ─────────────────────────────────────────────────
-  // Writes the in-memory messages array to session_${id}_meta. Only
-  // called at done boundaries (chat-done / chat-error / agent-done-task)
-  // to avoid storage churn during streaming.
-  //
-  // Bug-fix-C — also fills SessionMeta.title with the first user message's
-  // prefix when no title exists yet. This is the documented fallback path
-  // for SessionMeta.title (see types.ts JSDoc). The full M2-U3 LLM-generated
-  // title will overwrite this once implemented; until then this gives the
-  // top bar + drawer something better than "New Session" / "Untitled".
-  // setSessionMeta atomically updates the index when title changes (D9),
-  // so App.tsx's listSessionIndex() observer fires on the same write.
-  const persistMessages = useCallback(
-    async (next: DisplayMessage[]) => {
-      const id = sessionIdRef.current;
-      if (!id) return;
-      const current = await getSessionMeta(id);
-      if (!current) return;
-      // Defense-in-depth: if the session was archived between the panel's
-      // last in-memory snapshot and now (LRU eviction during a streaming
-      // task), do NOT resurrect the meta key — it would leave the session
-      // in BOTH the active meta bucket and the archived bucket, confusing
-      // every downstream reader (SessionDrawer, listSessionIndex, the next
-      // archive call's idempotency check).
-      if (current.status === "archived") return;
-      const titlePatch =
-        current.title === undefined || current.title === ""
-          ? deriveTitleFromMessages(next)
-          : undefined;
-      await setSessionMeta({
-        ...current,
-        messages: next,
-        lastAccessedAt: Date.now(),
-        ...(titlePatch !== undefined ? { title: titlePatch } : {}),
-      });
-    },
-    [],
-  );
 
   // Multi-session (#30) — sessionId-explicit variant for port handlers. The
   // legacy persistMessages (which reads sessionIdRef) is preserved during
@@ -359,19 +283,6 @@ export function useSession(): UseSession {
       slotsRef,
       setSlots,
       persistMessages: persistMessagesById,
-      // #30 migration bridge — sync legacy state until Task 9b.
-      legacy: {
-        sessionIdRef,
-        setMessages,
-        messagesRef,
-        setStreaming,
-        streamingRef,
-        setStreamingText,
-        setError,
-        setToast,
-        accumulatedRef,
-        streamFinishedRef,
-      },
     }),
     [persistMessagesById],
   );
@@ -518,7 +429,7 @@ export function useSession(): UseSession {
         if (slotsRef.current.get(sessionIdRef.current ?? "")?.streaming) {
           return;
         }
-        const local = messagesRef.current;
+        const local = slotsRef.current.get(sessionId ?? "")?.messages ?? [];
         const remote = newMeta.messages;
         if (remote.length === local.length) {
           if (JSON.stringify(remote) === JSON.stringify(local)) {
@@ -571,24 +482,14 @@ export function useSession(): UseSession {
           ? { attachments: input.attachments }
           : {}),
       };
-      const updated = [...messagesRef.current, userMessage];
+      const currentMessages = slotsRef.current.get(id)?.messages ?? [];
+      const updated = [...currentMessages, userMessage];
       // M3-U2 (post-acceptance) — empty→non-empty is the moment we lock
       // the pin. Capture HERE rather than at session create / activation
       // so the user's actual at-send tab wins over their at-create tab.
       // Empty session: panel UI shows live-current-tab preview;
       // first sendMessage: capture + persist; from then on locked.
-      const isFirstMessage = messagesRef.current.length === 0;
-      // Bug-fix-A — sync messagesRef + streamingRef BEFORE port.postMessage
-      // so the SW's chat-start-triggered updateLastAccessed (which writes
-      // a stale meta back to storage and re-fires the metaKey listener)
-      // observes streamingRef=true and bails out via the streaming guard
-      // instead of overwriting the just-pushed user message. The messagesRef
-      // update also makes the prefix-equality echo guard (in the metaKey
-      // listener below) recognise the SW write as a strict prefix of the
-      // panel's authoritative state.
-      // Multi-session (#30) — atomic slot update; replaces messagesRef + streamingRef
-      // + setMessages + setStreaming + setStreamingText + setError manual sync.
-      messagesRef.current = updated;
+      const isFirstMessage = currentMessages.length === 0;
       patchSlot(id, {
         messages: updated,
         streaming: true,
@@ -641,7 +542,7 @@ export function useSession(): UseSession {
       // messages the on-disk version before any SW updateLastAccessed
       // round-trip can write back a stale shorter snapshot.
       // Fire-and-forget; failures are non-fatal.
-      void persistMessages(updated);
+      void persistMessagesById(id, updated);
 
       port.postMessage({
         type: "chat-start",
@@ -697,7 +598,7 @@ export function useSession(): UseSession {
         })();
       }
     },
-    [persistMessages, patchSlot],
+    [persistMessagesById, patchSlot],
   );
 
   const abort = useCallback(() => {
