@@ -276,6 +276,9 @@ export function useSession(): UseSession {
     [],
   );
 
+  // #30 — derive active session view; passed back through UseSession interface.
+  const active = deriveActiveView(slots, sessionId);
+
   useEffect(() => {
     sessionIdRef.current = sessionId;
   }, [sessionId]);
@@ -437,7 +440,7 @@ export function useSession(): UseSession {
         setStatus(meta.status);
         setPinnedTabsState(null);
         setPinModeState(meta.pinMode ?? "auto");
-        setMessages([]);
+        patchSlot(meta.id, EMPTY_SLOT);
         portsRef.current.set(meta.id, connectPortFor(meta.id));
       } finally {
         if (!cancelled) setReady(true);
@@ -512,7 +515,7 @@ export function useSession(): UseSession {
         //    write-back (remote.length < local.length AND remote is a strict
         //    prefix of local). Both are signs the SW round-tripped a stale meta
         //    after the panel's authoritative state moved forward.
-        if (streamingRef.current) {
+        if (slotsRef.current.get(sessionIdRef.current ?? "")?.streaming) {
           return;
         }
         const local = messagesRef.current;
@@ -534,7 +537,7 @@ export function useSession(): UseSession {
           }
           if (isPrefix) return;
         }
-        setMessages(remote);
+        patchSlot(sessionId!, { messages: remote });
       }
     };
     chrome.storage.local.onChanged.addListener(listener);
@@ -549,7 +552,7 @@ export function useSession(): UseSession {
   // and matches plan M1-U5's "SW death is observable" expectation.
   const sendMessage = useCallback(
     (input: SendMessageInput) => {
-      if (streaming) return;
+      if (slotsRef.current.get(sessionIdRef.current ?? "")?.streaming) return;
       const id = sessionIdRef.current;
       if (!id) return;
       const port = portsRef.current.get(sessionIdRef.current ?? "") ?? null;
@@ -583,18 +586,9 @@ export function useSession(): UseSession {
       // update also makes the prefix-equality echo guard (in the metaKey
       // listener below) recognise the SW write as a strict prefix of the
       // panel's authoritative state.
+      // Multi-session (#30) — atomic slot update; replaces messagesRef + streamingRef
+      // + setMessages + setStreaming + setStreamingText + setError manual sync.
       messagesRef.current = updated;
-      streamingRef.current = true;
-      setMessages(updated);
-      setStreaming(true);
-      setStreamingText("");
-      setError(null);
-      // Reset per-stream scratch.
-      accumulatedRef.current = "";
-      streamFinishedRef.current = false;
-
-      // #30 — initialize the slot so port handler's legacy sync doesn't
-      // overwrite the user message with an empty slot (removed in Task 9b).
       patchSlot(id, {
         messages: updated,
         streaming: true,
@@ -703,7 +697,7 @@ export function useSession(): UseSession {
         })();
       }
     },
-    [streaming, persistMessages, patchSlot],
+    [persistMessages, patchSlot],
   );
 
   const abort = useCallback(() => {
@@ -734,41 +728,35 @@ export function useSession(): UseSession {
       } catch {
         // port may already be closing — non-fatal
       }
-      setMessages((prev) =>
-        prev.map((m) =>
+      patchSlot(id, (prev) => ({
+        messages: prev.messages.map((m) =>
           m.role === "agent-confirm" && m.confirmationId === confirmationId
             ? { ...m, resolved: approved ? "approved" : "rejected" }
             : m,
         ),
-      );
+      }));
     },
-    [],
+    [patchSlot],
   );
 
   const resumeTask = useCallback(() => {
     const port = portsRef.current.get(sessionIdRef.current ?? "") ?? null;
     const id = sessionIdRef.current;
     if (!port || !id) return;
-    // P0-2 — set streaming=true BEFORE posting so the setActive guard
-    // blocks any concurrent session switch while the resumed loop is running.
-    // The existing chat-done / chat-error / agent-done-task done-boundary
-    // paths will correctly flip streaming back to false when the loop ends.
-    // Bug-fix-A — sync streamingRef synchronously (same reasoning as
-    // sendMessage above).
-    streamingRef.current = true;
-    setStreaming(true);
-    accumulatedRef.current = "";
-    streamFinishedRef.current = false;
+    patchSlot(id, {
+      streaming: true,
+      accumulated: "",
+      streamFinished: false,
+      error: null,
+    });
     try {
       port.postMessage({ type: "resume-task", sessionId: id });
     } catch {
       // port may be in the process of closing — non-fatal
       // If post fails, revert streaming flag so the UI doesn't get stuck
-      streamingRef.current = false;
-      setStreaming(false);
-      streamFinishedRef.current = true;
+      patchSlot(id, { streaming: false, streamFinished: true });
     }
-  }, []);
+  }, [patchSlot]);
 
   const discardTask = useCallback((confirmationId: string) => {
     const port = portsRef.current.get(sessionIdRef.current ?? "") ?? null;
@@ -783,31 +771,28 @@ export function useSession(): UseSession {
     } catch {
       // port may be in the process of closing — non-fatal
     }
-    setMessages((prev) =>
-      prev.map((m) =>
+    patchSlot(id, (prev) => ({
+      messages: prev.messages.map((m) =>
         m.role === "session-confirm" && m.confirmationId === confirmationId
           ? { ...m, resolved: "discarded" as const }
           : m,
       ),
-    );
-  }, []);
+    }));
+  }, [patchSlot]);
 
   const clearMessages = useCallback(async () => {
-    setMessages([]);
-    setError(null);
     const id = sessionIdRef.current;
     if (!id) return;
-    const current = await getSessionMeta(id);
-    if (!current) return;
-    await setSessionMeta({
-      ...current,
-      messages: [],
-      lastAccessedAt: Date.now(),
-    });
-  }, []);
+    patchSlot(id, { messages: [], error: null, toast: null });
+    await persistMessagesById(id, []);
+  }, [patchSlot, persistMessagesById]);
 
-  const clearError = useCallback(() => setError(null), []);
-  const clearToast = useCallback(() => setToast(null), []);
+  const clearError = useCallback(() => {
+    if (sessionIdRef.current) patchSlot(sessionIdRef.current, { error: null });
+  }, [patchSlot]);
+  const clearToast = useCallback(() => {
+    if (sessionIdRef.current) patchSlot(sessionIdRef.current, { toast: null });
+  }, [patchSlot]);
 
   /**
    * M2-U2 — switch active session. Refuses when streaming is true
@@ -956,11 +941,11 @@ export function useSession(): UseSession {
     status,
     pinnedTabs: pinnedTabsState,
     pinMode,
-    messages,
-    streaming,
-    streamingText,
-    error,
-    toast,
+    messages: active.messages,
+    streaming: active.streaming,
+    streamingText: active.streamingText,
+    error: active.error,
+    toast: active.toast,
     sendMessage,
     abort,
     resolveConfirm,
