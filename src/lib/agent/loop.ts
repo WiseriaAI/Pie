@@ -1938,6 +1938,12 @@ export async function runAgentLoop(ctx: AgentLoopContext): Promise<void> {
             observation: screenshotObs,
             skillAuthor: skillAuthorForStep,
             autoApproved: ctx.skipPermissions ? true : undefined,
+            image: {
+              mediaType: img.mediaType,
+              data: img.data,
+              width: img.width,
+              height: img.height,
+            },
           });
           continue;
         }

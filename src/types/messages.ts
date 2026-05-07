@@ -107,6 +107,12 @@ export type DisplayMessage =
       resolvedElement?: ResolvedElement;
       status: "pending" | "ok" | "error";
       observation?: string;
+      /** Phase 5 follow-up — for screenshot tool steps (capture_visible_tab /
+       *  capture_fullpage_tab). Carries the post-resize JPEG bytes that were
+       *  fed to the LLM so the panel can render the same image alongside the
+       *  text observation in the details block. Wire-only / React-state-only:
+       *  agent-step is never persisted, so these bytes never hit storage. */
+      image?: AgentStepImageExtras;
     }
   | {
       role: "agent-confirm";
@@ -288,6 +294,21 @@ export interface TabContentPreview {
 
 // --- Agent: Service Worker → Side Panel ---
 
+/**
+ * Phase 5 follow-up — bytes that travel with the agent-step for screenshot
+ * tools. Same shape as the post-resize image fed to the LLM, minus the
+ * confirm-card-only `capturedAt` (no stale-window semantics here — by the
+ * time the agent-step lands, the capture is already history).
+ */
+export interface AgentStepImageExtras {
+  /** Post-resize MIME, currently always image/jpeg. */
+  mediaType: string;
+  /** base64-encoded post-resize JPEG bytes. Same bytes that went to the LLM. */
+  data: string;
+  width: number;
+  height: number;
+}
+
 export interface AgentStepMessage {
   type: "agent-step";
   stepIndex: number;
@@ -308,6 +329,12 @@ export interface AgentStepMessage {
    * approved/low-risk steps. Panel renders an audit footer when true.
    */
   autoApproved?: boolean;
+  /** Phase 5 follow-up — screenshot tools attach the captured image bytes
+   *  here so the panel can render the same image in the step's details
+   *  block (alongside the text observation). Absent for non-screenshot
+   *  tools and for screenshot steps that ended in error. Wire-only:
+   *  agent-step is React-state-only and never hits storage. */
+  image?: AgentStepImageExtras;
   /** M2-U2 — session routing. See ChatChunkMessage.sessionId. */
   sessionId: string;
 }

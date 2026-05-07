@@ -58,6 +58,7 @@ function buildSegments(messages: readonly DisplayMessage[]): RenderSegment[] {
         status: s.status,
         observation: s.observation,
         autoApproved: s.autoApproved,
+        image: s.image,
       });
       i++;
     }

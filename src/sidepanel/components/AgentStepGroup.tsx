@@ -22,6 +22,7 @@
 import { useState } from "react";
 import AgentStepLine from "./AgentStepLine";
 import type { ResolvedElement } from "@/types";
+import type { AgentStepImageExtras } from "@/types/messages";
 
 export interface AgentStepData {
   stepIndex: number;
@@ -31,6 +32,7 @@ export interface AgentStepData {
   status: "pending" | "ok" | "error";
   observation?: string;
   autoApproved?: boolean;
+  image?: AgentStepImageExtras;
 }
 
 interface AgentStepGroupProps {
@@ -77,6 +79,7 @@ export default function AgentStepGroup({
                   status={s.status}
                   observation={s.observation}
                   autoApproved={s.autoApproved}
+                  image={s.image}
                 />
               ))}
             </div>
@@ -94,6 +97,7 @@ export default function AgentStepGroup({
         status={currentStep.status}
         observation={currentStep.observation}
         autoApproved={currentStep.autoApproved}
+        image={currentStep.image}
       />
     </div>
   );

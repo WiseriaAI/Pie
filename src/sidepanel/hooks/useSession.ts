@@ -370,6 +370,7 @@ export function useSession(): UseSession {
           resolvedElement,
           status,
           observation,
+          image,
         } = message;
         setMessages((prev) => {
           // Update existing step bubble in place if same (stepIndex,
@@ -393,6 +394,7 @@ export function useSession(): UseSession {
                 resolvedElement,
                 status,
                 observation,
+                ...(image && { image }),
               };
               return next;
             }
@@ -407,6 +409,7 @@ export function useSession(): UseSession {
               resolvedElement,
               status,
               observation,
+              ...(image && { image }),
             },
           ];
         });
