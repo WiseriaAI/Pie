@@ -22,7 +22,6 @@ import {
   GET_TAB_CONTENT_PREVIEW_BYTES,
 } from "./tools/tabs";
 import { buildAgentSystemPrompt, buildObservationMessage } from "./prompt";
-import { getProviderMeta } from "../model-router/providers/registry";
 import { applySlidingWindow } from "./window";
 import { applyTokenBudget } from "./window-token-budget";
 import {
@@ -1775,15 +1774,23 @@ export async function runAgentLoop(ctx: AgentLoopContext): Promise<void> {
           tc.name === "capture_visible_tab" ||
           tc.name === "capture_fullpage_tab"
         ) {
-          // R9 sub-path c — early-fail when the current provider doesn't
+          // R9 sub-path c — early-fail when the current model doesn't
           // support vision. Avoids wasting a confirm-card flow + pre-capture
-          // budget for a tool whose result (image content) the provider can't
+          // budget for a tool whose result (image content) the model can't
           // accept. The LLM gets a clear error so it can communicate the
           // limitation to the user rather than looping on a confirm it can't
           // process the result of.
-          const providerMeta = getProviderMeta(modelConfig.provider);
-          if (!providerMeta?.supportsVision) {
-            const noVisionObs = `screenshot ${tc.name} unavailable: current provider (${modelConfig.provider}) does not support vision. Switch to anthropic / openai / openrouter or remove the screenshot tool.`;
+          //
+          // Vision capability is per-model (some providers like OpenAI ship
+          // both vision-capable gpt-4o and text-only o3-mini). `modelConfig.vision`
+          // is resolved at task-start by `resolveInstanceToModelConfig` —
+          // registry first, then instance.fetchedModels (OpenRouter lazy
+          // catalog). Strict `=== false` is intentional: `undefined` (unknown
+          // model, e.g. user-typed custom OpenRouter id) is fail-open so the
+          // LLM acts as a second line of defense rather than the user being
+          // silently locked out.
+          if (modelConfig.vision === false) {
+            const noVisionObs = `screenshot ${tc.name} unavailable: current model (${modelConfig.model}) does not support vision. Switch to a vision-capable model or remove the screenshot tool.`;
             toolResultBlocks.push({
               type: "tool_result",
               toolUseId: tc.id,
@@ -1931,6 +1938,12 @@ export async function runAgentLoop(ctx: AgentLoopContext): Promise<void> {
             observation: screenshotObs,
             skillAuthor: skillAuthorForStep,
             autoApproved: ctx.skipPermissions ? true : undefined,
+            image: {
+              mediaType: img.mediaType,
+              data: img.data,
+              width: img.width,
+              height: img.height,
+            },
           });
           continue;
         }

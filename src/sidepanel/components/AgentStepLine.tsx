@@ -16,6 +16,7 @@
 
 import { useState } from "react";
 import type { ResolvedElement } from "@/types";
+import type { AgentStepImageExtras } from "@/types/messages";
 
 interface AgentStepLineProps {
   tool: string;
@@ -29,6 +30,9 @@ interface AgentStepLineProps {
   /** R2.5 — when the SW auto-approved this step due to global
    *  skipPermissions toggle. Panel renders an audit footer when true. */
   autoApproved?: boolean;
+  /** Phase 5 follow-up — screenshot tools attach the captured JPEG so the
+   *  details block renders the same image alongside the text observation. */
+  image?: AgentStepImageExtras;
 }
 
 export default function AgentStepLine({
@@ -39,6 +43,7 @@ export default function AgentStepLine({
   observation,
   defaultExpanded = false,
   autoApproved,
+  image,
 }: AgentStepLineProps) {
   const [expanded, setExpanded] = useState(defaultExpanded);
 
@@ -97,6 +102,18 @@ export default function AgentStepLine({
               {safeStringify(args)}
             </pre>
           </div>
+          {image && (
+            <div>
+              <div className="font-mono text-[10px] uppercase tracking-[0.08em] text-fg-3">
+                screenshot
+              </div>
+              <img
+                src={`data:${image.mediaType};base64,${image.data}`}
+                alt={`screenshot ${image.width}x${image.height}`}
+                className="mt-1 max-w-full rounded border border-line"
+              />
+            </div>
+          )}
           {observation && (
             <div>
               <div className="font-mono text-[10px] uppercase tracking-[0.08em] text-fg-3">

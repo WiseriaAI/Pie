@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { getProviderMeta, getModelMeta, PROVIDER_REGISTRY } from "./registry";
+import { getProviderMeta, getModelMeta, PROVIDER_REGISTRY, resolveModelVision } from "./registry";
+import type { ModelMeta } from "./registry";
 
 describe("ProviderMeta schema", () => {
   it("every provider has a defaultBaseUrl, placeholder, and models[]", () => {
@@ -98,6 +99,37 @@ describe("ModelMeta capability flags (per-model)", () => {
     expect(getModelMeta("deepseek", "deepseek-v4-flash")?.tools).toBe(true);
     expect(getModelMeta("deepseek", "deepseek-v4-flash")?.vision).toBe(false);
     expect(getModelMeta("deepseek", "deepseek-v4-flash")?.maxContextTokens).toBe(1_000_000);
+  });
+});
+
+describe("resolveModelVision — model-level vision lookup with OpenRouter fallback", () => {
+  it("registry hit returns the model's vision flag (true)", () => {
+    expect(resolveModelVision("anthropic", "claude-opus-4-7")).toBe(true);
+  });
+
+  it("registry hit returns the model's vision flag (false)", () => {
+    expect(resolveModelVision("openai", "o3-mini")).toBe(false);
+  });
+
+  it("OpenRouter (registry empty) falls back to instance.fetchedModels — vision-capable", () => {
+    const fetched: ModelMeta[] = [
+      { id: "anthropic/claude-sonnet-4", vision: true, tools: true, maxContextTokens: 200_000 },
+      { id: "meta-llama/llama-3-70b", vision: false, tools: true, maxContextTokens: 8_000 },
+    ];
+    expect(resolveModelVision("openrouter", "anthropic/claude-sonnet-4", fetched)).toBe(true);
+  });
+
+  it("OpenRouter (registry empty) falls back to instance.fetchedModels — non-vision", () => {
+    const fetched: ModelMeta[] = [
+      { id: "meta-llama/llama-3-70b", vision: false, tools: true, maxContextTokens: 8_000 },
+    ];
+    expect(resolveModelVision("openrouter", "meta-llama/llama-3-70b", fetched)).toBe(false);
+  });
+
+  it("returns undefined when model is unknown to both registry and fetchedModels (fail-open intent)", () => {
+    expect(resolveModelVision("openrouter", "no-such/model")).toBeUndefined();
+    expect(resolveModelVision("openrouter", "no-such/model", [])).toBeUndefined();
+    expect(resolveModelVision("anthropic", "claude-from-the-future")).toBeUndefined();
   });
 });
 
