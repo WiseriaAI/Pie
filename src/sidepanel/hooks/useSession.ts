@@ -423,6 +423,7 @@ export function useSession(): UseSession {
           metaSkillPreview,
           screenshotPreview,
           openUrlPreview,
+          originChangePreview,
         } = message;
         setMessages((prev) => {
           // Idempotent — if the same confirmationId is already in
@@ -450,6 +451,8 @@ export function useSession(): UseSession {
               // Small text; safe to include — omitted here by conditional so
               // the DisplayMessage stays minimal for non-open_url tools.
               ...(openUrlPreview ? { openUrlPreview } : {}),
+              // Issue #33 follow-up — origin-change confirm extras.
+              ...(originChangePreview ? { originChangePreview } : {}),
               resolved: undefined,
             },
           ];

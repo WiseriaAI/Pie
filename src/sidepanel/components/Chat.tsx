@@ -864,6 +864,7 @@ After the skill completes, briefly summarize what was created (the user will see
                       metaSkillPreview={msg.metaSkillPreview}
                       screenshotPreview={msg.screenshotPreview}
                       openUrlPreview={msg.openUrlPreview}
+                      originChangePreview={msg.originChangePreview}
                       onApprove={() =>
                         resolveConfirm(msg.confirmationId, true)
                       }

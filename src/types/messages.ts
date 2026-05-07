@@ -129,6 +129,11 @@ export type DisplayMessage =
        *  (small text — safe unlike screenshotPreview bytes). Re-emitted on
        *  R4 panel re-mount via the stored pendingConfirm payload. */
       openUrlPreview?: OpenUrlConfirmExtras;
+      /** Issue #33 follow-up — for origin-change confirm cards. Set when
+       *  `tool === ORIGIN_CHANGE_TOOL_SENTINEL`. Persisted with
+       *  `kind: "agent-origin-change"`; re-emitted same way as the other
+       *  preview fields. */
+      originChangePreview?: OriginChangeConfirmExtras;
     }
   | {
       role: "agent-summary";
@@ -222,6 +227,46 @@ export interface ScreenshotConfirmExtras {
 }
 
 /**
+ * Issue #33 follow-up — origin-change confirm preview.
+ *
+ * The agent loop pins each task to (tabId, origin) at chat-start. When a
+ * navigation (typically a `click` on a cross-origin anchor) flips the
+ * tab's origin mid-task, the loop used to abort with "Page origin
+ * changed, agent stopped for safety". That was a hard safety stop —
+ * correct as a prompt-injection defence (a malicious page link could
+ * otherwise hijack the agent to a phishing site) but unhelpful when the
+ * navigation was the user's own intent.
+ *
+ * The new flow keeps the safety contract but lets the user confirm the
+ * jump: the SW emits a confirm card carrying this extras payload; on
+ * approve the loop updates `pinnedOrigin` + persists the new origin to
+ * `SessionMeta.pinnedTabs` (so subsequent same-tab ops don't re-prompt);
+ * on reject the loop aborts with the original "stopped for safety"
+ * summary. The global skip-permissions toggle short-circuits the card
+ * (auto-approve) on the SW side, same path as tool confirms.
+ *
+ * Wire convention: the tool confirm uses `tool: "__origin_change__"` as
+ * a sentinel so the panel `AgentConfirmCard` can dispatch to the
+ * origin-change layout without introducing a new message type.
+ */
+export interface OriginChangeConfirmExtras {
+  /** Origin pinned at task-start (or last-approved jump). */
+  fromOrigin: string;
+  /** Origin currently observed on the pinned tab. */
+  toOrigin: string;
+  /** Full URL the tab is currently on. May be long; the card folds it. */
+  newUrl: string;
+  /** Tab title at the moment of the check (best-effort, possibly empty). */
+  newTitle: string;
+  /** The pinned tabId being navigated. */
+  tabId: number;
+}
+
+/** Sentinel `tool` value for origin-change confirms. Wire-only — never
+ *  appears in tool registries or LLM-facing prompts. */
+export const ORIGIN_CHANGE_TOOL_SENTINEL = "__origin_change__";
+
+/**
  * Phase 3 — get_tab_content content preview (P3-U / R12 / SEC-2).
  * SW pre-fetches the tab content via executeScript before the confirm
  * request, applies escapeUntrustedWrappers + light strip, and ships the
@@ -309,6 +354,10 @@ export interface AgentConfirmRequestMessage {
    *  active flag badge). The SW pre-parses the URL so the card has stable
    *  values without re-parsing client-side. */
   openUrlPreview?: OpenUrlConfirmExtras;
+  /** Issue #33 follow-up — for origin-change confirm cards. Set when
+   *  `tool === ORIGIN_CHANGE_TOOL_SENTINEL`. Carries from/to origin + the
+   *  current URL/title so the user can decide whether to keep going. */
+  originChangePreview?: OriginChangeConfirmExtras;
   /** M2-U2 — session routing. See ChatChunkMessage.sessionId. */
   sessionId: string;
 }

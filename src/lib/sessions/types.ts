@@ -44,7 +44,7 @@ export type SessionStatus = "active" | "paused" | "failed" | "archived";
  */
 export interface PendingConfirmRecord {
   confirmationId: string;
-  kind: "agent-tool" | "pinned-tab-drift" | "paused-resume";
+  kind: "agent-tool" | "pinned-tab-drift" | "paused-resume" | "agent-origin-change";
   payload: unknown;
 }
 
