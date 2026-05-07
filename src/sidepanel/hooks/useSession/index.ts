@@ -360,7 +360,13 @@ export function useSession(): UseSession {
 
     return () => {
       cancelled = true;
-      // (multi-session: remaining port cleanup deferred to Tasks 7+8/10)
+      // #30 — disconnect every port. Each disconnect triggers the SW's
+      // port.onDisconnect: transitionPortInFlightSessionsToPaused marks any
+      // in-flight session for that port as paused (R10/R14 invariant).
+      for (const port of portsRef.current.values()) {
+        try { port.disconnect(); } catch {}
+      }
+      portsRef.current.clear();
     };
   }, [connectPortFor]);
 

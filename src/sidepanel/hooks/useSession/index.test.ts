@@ -1085,3 +1085,21 @@ describe("setActive — multi-session port lifecycle (#30)", () => {
     expect(switched).toBe(idB);
   });
 });
+
+describe("unmount lifecycle (#30)", () => {
+  it("disconnects every port in portsRef on unmount", async () => {
+    const { result, unmount } = renderHook(() => useSession());
+    await waitFor(() => expect(result.current.ready).toBe(true));
+    const portA = chromeMock.runtime.__ports.at(-1)!;
+    let idB: string | null = null;
+    await act(async () => {
+      idB = await result.current.createAndActivate();
+    });
+    const portB = chromeMock.runtime.__ports.at(-1)!;
+    expect(portA.disconnect).not.toHaveBeenCalled();
+    expect(portB.disconnect).not.toHaveBeenCalled();
+    unmount();
+    expect(portA.disconnect).toHaveBeenCalledTimes(1);
+    expect(portB.disconnect).toHaveBeenCalledTimes(1);
+  });
+});
