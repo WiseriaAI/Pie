@@ -126,3 +126,32 @@ export function getProviderMeta(id: Provider): ProviderMeta | undefined {
 export function getModelMeta(provider: Provider, modelId: string): ModelMeta | undefined {
   return getProviderMeta(provider)?.models.find((m) => m.id === modelId);
 }
+
+/**
+ * Resolve vision capability for a (provider, model) pair, with optional
+ * fallback to per-instance fetched catalogs.
+ *
+ * Lookup order:
+ *   1. Hardcoded registry (covers anthropic, openai, minimax, zhipu, bailian,
+ *      gemini, deepseek — `models[]` is non-empty for these).
+ *   2. Caller-supplied `fetchedModels` (covers OpenRouter, whose registry
+ *      `models: []` is intentionally empty and populated lazily per-instance
+ *      via `/v1/models`).
+ *
+ * Returns `undefined` when the model is unknown to both — callers decide
+ * fail-open vs fail-closed for that case. The screenshot vision guard in
+ * `runAgentLoop` treats `undefined` as fail-open (let the LLM be the second
+ * line of defense) so user-typed custom OpenRouter ids aren't silently locked
+ * out of screenshot tools.
+ */
+export function resolveModelVision(
+  provider: Provider,
+  modelId: string,
+  fetchedModels?: Pick<ModelMeta, "id" | "vision">[],
+): boolean | undefined {
+  const registryHit = getModelMeta(provider, modelId);
+  if (registryHit) return registryHit.vision;
+  const fetchedHit = fetchedModels?.find((m) => m.id === modelId);
+  if (fetchedHit) return fetchedHit.vision;
+  return undefined;
+}

@@ -1,5 +1,6 @@
 import type { Provider, ModelConfig } from "@/lib/model-router";
 import { getProviderMeta } from "@/lib/model-router";
+import { resolveModelVision } from "@/lib/model-router/providers/registry";
 import { getOrCreateEncryptionKey, encrypt, decrypt } from "@/lib/crypto";
 
 export interface StoredInstance {
@@ -108,12 +109,14 @@ export async function resolveInstanceToModelConfig(id: string): Promise<ModelCon
   if (!inst) return null;
   const meta = getProviderMeta(inst.provider);
   if (!meta) return null;
+  const vision = resolveModelVision(inst.provider, inst.model, inst.fetchedModels);
   return {
     provider: inst.provider,
     model: inst.model,
     apiKey: inst.apiKey,
     baseUrl: meta.defaultBaseUrl,
     ...(inst.maxTokens != null && { maxTokens: inst.maxTokens }),
+    ...(vision !== undefined && { vision }),
   };
 }
 

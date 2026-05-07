@@ -25,6 +25,15 @@ export interface ModelConfig {
   apiKey: string;
   baseUrl?: string;
   maxTokens?: number;
+  /**
+   * Whether the resolved model accepts image input. Resolved at task-start
+   * time by `resolveInstanceToModelConfig` via `resolveModelVision`, which
+   * consults the hardcoded registry first and falls back to the instance's
+   * `fetchedModels` (OpenRouter lazy catalog). `undefined` means "unknown" —
+   * the screenshot vision guard treats unknown as fail-open so user-typed
+   * custom OpenRouter ids aren't silently locked out.
+   */
+  vision?: boolean;
 }
 
 // Panel↔SW wire protocol message — content stays string (Phase 1 wire invariant);
