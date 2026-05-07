@@ -181,6 +181,31 @@ export function createPortHandlers(deps: CreatePortHandlersDeps): PortHandlers {
       return;
     }
 
+    if (msg.type === "session-confirm-request") {
+      const prev = slotsRef.current.get(id);
+      const baseMessages = prev?.messages ?? [];
+      for (let i = baseMessages.length - 1; i >= 0; i--) {
+        const m = baseMessages[i]!;
+        if (m.role === "session-confirm" && m.confirmationId === msg.confirmationId) {
+          return;
+        }
+      }
+      const entry: DisplayMessage = {
+        role: "session-confirm",
+        confirmationId: msg.confirmationId,
+        kind: msg.kind,
+        payload: msg.payload,
+        resolved: undefined,
+      };
+      patchSlot(id, { messages: [...baseMessages, entry] });
+      return;
+    }
+
+    if (msg.type === "session-toast") {
+      patchSlot(id, { toast: { level: msg.level, text: msg.text } });
+      return;
+    }
+
     // Subsequent branches added in Tasks 2c–2g.
   };
 

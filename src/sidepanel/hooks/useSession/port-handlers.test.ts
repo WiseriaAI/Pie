@@ -258,3 +258,53 @@ describe("agent-done-task", () => {
     );
   });
 });
+
+describe("session-confirm-request", () => {
+  it("appends a session-confirm DisplayMessage", () => {
+    const deps = makeDeps();
+    const { handleMessage } = createPortHandlers(deps);
+    handleMessage({
+      type: "session-confirm-request",
+      sessionId: "s1",
+      confirmationId: "sc1",
+      kind: "drift-card",
+      payload: { driftedOrigin: "https://x.com" },
+    } as PortMessageToPanel);
+    const slot = deps.slotsRef.current.get("s1")!;
+    expect(slot.messages).toHaveLength(1);
+    expect(slot.messages[0]).toMatchObject({
+      role: "session-confirm",
+      confirmationId: "sc1",
+      kind: "drift-card",
+    });
+  });
+
+  it("is idempotent on confirmationId", () => {
+    const deps = makeDeps();
+    const { handleMessage } = createPortHandlers(deps);
+    const m = {
+      type: "session-confirm-request",
+      sessionId: "s1",
+      confirmationId: "sc1",
+      kind: "paused-resume",
+      payload: {},
+    } as PortMessageToPanel;
+    handleMessage(m);
+    handleMessage(m);
+    expect(deps.slotsRef.current.get("s1")!.messages).toHaveLength(1);
+  });
+});
+
+describe("session-toast", () => {
+  it("sets toast on the addressed session's slot", () => {
+    const deps = makeDeps();
+    const { handleMessage } = createPortHandlers(deps);
+    handleMessage({
+      type: "session-toast",
+      sessionId: "s1",
+      level: "warn",
+      text: "flood",
+    } as PortMessageToPanel);
+    expect(deps.slotsRef.current.get("s1")!.toast).toEqual({ level: "warn", text: "flood" });
+  });
+});
