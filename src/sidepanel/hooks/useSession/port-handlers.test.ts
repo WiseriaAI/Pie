@@ -96,3 +96,99 @@ describe("chat-done", () => {
     expect(slot.streaming).toBe(false);
   });
 });
+
+describe("agent-step", () => {
+  it("flushes pending accumulated text before appending the step", () => {
+    const deps = makeDeps();
+    deps.slotsRef.current.set("s1", {
+      ...EMPTY_SLOT,
+      accumulated: "thinking…",
+      streamingText: "thinking…",
+      streaming: true,
+      streamFinished: false,
+    });
+    const { handleMessage } = createPortHandlers(deps);
+    handleMessage({
+      type: "agent-step",
+      sessionId: "s1",
+      stepIndex: 0,
+      tool: "click",
+      args: { selector: "#x" },
+      status: "pending",
+    } as PortMessageToPanel);
+    const slot = deps.slotsRef.current.get("s1")!;
+    expect(slot.messages).toEqual([
+      { role: "assistant", content: "thinking…" },
+      {
+        role: "agent-step",
+        stepIndex: 0,
+        tool: "click",
+        args: { selector: "#x" },
+        resolvedElement: undefined,
+        status: "pending",
+        observation: undefined,
+      },
+    ]);
+    expect(slot.accumulated).toBe("");
+    expect(slot.streamingText).toBe("");
+  });
+
+  it("updates the existing trailing step bubble when stepIndex+tool match", () => {
+    const deps = makeDeps();
+    deps.slotsRef.current.set("s1", {
+      ...EMPTY_SLOT,
+      messages: [
+        {
+          role: "agent-step",
+          stepIndex: 0,
+          tool: "click",
+          args: { selector: "#x" },
+          resolvedElement: undefined,
+          status: "pending",
+          observation: undefined,
+        },
+      ],
+    });
+    const { handleMessage } = createPortHandlers(deps);
+    handleMessage({
+      type: "agent-step",
+      sessionId: "s1",
+      stepIndex: 0,
+      tool: "click",
+      args: { selector: "#x" },
+      status: "ok",
+      observation: "clicked",
+    } as PortMessageToPanel);
+    const slot = deps.slotsRef.current.get("s1")!;
+    expect(slot.messages).toHaveLength(1);
+    expect(slot.messages[0]).toMatchObject({ status: "ok", observation: "clicked" });
+  });
+
+  it("appends a new step when stepIndex differs", () => {
+    const deps = makeDeps();
+    deps.slotsRef.current.set("s1", {
+      ...EMPTY_SLOT,
+      messages: [
+        {
+          role: "agent-step",
+          stepIndex: 0,
+          tool: "click",
+          args: { selector: "#a" },
+          resolvedElement: undefined,
+          status: "ok",
+          observation: "clicked",
+        },
+      ],
+    });
+    const { handleMessage } = createPortHandlers(deps);
+    handleMessage({
+      type: "agent-step",
+      sessionId: "s1",
+      stepIndex: 1,
+      tool: "type",
+      args: { text: "hi" },
+      status: "pending",
+    } as PortMessageToPanel);
+    expect(deps.slotsRef.current.get("s1")!.messages).toHaveLength(2);
+  });
+});
