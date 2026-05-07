@@ -11,3 +11,7 @@ dist/
 
 # Release artifacts uploaded to GitHub Releases / Chrome Web Store
 pie-*.zip
+
+# Local CLI / agent scratch (not part of project)
+.deepseek/
+AGENTS.md
