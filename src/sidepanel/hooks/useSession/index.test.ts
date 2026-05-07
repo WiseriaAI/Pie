@@ -6,7 +6,7 @@ import {
   getSessionMeta,
   setSessionMeta,
 } from "@/lib/sessions/storage";
-import { useSession } from "./useSession";
+import { useSession } from ".";
 
 // useSession lifecycle is async (it bootstraps a session on mount).
 // `waitFor` lets tests synchronize with the resulting state flips.
