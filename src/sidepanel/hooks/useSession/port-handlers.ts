@@ -39,7 +39,25 @@ export function createPortHandlers(deps: CreatePortHandlersDeps): PortHandlers {
       });
       return;
     }
-    // Subsequent branches added in Tasks 2a–2g.
+    if (msg.type === "chat-done") {
+      const prev = slotsRef.current.get(id);
+      const accumulated = prev?.accumulated ?? "";
+      const baseMessages = prev?.messages ?? [];
+      const next: DisplayMessage[] = accumulated.trim()
+        ? [...baseMessages, { role: "assistant", content: accumulated }]
+        : baseMessages;
+      patchSlot(id, {
+        messages: next,
+        accumulated: "",
+        streamingText: "",
+        streaming: false,
+        streamFinished: true,
+      });
+      void persistMessages(id, next);
+      return;
+    }
+
+    // Subsequent branches added in Tasks 2b–2g.
   };
 
   const makeDisconnectHandler = (_sessionId: string) => {

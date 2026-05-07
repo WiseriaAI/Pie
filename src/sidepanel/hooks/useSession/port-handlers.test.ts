@@ -31,4 +31,68 @@ describe("port-handlers — handleMessage routing", () => {
       expect(deps.slotsRef.current.get("s2")?.accumulated).toBe("existing");
     });
   });
+
+  describe("chat-error", () => {
+    it("flushes partial text and stores the error string", async () => {
+      const deps = makeDeps();
+      deps.slotsRef.current.set("s1", {
+        ...EMPTY_SLOT,
+        accumulated: "partial",
+        streaming: true,
+        streamFinished: false,
+      });
+      const { handleMessage } = createPortHandlers(deps);
+      handleMessage({ type: "chat-error", error: "boom", sessionId: "s1" } as PortMessageToPanel);
+      const slot = deps.slotsRef.current.get("s1")!;
+      expect(slot.error).toBe("boom");
+      expect(slot.streaming).toBe(false);
+      expect(slot.streamFinished).toBe(true);
+      expect(slot.messages).toEqual([{ role: "assistant", content: "partial" }]);
+      expect(deps.persistMessages).toHaveBeenCalledWith(
+        "s1",
+        [{ role: "assistant", content: "partial" }],
+      );
+    });
+  });
+});
+
+describe("chat-done", () => {
+  it("flushes accumulated text into messages and resets streaming", async () => {
+    const deps = makeDeps();
+    deps.slotsRef.current.set("s1", {
+      ...EMPTY_SLOT,
+      accumulated: "hello world",
+      streamingText: "hello world",
+      streaming: true,
+      streamFinished: false,
+    });
+    const { handleMessage } = createPortHandlers(deps);
+    handleMessage({ type: "chat-done", sessionId: "s1" } as PortMessageToPanel);
+    const slot = deps.slotsRef.current.get("s1")!;
+    expect(slot.messages).toEqual([{ role: "assistant", content: "hello world" }]);
+    expect(slot.accumulated).toBe("");
+    expect(slot.streamingText).toBe("");
+    expect(slot.streaming).toBe(false);
+    expect(slot.streamFinished).toBe(true);
+    // persistMessages called with the new messages array
+    expect(deps.persistMessages).toHaveBeenCalledWith(
+      "s1",
+      [{ role: "assistant", content: "hello world" }],
+    );
+  });
+
+  it("does not append an empty assistant message when accumulated is whitespace", () => {
+    const deps = makeDeps();
+    deps.slotsRef.current.set("s1", {
+      ...EMPTY_SLOT,
+      accumulated: "   ",
+      streaming: true,
+      streamFinished: false,
+    });
+    const { handleMessage } = createPortHandlers(deps);
+    handleMessage({ type: "chat-done", sessionId: "s1" } as PortMessageToPanel);
+    const slot = deps.slotsRef.current.get("s1")!;
+    expect(slot.messages).toEqual([]);
+    expect(slot.streaming).toBe(false);
+  });
 });
