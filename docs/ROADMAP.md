@@ -33,13 +33,13 @@
 
 ## 3. Checkpoint & Resume（Phase 2.6 brainstorm 附录 C1–C5）— ✅ **M1 + M2 + M3 全 SHIPPED (2026-05-04)**
 
-> **Status (2026-05-04)**: Brainstorm 升级为 "session 作为 first-class persistent layer" → `docs/brainstorms/2026-05-02-checkpoint-resume-requirements.md`。Plan (14 unit / M1→M2→M3) → `docs/plans/2026-05-02-001-feat-session-persistent-layer-plan.md`，frontmatter status=`completed`. **M1 (PR #8)** single-session 持久化 + SW restart recovery + R11 drift card → `docs/solutions/2026-05-02-session-as-first-class-persistent-layer-m1.md`。**M2 (PR #9 + #10 + 未编号)** multi-session UI drawer + LLM 标题 + LRU archive + 30d 硬删 + soft delete + storage indicator。**M3 (PR #13)** per-session port + per-session pinned tab/origin + R7 cross-session lock + ownerToken `{sessionId, tabId}` + queueTabOp 串行化 + R14 fail-on-image precondition (与 Phase 5 协同) → `docs/solutions/2026-05-03-multi-session-invariant-trace.md`。M3 残余 advisory 项见 §9。
+> **Status (2026-05-04)**: Brainstorm 升级为 "session 作为 first-class persistent layer" → `docs/specs/2026-05-02-checkpoint-resume-requirements.md`。Plan (14 unit / M1→M2→M3) → `docs/plans/2026-05-02-001-feat-session-persistent-layer-plan.md`，frontmatter status=`completed`. **M1 (PR #8)** single-session 持久化 + SW restart recovery + R11 drift card → `docs/solutions/2026-05-02-session-as-first-class-persistent-layer-m1.md`。**M2 (PR #9 + #10 + 未编号)** multi-session UI drawer + LLM 标题 + LRU archive + 30d 硬删 + soft delete + storage indicator。**M3 (PR #13)** per-session port + per-session pinned tab/origin + R7 cross-session lock + ownerToken `{sessionId, tabId}` + queueTabOp 串行化 + R14 fail-on-image precondition (与 Phase 5 协同) → `docs/solutions/2026-05-03-multi-session-invariant-trace.md`。M3 残余 advisory 项见 §9。
 
 > **§M3-U6 close-out (2026-05-08)**: Panel state per-session migration shipped. M3 series fully complete.
 
 **Original C1–C5 outline (now superseded by full plan above; kept for traceability)**:
 
-`docs/brainstorms/2026-05-01-skill-autonomous-crud-requirements.md` L127–135 outline 级，**未单独 brainstorm**。Phase 2.6 plan 的 1 MB skill 配额 + 4 MB 余量已为它预留。
+`docs/specs/2026-05-01-skill-autonomous-crud-requirements.md` L127–135 outline 级，**未单独 brainstorm**。Phase 2.6 plan 的 1 MB skill 配额 + 4 MB 余量已为它预留。
 
 - **C1** 任务级 checkpoint：每 step 序列化 `{task, modelConfig, agentMessages, pinnedTabId, pinnedOrigin, lastStepIndex, currentSkillScope}` 到 `chrome.storage.local`，键 `agent_checkpoint_<taskId>`
 - **C2** SW 重启 / Side Panel 重新打开时检测未完成 checkpoint，推 "上次任务被中断，是否继续 / 丢弃" 卡到 Chat
@@ -69,7 +69,7 @@
 
 ## 5. 4-Way Roadmap Evaluation（2026-05-04）
 
-用户提出 4 个方向，brainstorm 评估 + 优先级摘要。详细评估见 `docs/brainstorms/2026-05-04-multimodal-image-input-requirements.md` 的同期对话记录。
+用户提出 4 个方向，brainstorm 评估 + 优先级摘要。详细评估见 `docs/specs/2026-05-04-multimodal-image-input-requirements.md` 的同期对话记录。
 
 | # | 方向 | 状态 | 下一步 |
 |---|---|---|---|
@@ -77,7 +77,7 @@
 | **2** | Skill 脚本化（"完整 skill"） | ⚠️ **scope 含糊未深入**：必须先 narrow 含义到 (a) JS 自定义 tool handler / (b) DSL 描述固定步骤 / (c) prompt 加 control flow / (d) 录制+回放（与 #4 重叠）中的某一个。Manifest V3 CSP 对 (a) 是硬约束（禁 `eval`/`Function`，要 sandboxed iframe / Worker，BYOK trust model 重审）；(c) 与 LLM 自身 reasoning 重叠 YAGNI 风险高 | 单独 `/ce:brainstorm` 先 narrow 哪一种含义 + 当前 skill 系统真正卡住的用例 |
 | **3** | 控制 Chrome 浏览器 | ✅ **SHIPPED 2026-05-05** (manifest 0.5.2, branch `feat/multi-pin-open-url-v15`, PR #21)：v1.5 Path A 全闭环 = `open_url(url, active=false)` + `focus_tab(tabId)` + **pinnedTabs[] schema** + per-iteration `currentFocusTabId` refresh + multi-select PinnedTabDropdown UI + URL allow-list (R6 显式 `protocol === 'http:'\|'https:'`) + IDN punycode 显示（防 homograph）+ always-high confirm + per-call SkillsList badge。10 task / 572 tests pass / @deprecated legacy single-pin fields 完全删除。**`nav_pinned_tab` cross-origin nav 仍推 v1.1 单独 brainstorm**——pre-multi-pin review 暴露 4 invariant 互动复杂度（R6 inTransitOrigin / R7 atomic swap / R9 CDP detach / R10 task-mutex）+ ADV-1 Premise collapse；R11 click-induced nav false-positive 才是用户最常见痛点，v1.5.1 评估优先级。Trace doc → `docs/solutions/2026-05-03-multi-session-invariant-trace.md` v1.5 章节；engineering patterns（phased deletion / dual-write shim / merge-not-replace snapshot / cross-storage integration tests）→ `docs/solutions/2026-05-05-cross-cutting-type-migration-lessons.md` | 完成；v1.5.1 backlog 见 §10 |
 | **3.1** | nav_pinned_tab cross-origin (defer) | ⚠️ **推 v1.1**：原稿（pre-multi-pin）暴露 4 P0（SEC-2 server-side redirect / SEC-5 pin-in-transit 永久 DoS / ADV-2 inTransitOrigin race basis / ADV-3 shared-pin sessions broken）+ R11 click-induced false-positive 才是用户最常见痛点。需独立 brainstorm 收窄 4 invariant 设计 + 评估 R11 false-positive 修是否更高 ROI | 单独 `/ce:brainstorm` 在 multi-pin v1 ship 后；评估"R11 click-nav false-positive 修"作为更轻量替代 |
-| **4** | 行为录制 + AI 创建 Skill | ✅ **SHIPPED 2026-05-05** (v1，单 tab + LLM-driven skill 创建)：sidepanel Record button → DOM event capture → Finish 后 trace 通过 chat 输入框 chip 注入 → user 加自由 prompt → LLM 显式调用 built-in skill `create_skill_from_recording` → 该 skill 调 create_skill meta tool → R10 first-run confirm 卡片作为 capability review surface。回放完全复用现有 ReAct + click/type 工具路径。所有 Phase 2.6 capability + Phase 3 cross-tab + M3 multi-session 自动兼容。同时新增 2 个 built-in skill（`take_screenshot` / `open_url_in_tab`）+ SkillsList 概念说明。trace doc → `docs/solutions/2026-05-05-record-and-replay-v1-invariant-trace.md`；plan + reframe note → `docs/superpowers/plans/2026-05-05-record-and-replay.md`。v1.1 backlog：cross-tab 录制 / N 行数据循环 / 重录覆盖 UX | 完成 |
+| **4** | 行为录制 + AI 创建 Skill | ✅ **SHIPPED 2026-05-05** (v1，单 tab + LLM-driven skill 创建)：sidepanel Record button → DOM event capture → Finish 后 trace 通过 chat 输入框 chip 注入 → user 加自由 prompt → LLM 显式调用 built-in skill `create_skill_from_recording` → 该 skill 调 create_skill meta tool → R10 first-run confirm 卡片作为 capability review surface。回放完全复用现有 ReAct + click/type 工具路径。所有 Phase 2.6 capability + Phase 3 cross-tab + M3 multi-session 自动兼容。同时新增 2 个 built-in skill（`take_screenshot` / `open_url_in_tab`）+ SkillsList 概念说明。trace doc → `docs/solutions/2026-05-05-record-and-replay-v1-invariant-trace.md`；plan + reframe note → `docs/plans/2026-05-05-record-and-replay.md`。v1.1 backlog：cross-tab 录制 / N 行数据循环 / 重录覆盖 UX | 完成 |
 
 **4 个方向都不是单条 PR 能拿下的 scope**——除了方向 1 已 nail，2/3/4 各自至少 1 轮独立 brainstorm 才能进 plan。
 
@@ -114,8 +114,8 @@
 10. **V1→V2 migration**：silent，schema_version sentinel，老 `provider_*` 转为 instance + 老 baseUrl 静默丢弃；session backfill via `migration_v2_mapping`
 
 **Trace docs**：
-- Spec: `docs/superpowers/specs/2026-05-06-provider-config-center-design.md`
-- Plan: `docs/superpowers/plans/2026-05-06-provider-config-center.md`
+- Spec: `docs/specs/2026-05-06-provider-config-center-design.md`
+- Plan: `docs/plans/2026-05-06-provider-config-center.md`
 - PR: https://github.com/WiseriaAI/Pie/pull/28
 
 **新增可扩展点**（架构已就位）：
@@ -132,7 +132,7 @@
 
 ## 8. Phase 5 v1.1 follow-ups（multimodal image input ship 后已知 deferred）
 
-来源 `docs/superpowers/plans/2026-05-04-multimodal-image-input.md` "Deferred to v1.1" + final review minor findings + post-acceptance bug doc。
+来源 `docs/plans/2026-05-04-multimodal-image-input.md` "Deferred to v1.1" + final review minor findings + post-acceptance bug doc。
 
 | 项 | 价值 | 备注 |
 |---|---|---|
@@ -249,7 +249,7 @@ Checkpoint & Resume 的 M1 已 ship；M2/M3 PR #10 / #13 已 ship。定时工作
 
 **Status**: Branch `feat/custom-providers-impl`，在 §7 multi-instance + per-model capability + Provider 模块化的基础上实现用户自定义 OpenAI-compat provider。
 
-**Spec**: `docs/superpowers/specs/2026-05-07-custom-providers-design.md`
+**Spec**: `docs/specs/2026-05-07-custom-providers-design.md`
 
 **核心改动**：
 
