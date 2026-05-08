@@ -303,8 +303,8 @@ Checkpoint & Resume 的 M1 已 ship；M2/M3 PR #10 / #13 已 ship。定时工作
 
 | 项 | 来源 | 备注 |
 |---|---|---|
-| **清理 `META_TOOL_GUIDANCE` 中过时 allowedTools 描述** | #45-1 / #45-12 | prompt.ts:32-39 还在说 "allowedTools must be a non-empty array..."，但实现里该字段已是 optional（issue #26 删 R2）。修法 = 删/重写过时段落，顺手核 META_TOOL_GUIDANCE 其余陈述。1 个小 PR |
-| **`dispatch_keyboard_input` 软换行支持** | #45-10 | 当前每个 `\n` = Enter；Notion / Feishu / Google Docs 段内换行需 Shift+Enter。两条修法选一：(a) 文档化 `press_key("shift+enter")` 已有用法 (b) `dispatch_keyboard_input` 增加 `softBreak: boolean` 参数。低风险 |
+| **清理 `META_TOOL_GUIDANCE` 中过时 allowedTools 描述** | #45-1 / #45-12 | ✅ **SHIPPED 2026-05-08** as `d4adfa1` (PR #45)：prompt.ts META_TOOL_GUIDANCE 删过时声明，risk.ts confirm 卡 reason 字符串同步删 allowedTools 引用 + 孤儿 jsdoc 清理 |
+| **`dispatch_keyboard_input` 软换行支持** | #45-10 | ✅ **SHIPPED 2026-05-08**：选方案 (b) — `softBreak?: boolean` 可选参，默认 false 向后兼容，true 时 \n → Shift+Enter (CDP modifiers=8)。`sendKeyPress` 加 `modifiers` 参数；prompt.ts KEYBOARD_SIM_GUIDANCE 加 hard/soft break 段；observation 文案 `paragraph break` ↔ `soft break` 区分；新建 `keyboard.test.ts` 4 cases 覆盖默认 / softBreak=true / 无 \n / 显式 false。770/770 tests pass。方案 (a) 不取：press_key 当前 KEY_MAP 不支持 modifier，文档化 `shift+enter` 前还要先扩 KEY_MAP，且 LLM 多行段需逐行 confirm 体验差 |
 
 ### P2 — 需 brainstorm 但 scope 较清晰
 
