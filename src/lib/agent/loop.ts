@@ -1234,19 +1234,6 @@ export async function runAgentLoop(ctx: AgentLoopContext): Promise<void> {
   // skip the debugger-activation preamble (yellow bar already visible).
   let firstKeyboardConfirmShown = false;
 
-  // Phase 3 K-10 (reject-side) — per-task confirm-fatigue short-circuit.
-  // Key is tool name (close_tabs, group_tabs, etc.); value is consecutive
-  // reject count for that tool name in this task. When a tool reaches
-  // CONFIRM_REJECT_THRESHOLD rejects, the loop emits agent-done with a
-  // failure summary so the LLM can't keep re-issuing the same call and
-  // training the user to mash approve. Counter is task-scoped (cleared
-  // when runAgentLoop returns); approve does NOT reset the counter (a
-  // user oscillating reject/approve/reject is still trending toward
-  // fatigue). Cross-origin approve-side reflection was scoped out (see
-  // plan K-10 update during document review).
-  const confirmRejections = new Map<string, number>();
-  const CONFIRM_REJECT_THRESHOLD = 3;
-
   // v1.5 Task 6+7 / Issue #33 — per-iteration refreshed pinnedTabs.
   // ctx.pinnedTabs is captured at task-start and frozen inside the loop
   // closure. open_url writes new pins to SessionMeta (storage), so each
@@ -2015,53 +2002,6 @@ export async function runAgentLoop(ctx: AgentLoopContext): Promise<void> {
           });
 
           if (!confirmResult.approved) {
-            // P1-9 + Bug-fix-D — only count user-initiated rejects toward
-            // K-10 fatigue counter. Two non-user paths must be excluded:
-            //   - reason='flood-limit': SEC-PLAN-009 auto-reject from the
-            //     SW-side concurrent-confirm cap (not a user decision).
-            //   - reason='aborted': panel disconnected / Stop button drained
-            //     the resolver before the user could respond. Counting these
-            //     would let "user closes panel 3 times mid-confirm" auto-
-            //     terminate the task with the factually wrong "User
-            //     repeatedly rejected X" message on next resume.
-            //
-            // Whitelist (===), not blacklist (!==), so any future reason
-            // defaults to NOT counting unless we explicitly opt it in.
-            if (confirmResult.reason === "user-reject") {
-              const prevRejects = confirmRejections.get(tc.name) ?? 0;
-              const nextRejects = prevRejects + 1;
-              confirmRejections.set(tc.name, nextRejects);
-
-              // K-10 reject-side: terminate task after threshold consecutive
-              // user-rejects for the same tool name to break a fatigue cycle.
-              if (nextRejects >= CONFIRM_REJECT_THRESHOLD) {
-                const fatigueMsg = `User repeatedly rejected ${tc.name} (${nextRejects} times). Stopping task.`;
-                toolResultBlocks.push({
-                  type: "tool_result",
-                  toolUseId: tc.id,
-                  content: fatigueMsg,
-                  isError: true,
-                });
-                emitStep({
-                  type: "agent-step",
-                  stepIndex,
-                  tool: tc.name,
-                  args: redactArgsForPanel(tc.name, tc.args),
-                  resolvedElement,
-                  status: "error",
-                  observation: fatigueMsg,
-                  skillAuthor: skillAuthorForStep,
-                });
-                await emitDone({
-                  type: "agent-done-task",
-                  success: false,
-                  summary: fatigueMsg,
-                  stepCount: stepIndex,
-                }, "fail");
-                return;
-              }
-            }
-
             const rejectionMsg =
               confirmResult.reason === "flood-limit"
                 ? "Confirm queue full — please resolve other sessions first."

@@ -216,56 +216,6 @@ describe("buildSessionAgentSnapshot", () => {
   });
 });
 
-// ── M2-U2 P1-9 + Bug-fix-D: only user-reject increments confirmRejections ──────
-//
-// The K-10 fatigue counter (confirmRejections) must reflect user intent only.
-// Three non-user paths exist that resolve sendConfirmRequest with
-// approved=false:
-//   - reason='flood-limit'  — SEC-PLAN-009 SW-side cap (P1-9)
-//   - reason='aborted'      — panel disconnect / Stop drained the resolver
-//                             before the user could respond (Bug-fix-D)
-// loop.ts uses a whitelist (reason === 'user-reject'), not a blacklist
-// (reason !== 'flood-limit'), so any future non-user reason defaults to
-// NOT counting unless explicitly opted in.
-
-type ConfirmReason = "flood-limit" | "user-reject" | "aborted";
-type ConfirmResult = { approved: boolean; reason?: ConfirmReason };
-
-describe("M2-U2 P1-9 + Bug-fix-D — only user-reject counts toward K-10", () => {
-  it("flood-limit result is approved=false and does NOT count", () => {
-    const r: ConfirmResult = { approved: false, reason: "flood-limit" };
-    expect(r.approved).toBe(false);
-    expect(r.reason === "user-reject").toBe(false);
-  });
-
-  it("aborted result is approved=false and does NOT count (panel close / Stop)", () => {
-    const r: ConfirmResult = { approved: false, reason: "aborted" };
-    expect(r.approved).toBe(false);
-    expect(r.reason === "user-reject").toBe(false);
-  });
-
-  it("user-reject result is approved=false and DOES count", () => {
-    const r: ConfirmResult = { approved: false, reason: "user-reject" };
-    expect(r.approved).toBe(false);
-    expect(r.reason === "user-reject").toBe(true);
-  });
-
-  it("approve result is approved=true with no reason and never counts", () => {
-    const r: ConfirmResult = { approved: true };
-    expect(r.approved).toBe(true);
-    expect(r.reason).toBeUndefined();
-    expect(r.reason === "user-reject").toBe(false);
-  });
-
-  it("missing reason defaults to NOT counting (whitelist semantics)", () => {
-    // Defends against future code paths that resolve approved=false without
-    // setting reason — they must not silently start incrementing K-10.
-    const r: ConfirmResult = { approved: false };
-    expect(r.approved).toBe(false);
-    expect(r.reason === "user-reject").toBe(false);
-  });
-});
-
 describe("M3-U4 — collectCrossSessionConflicts", () => {
   it("returns empty when crossSessionPinnedTabIds is undefined", () => {
     const result = collectCrossSessionConflicts(
