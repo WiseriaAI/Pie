@@ -184,7 +184,7 @@ export function classifyRisk(
     return {
       level: "high",
       reason:
-        "Persists a skill the agent can later invoke; review promptTemplate, parameters, and allowedTools before approving.",
+        "Persists a skill the agent can later invoke; review promptTemplate and parameters before approving.",
     };
   }
   if (toolName === "delete_skill" || toolName === "list_skills") {
@@ -348,17 +348,6 @@ export function classifyRisk(
   return { level: "low" };
 }
 
-/**
- * Compute the aggregate risk of a tool whitelist by taking the max risk of any
- * named tool. Used by the R5 inference path — currently exported for future降级
- * of create_skill / update_skill (e.g. lowering risk when allowedTools is
- * entirely low-risk). classifyRisk's hardcoded 'high' for those tools is the
- * conservative default until降级 is enabled.
- *
- * Conservative: unknown names default to 'low' to avoid accidental escalation
- * from typos (the meta tool handler already P1-G-rejects unknown names at
- * write time).
- */
 // ── Phase 5 screenshot tools — always-high constant + build-time check ──────
 //
 // ALWAYS_HIGH_SCREENSHOT_TOOLS mirrors the G-1 pattern: every name in

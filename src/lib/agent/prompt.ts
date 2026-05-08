@@ -29,12 +29,12 @@ When using \`dispatch_keyboard_input\`, pass the FULL multi-paragraph content in
 
 const META_TOOL_GUIDANCE = `
 
-Skill meta tools (list_skills, create_skill, update_skill, delete_skill) let you grow the user's skill library. A Skill is a reusable workflow with a name, description, parameters schema, prompt template, and an allowedTools whitelist that restricts which tools can be called inside that skill's scope.
+Skill meta tools (list_skills, create_skill, update_skill, delete_skill) let you grow the user's skill library. A Skill is a reusable workflow with a name, description, parameters schema, and prompt template.
 
 When to use:
 - If the user repeatedly asks for a similar workflow (e.g. "extract these fields from this page" applied to many pages, or a multi-step form-fill they keep retrying), call list_skills first to see if a similar skill exists. If not, propose create_skill.
 - Each call to create_skill / update_skill requires user confirmation, and the skill's first execution requires another confirmation. Be sparing — do not propose a skill on a one-off task.
-- allowedTools must be a non-empty array of currently registered tool names. Use [] to constrain a skill to done/fail-only. Skills cannot reference other skills.
+- Skills cannot reference other skills.
 - When designing a promptTemplate, keep it under ~8 KB and use {{key}} placeholders matching parameters keys. The template is appended to LLM context as the skill's observation when it runs.
 - Use update_skill carefully: any modification re-marks the skill as agent-authored and the user will be asked to re-confirm on next execution.`;
 
