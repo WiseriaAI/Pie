@@ -41,7 +41,19 @@ async function verifyConfirmedOrigin(
   | { ok: false; reason: "missing" | "navigated" | "no-confirm-record" }
 > {
   if (!confirmed) {
-    return { ok: false, reason: "no-confirm-record" };
+    // Confirm layer removed — no per-call confirmation record. Verify the
+    // tab still exists but don't gate on origin.
+    let tab: chrome.tabs.Tab;
+    try {
+      tab = await chrome.tabs.get(tabId);
+    } catch {
+      return { ok: false, reason: "missing" };
+    }
+    const currentOrigin = parseTabOrigin(tab.url);
+    if (!currentOrigin) {
+      return { ok: false, reason: "missing" };
+    }
+    return { ok: true, tab, origin: currentOrigin };
   }
   const expected = confirmed.get(tabId);
   if (!expected) {
@@ -275,17 +287,8 @@ const listTabsTool: Tool = {
         t.windowId >= 0,
     );
 
-    // CRITICAL P3-T enforcement (adversarial review): scope=allWindows runs
-    // list_tabs scope=allWindows runs with confirmedTabTargets snapshotted at
-    // confirm-time. The user approves a SPECIFIC set of tabs. If new tabs
-    // open between approval and dispatch (bank notification, password
-    // manager auto-open, etc.), they MUST NOT slip into the LLM's view.
-    // Filter the live query down to exactly the ids the user approved.
-    //
-    // For scope=currentWindow there is no confirm card (low-risk path) and
-    // ctx.confirmedTabTargets is undefined — that path is unchanged because
-    // same-window tabs are within the trust boundary the user implicitly
-    // granted by chatting in this window.
+    // For allWindows scope, confirmedTabTargets is undefined (confirm layer
+    // removed), so all tabs are returned without filtering.
     if (scope === "allWindows" && ctx.confirmedTabTargets) {
       const approvedIds = ctx.confirmedTabTargets;
       usable = usable.filter((t) => approvedIds.has(t.id));
@@ -477,25 +480,11 @@ const activateTabTool: Tool = {
       return { success: false, error: "activate_tab requires a numeric tabId" };
     }
 
-    // For same-origin activate_tab the call is low-risk (no confirm fired),
-    // so confirmedTabTargets is undefined — skip K-8 re-verify in that path.
-    // For cross-origin activate_tab the loop pre-built confirmedTabTargets;
-    // re-verify against it.
-    if (ctx.confirmedTabTargets) {
-      const verify = await verifyConfirmedOrigin(a.tabId, ctx.confirmedTabTargets);
-      if (!verify.ok) {
-        return {
-          success: false,
-          error: `activate_tab skipped: ${verify.reason}`,
-        };
-      }
-    } else {
-      // Same-origin path — still need to confirm tab exists before update.
-      try {
-        await chrome.tabs.get(a.tabId);
-      } catch {
-        return { success: false, error: `activate_tab: tab ${a.tabId} not found` };
-      }
+    // Verify the tab exists before updating.
+    try {
+      await chrome.tabs.get(a.tabId);
+    } catch {
+      return { success: false, error: `activate_tab: tab ${a.tabId} not found` };
     }
 
     try {
