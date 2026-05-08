@@ -13,12 +13,11 @@
  * `handleChatStream` calls keep their own reference to the specific
  * instance they were dispatched with, so rotating doesn't affect them.
  *
- * `onDrain` lets the caller settle pending agent-confirm resolvers when
+ * `onDrain` lets the caller clean up any pending state when
  * the prior controller wasn't already aborted (panel-state desync — the
  * panel `streaming` guard normally prevents stacked chat-starts but
  * defense-in-depth still has to handle it). Pending resolvers must
- * receive `reason='aborted'` so the loop's K-10 fatigue counter doesn't
- * mistake them for user-rejects.
+ * receive `reason='aborted'` — abort is triggered by panel disconnect or Stop button.
  */
 export interface AbortRotation {
   current: AbortController;

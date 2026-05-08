@@ -4,7 +4,6 @@ import type {
   PageContent,
   ExtractPageResponse,
   PortMessageToWorker,
-  AgentConfirmRequestMessage,
   PinnedTabDriftPayload,
   SessionConfirmRequestMessage,
   AgentDoneTaskMessage,
@@ -28,13 +27,11 @@ import { getEnabledSkills, resolveSkillToTools } from "@/lib/skills";
 import {
   setSessionAgent,
   setPendingConfirm,
-  scrubPendingConfirm,
   getSessionAgent,
   getSessionMeta,
   setSessionMeta,
   markFailedAndScrub,
   updateLastAccessed,
-  isPendingConfirmFloodLimited,
   clearLastTaskSynth,
   migrateLastTaskSynthFromMeta,
   clearTaskPinAtSessionEnd,
@@ -50,31 +47,16 @@ import {
   detachAllSessions,
 } from "./cdp-session";
 import { KEYBOARD_SIMULATION_STORAGE_KEY } from "@/lib/keyboard-simulation";
-import { isSkipPermissionsEnabled } from "@/lib/skip-permissions";
+
 import { runSessionMigrations } from "@/lib/sessions/migration";
 import { getCrossSessionPinnedTabIds } from "@/lib/sessions/pinned-tab-registry";
 import { getEffectivePinMode, getPrimaryPin } from "@/lib/sessions/pin-state";
 import { chat } from "@/lib/model-router";
 import { generateTitle, maybeUpgradeFallbackTitle } from "@/lib/sessions/title-generator";
-// Phase 5 — image cache lifecycle + pre-capture (Task 12 wiring)
 import {
   evictAllOnSWStartup,
   evictByInFlightSet,
 } from "./image-cache";
-import {
-  setPreCapture,
-  consumePreCapture,
-  discardPreCapture,
-} from "./screenshot-precapture";
-import {
-  dispatchCaptureVisibleTab,
-  dispatchCaptureFullPageTab,
-} from "@/lib/agent/tools/screenshot";
-import { makeCdpAdapterForScreenshot } from "./cdp-adapter";
-import { makeResolveEffectivePinned } from "./effective-pinned";
-import type { ScreenshotConfirmExtras, OpenUrlConfirmExtras } from "@/types";
-import { ORIGIN_CHANGE_TOOL_SENTINEL } from "@/types";
-import type { ImageAttachment } from "@/lib/images";
 import {
   handleRecordingStart,
   handleRecordingAction,
@@ -93,13 +75,13 @@ import {
   rotateAbortController,
 } from "./abort-rotation";
 import { createKeepAlive, type KeepAlive } from "./keep-alive";
+import { cleanupLegacySkipPermissions } from "./cleanup-migration";
 
 // Run V1→V2 migration once on SW load (idempotent via schema_version sentinel).
 migrateV1toV2().catch((e) => console.error("migration v2 failed", e));
-
-// Phase 5 follow-up — shared resolver for the screenshot first-task pin race
-// (see effective-pinned.ts for the three-tier fallback rationale).
-const resolveEffectivePinned = makeResolveEffectivePinned(getSessionMeta);
+cleanupLegacySkipPermissions().catch((e) =>
+  console.error("legacy skip-permissions cleanup failed", e),
+);
 
 // Recording v1 — per-sessionId → port registry. Used by the chrome.runtime.onMessage
 // handler (capture inject sends sendMessage with no port reference) to find a port
@@ -376,78 +358,25 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 // --- M1-U4: panel-mounted handler ---
 
 /**
- * Re-emit any live confirm-request to a freshly-mounted panel (R4).
- *
- * Two-source invariant: only re-push when BOTH storage has a
- * `pendingConfirm` record AND the SW still holds the corresponding
- * resolver in `pendingConfirmations`. Mismatch means the SW has
- * restarted (resolver gone) — in that case, M1-U5's cold-start
- * cleanup will mark the session failed; here we just stay silent
- * rather than render a card the user can't act on.
- *
- * Idempotent on the panel side: useSession's onMessage handler
- * de-dupes by confirmationId, so multiple panel-mounted in quick
- * succession (e.g. React strict-mode double-mount in dev) won't
- * stack duplicate cards.
+ * Panel mounted signal handler — ensures recovery pipeline has run
+ * before the panel reads storage state.
  */
 async function handlePanelMounted(
   port: chrome.runtime.Port,
   sessionId: string,
-  pendingConfirmations: Map<string, (result: { approved: boolean; reason?: "user-reject" | "aborted" | "pre-capture-failed"; screenshotResult?: ImageAttachment; stale?: boolean; failureReason?: string }) => void>,
 ): Promise<void> {
   // M1-U5 — panel mounting is a strong signal that the SW has just
   // woken up (panel open ⇒ SW kept alive ⇒ guaranteed wake-up event).
   // Await the module-level recoveryReady (migration → detectAndMarkPaused
-  // pipeline) so storage is clean before we read pendingConfirm below.
-  // Guard window dedupes repeated calls. M2-U1: recoveryReady includes
-  // migrations so a 'default' id residue is cleaned before the panel
-  // can observe stale state.
+  // pipeline) so storage is clean. Guard window dedupes repeated calls.
+  // M2-U1: recoveryReady includes migrations so a 'default' id residue
+  // is cleaned before the panel can observe stale state.
   await recoveryReady.catch((e) => {
     console.warn(
       `[sw] recovery during panel-mounted failed for session=${sessionId}:`,
       e,
     );
   });
-
-  const agent = await getSessionAgent(sessionId);
-  if (!agent?.pendingConfirm) return;
-  const { confirmationId, kind, payload } = agent.pendingConfirm;
-
-  // Only re-push if the SW resolver is still alive — otherwise the user
-  // would see a card they can't act on (clicking approve/reject would
-  // post to a Map that's been cleared by SW restart).
-  if (!pendingConfirmations.has(confirmationId)) return;
-
-  if (kind === "agent-tool" || kind === "agent-origin-change") {
-    // Re-emit the original AgentConfirmRequestMessage shape. The
-    // payload was persisted with explicit field listing in
-    // sendConfirmRequest, so it carries the right shape verbatim
-    // (including originChangePreview when kind === "agent-origin-change").
-    // Issue #33 follow-up: agent-origin-change uses the same wire
-    // shape with `tool: ORIGIN_CHANGE_TOOL_SENTINEL` so the panel
-    // dispatches to the origin-change card variant.
-    const p = payload as Omit<
-      AgentConfirmRequestMessage,
-      "type" | "confirmationId"
-    >;
-    port.postMessage({
-      type: "agent-confirm-request",
-      confirmationId,
-      ...p,
-      sessionId,
-    } satisfies AgentConfirmRequestMessage);
-  } else if (kind === "pinned-tab-drift" || kind === "paused-resume") {
-    // M1-U5 — re-emit the SessionConfirmRequestMessage shape. The
-    // panel's useSession listener routes this to a SessionConfirmCard
-    // render path independent of agent-tool confirm cards.
-    port.postMessage({
-      type: "session-confirm-request",
-      confirmationId,
-      kind,
-      payload,
-      sessionId,
-    } satisfies SessionConfirmRequestMessage);
-  }
 }
 
 // --- M1-U5: Resume + Discard handlers ---
@@ -530,8 +459,6 @@ async function handleResumeRequest(
   port: chrome.runtime.Port,
   sessionId: string,
   abortController: AbortController,
-  pendingConfirmations: Map<string, (result: { approved: boolean; reason?: "user-reject" | "aborted" | "pre-capture-failed"; screenshotResult?: ImageAttachment; stale?: boolean; failureReason?: string }) => void>,
-  pendingConfirmationsBySession: Map<string, string>,
   inFlightSessionIds: Set<string>,
   keepAlive: KeepAlive,
 ): Promise<void> {
@@ -589,19 +516,11 @@ async function handleResumeRequest(
       payload: drift,
       sessionId,
     };
-    // Persist + register resolver so a panel re-mount can recover the
-    // card via the existing M1-U4 R4 path. The resolver here is a
-    // no-op-on-true (drift card has only a Discard button); approve
-    // is intentionally unreachable.
+    // Persist the drift card to storage so the panel can recover it.
     await setPendingConfirm(sessionId, {
       confirmationId,
       kind: "pinned-tab-drift",
       payload: drift,
-    });
-    pendingConfirmations.set(confirmationId, (_approved) => {
-      // No-op resolver — discard-task handles the actual cleanup
-      // path. We register here only to satisfy the M1-U4 two-source
-      // invariant (storage record + live resolver).
     });
     port.postMessage(card);
     return;
@@ -645,227 +564,6 @@ async function handleResumeRequest(
   // itself will re-check on every iteration.
   // v1.5 — use getPrimaryPin to read from pinnedTabs[] (falls back to legacy fields via storage shim).
   const pinned = getPrimaryPin(meta);
-
-  // Reuse the chat-stream sendConfirmRequest pattern. Same persist +
-  // scrub flow applies to confirms during the resumed task.
-  const skipPermissionsAtStart = await isSkipPermissionsEnabled();
-  const sendConfirmRequest = async (
-    confirmationId: string,
-    payload: Omit<AgentConfirmRequestMessage, "type" | "confirmationId">,
-  ): Promise<{
-    approved: boolean;
-    reason?: "flood-limit" | "user-reject" | "aborted" | "pre-capture-failed";
-    screenshotResult?: ImageAttachment;
-    stale?: boolean;
-    failureReason?: string;
-  }> => {
-    // SEC-PLAN-009 — flood-limit guard (same as chat-stream path)
-    const flooded = await isPendingConfirmFloodLimited();
-    if (flooded) {
-      port.postMessage({
-        type: "session-toast",
-        level: "warn",
-        text: "Too many concurrent confirms. Please resolve pending sessions first.",
-        sessionId,
-      });
-      return { approved: false, reason: "flood-limit" };
-    }
-
-    // Phase 5 — pre-capture for screenshot tools (R5/R6, K-1 informed-approval).
-    // Dispatch the capture BEFORE posting the confirm card so the user sees the
-    // EXACT bytes the LLM will receive. If capture fails, short-circuit with
-    // `pre-capture-failed` so loop.ts feeds a failure observation.
-    let screenshotPreview: ScreenshotConfirmExtras | undefined;
-    const isScreenshotTool =
-      payload.tool === "capture_visible_tab" ||
-      payload.tool === "capture_fullpage_tab";
-    if (isScreenshotTool) {
-      // Phase 5 follow-up — first-task pin race fallback. The panel-side
-      // captureActivePinned + setSessionMeta on first send is fire-and-forget
-      // (useSession.ts:760-790); SW may read sessionMeta before that patch
-      // lands, so closure-captured `pinned` may be undefined on the very first
-      // chat-start. Mirror the loop's active-tab fallback via three-tier
-      // resolveEffectivePinned (closure → re-read meta → active-tab query).
-      const effectivePinned = await resolveEffectivePinned(pinned, sessionId);
-      if (!effectivePinned) {
-        // I-4 — no pinned tab available (e.g. chrome:// or unpinnable session).
-        return {
-          approved: false,
-          reason: "pre-capture-failed",
-          failureReason: "no-pinned-tab",
-        };
-      }
-      const captureCtx = {
-        sessionId,
-        taskId: resumeTaskId,
-        pinnedTabId: effectivePinned.tabId,
-      };
-      let outcome;
-      if (payload.tool === "capture_visible_tab") {
-        outcome = await dispatchCaptureVisibleTab(captureCtx);
-      } else {
-        outcome = await dispatchCaptureFullPageTab(
-          captureCtx,
-          makeCdpAdapterForScreenshot(abortController),
-        );
-      }
-      if (outcome.ok) {
-        // S-2 — setPreCapture only on success so a failed capture never
-        // enters the cache (removing the redundant discard-after-set pattern).
-        setPreCapture(confirmationId, outcome);
-        const img = outcome.value;
-        screenshotPreview = {
-          thumbnail: img.data,
-          mediaType: img.mediaType,
-          width: img.width,
-          height: img.height,
-          capturedAt: Date.now(),
-        };
-      } else {
-        // Pre-capture failed — skip the confirm card entirely; return failure.
-        return {
-          approved: false,
-          reason: "pre-capture-failed",
-          failureReason: outcome.reason,
-        };
-      }
-    }
-
-    // v1.5 — pre-parse URL for open_url confirm card (K-1 informed-approval).
-    // URL.host returns punycode for IDN — defense against homograph attacks.
-    // Small text: safe to persist in storage (unlike screenshotPreview bytes).
-    let openUrlPreview: OpenUrlConfirmExtras | undefined;
-    if (payload.tool === "open_url") {
-      const args = payload.args as { url?: string; active?: boolean };
-      let host = "(invalid)";
-      let origin = "(invalid)";
-      try {
-        const u = new URL(args.url ?? "");
-        host = u.host;
-        origin = u.origin;
-      } catch {
-        // Shouldn't happen — handler validates upstream; defensive fallback.
-      }
-      openUrlPreview = {
-        url: args.url ?? "",
-        host,
-        origin,
-        active: args.active === true,
-      };
-    }
-
-    // R2.3 — global skip-permissions short-circuit. After pre-capture
-    // (screenshot) and URL pre-parse (open_url) so LLM-fed bytes / typed
-    // origin payloads are still produced, but the panel confirm card is
-    // never shown and the agent-confirm-response wait is bypassed.
-    if (skipPermissionsAtStart) {
-      if (isScreenshotTool) {
-        const consumed = consumePreCapture(confirmationId);
-        if (!consumed?.image) {
-          return {
-            approved: false,
-            reason: "pre-capture-failed",
-            failureReason: "pre-capture cache miss (skip-permissions auto-approve path)",
-          };
-        }
-        return {
-          approved: true,
-          screenshotResult: consumed.image,
-        };
-      }
-      return { approved: true };
-    }
-
-    // Issue #33 follow-up — origin-change confirms reuse this confirm
-    // pipeline but persist under a distinct PendingConfirmRecord.kind so
-    // panel re-mount can dispatch the right card variant.
-    const isOriginChange = payload.tool === ORIGIN_CHANGE_TOOL_SENTINEL;
-
-    try {
-      await setPendingConfirm(sessionId, {
-        confirmationId,
-        kind: isOriginChange ? "agent-origin-change" : "agent-tool",
-        payload: {
-          tool: payload.tool,
-          args: payload.args,
-          resolvedElement: payload.resolvedElement,
-          riskReason: payload.riskReason,
-          ...(payload.metaSkillPreview
-            ? { metaSkillPreview: payload.metaSkillPreview }
-            : {}),
-          ...(payload.tabTargets ? { tabTargets: payload.tabTargets } : {}),
-          ...(payload.contentPreview
-            ? { contentPreview: payload.contentPreview }
-            : {}),
-          // screenshotPreview intentionally omitted from storage — bytes must
-          // not reach chrome.storage (8 MB quota). Panel renders from wire only.
-          // openUrlPreview is small text — safe to persist for R4 re-emit.
-          ...(openUrlPreview ? { openUrlPreview } : {}),
-          ...(payload.originChangePreview
-            ? { originChangePreview: payload.originChangePreview }
-            : {}),
-        },
-      });
-    } catch (e) {
-      // Storage failure after setPreCapture — discard bytes before re-throwing
-      // to avoid a memory leak in the screenshot-precapture cache.
-      if (isScreenshotTool) discardPreCapture(confirmationId);
-      throw e;
-    }
-    try {
-      return await new Promise<{
-        approved: boolean;
-        reason?: "user-reject" | "aborted";
-        screenshotResult?: ImageAttachment;
-        stale?: boolean;
-        failureReason?: string;
-      }>((resolve) => {
-        // Bug-fix-D — resolver receives a structured result so abort drain
-        // can supply reason='aborted' (vs user-reject for a real panel
-        // response). loop.ts only counts reason==='user-reject' toward K-10
-        // fatigue, so a panel close → abort no longer poisons the
-        // "User repeatedly rejected" auto-terminate counter.
-        pendingConfirmations.set(confirmationId, (panelResult) => {
-          if (!panelResult.approved || !isScreenshotTool) {
-            resolve(panelResult);
-            return;
-          }
-          // User approved a screenshot tool — consume the pre-captured image.
-          const consumed = consumePreCapture(confirmationId);
-          if (!consumed.hit) {
-            // No pre-capture entry (cleared by abort/disconnect already).
-            resolve({ approved: false, reason: "pre-capture-failed", failureReason: "pre-capture cache miss" });
-            return;
-          }
-          resolve({
-            approved: !consumed.stale,
-            stale: consumed.stale,
-            screenshotResult: consumed.image ?? undefined,
-          });
-        });
-        // P1-4 — register session ownership for response verification.
-        pendingConfirmationsBySession.set(confirmationId, sessionId);
-        port.postMessage({
-          type: "agent-confirm-request",
-          confirmationId,
-          ...payload,
-          ...(screenshotPreview ? { screenshotPreview } : {}),
-          ...(openUrlPreview ? { openUrlPreview } : {}),
-          sessionId,
-        } satisfies AgentConfirmRequestMessage);
-      });
-    } finally {
-      pendingConfirmationsBySession.delete(confirmationId);
-      // Discard pre-capture if still in cache (stale reject, abort drain, etc.)
-      if (isScreenshotTool) discardPreCapture(confirmationId);
-      scrubPendingConfirm(sessionId).catch((e) => {
-        console.warn(
-          `[agent] resume scrub pendingConfirm failed for session=${sessionId}:`,
-          e,
-        );
-      });
-    }
-  };
 
   // task string for prompt header — pull from the snapshot's first
   // user message. resume path doesn't really use this except as a
@@ -933,18 +631,7 @@ async function handleDiscardRequest(
   port: chrome.runtime.Port,
   sessionId: string,
   confirmationId: string,
-  pendingConfirmations: Map<string, (result: { approved: boolean; reason?: "user-reject" | "aborted" | "pre-capture-failed"; screenshotResult?: ImageAttachment; stale?: boolean; failureReason?: string }) => void>,
 ): Promise<void> {
-  // Resolve the matching pending resolver (drift card had a no-op
-  // resolver registered; clear the Map entry).
-  const resolver = pendingConfirmations.get(confirmationId);
-  if (resolver) {
-    // Discard is a user action ("I gave up on this task"); treat as a
-    // user-reject so any in-flight confirm fatigue counters reflect intent.
-    resolver({ approved: false, reason: "user-reject" });
-    pendingConfirmations.delete(confirmationId);
-  }
-
   const meta = await getSessionMeta(sessionId);
   const agent = await getSessionAgent(sessionId);
   if (!meta) return;
@@ -1051,8 +738,6 @@ async function handleChatStream(
   messages: ChatMessage[],
   sessionId: string,
   abortController: AbortController,
-  pendingConfirmations: Map<string, (result: { approved: boolean; reason?: "user-reject" | "aborted" | "pre-capture-failed"; screenshotResult?: ImageAttachment; stale?: boolean; failureReason?: string }) => void>,
-  pendingConfirmationsBySession: Map<string, string>,
   inFlightSessionIds: Set<string>,
   keepAlive: KeepAlive,
 ) {
@@ -1236,245 +921,6 @@ async function handleChatStream(
     // budget and pre-capture keys.
     const chatTaskId = crypto.randomUUID();
 
-    // sendConfirmRequest: posts agent-confirm-request to panel and returns a
-    // Promise that resolves when panel sends agent-confirm-response.
-    //
-    // M1-U4 — persist the pending payload to session_${id}_agent.pendingConfirm
-    // BEFORE the panel push so a panel re-mount during the confirm window
-    // can recover. Scrub on resolve / reject / signal-abort via the
-    // finally block — fire-and-forget catch with M1-U5 startup cleanup as
-    // backstop.
-    //
-    // Field listing in the persisted payload is EXPLICIT (not spread) —
-    // adding new AgentConfirmRequestMessage fields requires a conscious
-    // decision whether they belong in storage. Plan note: preFetchedContent
-    // (P3-U full content) must NEVER land here; only contentPreview (≤200
-    // chars sanitized) is safe.
-    //
-    // Phase 5 — screenshotPreview bytes MUST NOT land in storage either
-    // (8 MB quota — same rule as preFetchedContent). The wire-only path
-    // carries them to the panel; storage carries only the metadata fields.
-    const skipPermissionsAtStart = await isSkipPermissionsEnabled();
-    const sendConfirmRequest = async (
-      confirmationId: string,
-      payload: Omit<AgentConfirmRequestMessage, "type" | "confirmationId">,
-    ): Promise<{
-      approved: boolean;
-      reason?: "flood-limit" | "user-reject" | "aborted" | "pre-capture-failed";
-      screenshotResult?: ImageAttachment;
-      stale?: boolean;
-      failureReason?: string;
-    }> => {
-      // SEC-PLAN-009 — flood-limit guard: if > 5 sessions have a live
-      // pendingConfirm, auto-reject this request and emit a toast warning
-      // to the panel so the user knows to resolve existing confirms first.
-      // This protects K-1 (informed-approval) + D6 (storage pressure) from
-      // a runaway agent loop stacking unlimited blocking confirms.
-      const flooded = await isPendingConfirmFloodLimited();
-      if (flooded) {
-        port.postMessage({
-          type: "session-toast",
-          level: "warn",
-          text: "Too many concurrent confirms. Please resolve pending sessions first.",
-          sessionId,
-        });
-        return { approved: false, reason: "flood-limit" };
-      }
-
-      // Phase 5 — pre-capture for screenshot tools (R5/R6, K-1 informed-approval).
-      // Dispatch the capture BEFORE posting the confirm card so the user sees the
-      // EXACT bytes the LLM will receive. If capture fails, short-circuit with
-      // `pre-capture-failed` so loop.ts feeds a failure observation.
-      let screenshotPreview: ScreenshotConfirmExtras | undefined;
-      const isScreenshotTool =
-        payload.tool === "capture_visible_tab" ||
-        payload.tool === "capture_fullpage_tab";
-      if (isScreenshotTool) {
-        // Phase 5 follow-up — first-task pin race fallback. The panel-side
-        // captureActivePinned + setSessionMeta on first send is fire-and-forget
-        // (useSession.ts:760-790); SW may read sessionMeta before that patch
-        // lands, so closure-captured `pinned` may be undefined on the very first
-        // chat-start. Mirror the loop's active-tab fallback via three-tier
-        // resolveEffectivePinned (closure → re-read meta → active-tab query).
-        const effectivePinned = await resolveEffectivePinned(pinned, sessionId);
-        if (!effectivePinned) {
-          // I-4 — no pinned tab available (e.g. chrome:// or unpinnable session).
-          return {
-            approved: false,
-            reason: "pre-capture-failed",
-            failureReason: "no-pinned-tab",
-          };
-        }
-        const captureCtx = {
-          sessionId,
-          taskId: chatTaskId,
-          pinnedTabId: effectivePinned.tabId,
-        };
-        let outcome;
-        if (payload.tool === "capture_visible_tab") {
-          outcome = await dispatchCaptureVisibleTab(captureCtx);
-        } else {
-          outcome = await dispatchCaptureFullPageTab(
-            captureCtx,
-            makeCdpAdapterForScreenshot(abortController),
-          );
-        }
-        if (outcome.ok) {
-          // S-2 — setPreCapture only on success so a failed capture never
-          // enters the cache (removing the redundant discard-after-set pattern).
-          setPreCapture(confirmationId, outcome);
-          const img = outcome.value;
-          screenshotPreview = {
-            thumbnail: img.data,
-            mediaType: img.mediaType,
-            width: img.width,
-            height: img.height,
-            capturedAt: Date.now(),
-          };
-        } else {
-          // Pre-capture failed — skip the confirm card entirely; return failure.
-          return {
-            approved: false,
-            reason: "pre-capture-failed",
-            failureReason: outcome.reason,
-          };
-        }
-      }
-
-      // v1.5 — pre-parse URL for open_url confirm card (K-1 informed-approval).
-      // URL.host returns punycode for IDN — defense against homograph attacks.
-      // Small text: safe to persist in storage (unlike screenshotPreview bytes).
-      let openUrlPreview: OpenUrlConfirmExtras | undefined;
-      if (payload.tool === "open_url") {
-        const args = payload.args as { url?: string; active?: boolean };
-        let host = "(invalid)";
-        let origin = "(invalid)";
-        try {
-          const u = new URL(args.url ?? "");
-          host = u.host;
-          origin = u.origin;
-        } catch {
-          // Shouldn't happen — handler validates upstream; defensive fallback.
-        }
-        openUrlPreview = {
-          url: args.url ?? "",
-          host,
-          origin,
-          active: args.active === true,
-        };
-      }
-
-      // R2.3 — global skip-permissions short-circuit. After pre-capture
-      // (screenshot) and URL pre-parse (open_url) so LLM-fed bytes / typed
-      // origin payloads are still produced, but the panel confirm card is
-      // never shown and the agent-confirm-response wait is bypassed.
-      if (skipPermissionsAtStart) {
-        if (isScreenshotTool) {
-          const consumed = consumePreCapture(confirmationId);
-          if (!consumed?.image) {
-            return {
-              approved: false,
-              reason: "pre-capture-failed",
-              failureReason: "pre-capture cache miss (skip-permissions auto-approve path)",
-            };
-          }
-          return {
-            approved: true,
-            screenshotResult: consumed.image,
-          };
-        }
-        return { approved: true };
-      }
-
-      // Issue #33 follow-up — origin-change confirms reuse this confirm
-      // pipeline but persist under a distinct PendingConfirmRecord.kind so
-      // panel re-mount can dispatch the right card variant.
-      const isOriginChange = payload.tool === ORIGIN_CHANGE_TOOL_SENTINEL;
-
-      try {
-        await setPendingConfirm(sessionId, {
-          confirmationId,
-          kind: isOriginChange ? "agent-origin-change" : "agent-tool",
-          payload: {
-            tool: payload.tool,
-            args: payload.args,
-            resolvedElement: payload.resolvedElement,
-            riskReason: payload.riskReason,
-            ...(payload.metaSkillPreview
-              ? { metaSkillPreview: payload.metaSkillPreview }
-              : {}),
-            ...(payload.tabTargets ? { tabTargets: payload.tabTargets } : {}),
-            ...(payload.contentPreview
-              ? { contentPreview: payload.contentPreview }
-              : {}),
-            // screenshotPreview intentionally omitted from storage — bytes must
-            // not reach chrome.storage (8 MB quota). Panel renders from wire only.
-            // openUrlPreview is small text — safe to persist for R4 re-emit.
-            ...(openUrlPreview ? { openUrlPreview } : {}),
-            ...(payload.originChangePreview
-              ? { originChangePreview: payload.originChangePreview }
-              : {}),
-          },
-        });
-      } catch (e) {
-        // Storage failure after setPreCapture — discard bytes before re-throwing
-        // to avoid a memory leak in the screenshot-precapture cache.
-        if (isScreenshotTool) discardPreCapture(confirmationId);
-        throw e;
-      }
-
-      try {
-        return await new Promise<{
-          approved: boolean;
-          reason?: "user-reject" | "aborted";
-          screenshotResult?: ImageAttachment;
-          stale?: boolean;
-          failureReason?: string;
-        }>((resolve) => {
-          // Bug-fix-D — see resume-path twin for rationale.
-          pendingConfirmations.set(confirmationId, (panelResult) => {
-            if (!panelResult.approved || !isScreenshotTool) {
-              resolve(panelResult);
-              return;
-            }
-            // User approved a screenshot tool — consume the pre-captured image.
-            const consumed = consumePreCapture(confirmationId);
-            if (!consumed.hit) {
-              // No pre-capture entry (cleared by abort/disconnect already).
-              resolve({ approved: false, reason: "pre-capture-failed", failureReason: "pre-capture cache miss" });
-              return;
-            }
-            resolve({
-              approved: !consumed.stale,
-              stale: consumed.stale,
-              screenshotResult: consumed.image ?? undefined,
-            });
-          });
-          // P1-4 — register session ownership so agent-confirm-response
-          // handler can verify the approval came from the right session.
-          pendingConfirmationsBySession.set(confirmationId, sessionId);
-          port.postMessage({
-            type: "agent-confirm-request",
-            confirmationId,
-            ...payload,
-            ...(screenshotPreview ? { screenshotPreview } : {}),
-            ...(openUrlPreview ? { openUrlPreview } : {}),
-            sessionId,
-          } satisfies AgentConfirmRequestMessage);
-        });
-      } finally {
-        pendingConfirmationsBySession.delete(confirmationId);
-        // Discard pre-capture if still in cache (stale reject, abort drain, etc.)
-        if (isScreenshotTool) discardPreCapture(confirmationId);
-        scrubPendingConfirm(sessionId).catch((e) => {
-          console.warn(
-            `[agent] scrub pendingConfirm failed for session=${sessionId} confirmId=${confirmationId}:`,
-            e,
-          );
-        });
-      }
-    };
-
     await runAgentLoop({
       port,
       task,
@@ -1532,13 +978,12 @@ async function handleChatStream(
 }
 
 // M3-U1 — port name encodes sessionId: `chat-stream-${sessionId}`. Each
-// connect creates an independent `abortRotation` + pendingConfirmations
-// closure (per-port sandbox). Within a port, the abort controller is
-// rotated per task (chat-start / resume-task) per Issue #24. The SW
-// supports multiple concurrent ports (e.g. two sidepanels in two Chrome
-// windows, each pinned to its own session); single-panel concurrent task
-// switch remains gated by the M2-U2 streaming guard for now (deferred to
-// a future M3-U6+).
+// connect creates an independent `abortRotation` (per-port sandbox). Within
+// a port, the abort controller is rotated per task (chat-start / resume-task)
+// per Issue #24. The SW supports multiple concurrent ports (e.g. two sidepanels
+// in two Chrome windows, each pinned to its own session); single-panel
+// concurrent task switch remains gated by the M2-U2 streaming guard for now
+// (deferred to a future M3-U6+).
 const CHAT_STREAM_PREFIX = "chat-stream-";
 
 chrome.runtime.onConnect.addListener((port) => {
@@ -1566,27 +1011,6 @@ chrome.runtime.onConnect.addListener((port) => {
   // controller before each task dispatch.
   const abortRotation = createAbortRotation();
 
-  // Per-port pending confirmation map.
-  // Phase 5 — widened to carry screenshot pre-capture extras so the SW can
-  // pass back `screenshotResult`, `stale`, `failureReason` after consuming
-  // the pre-capture cache (Task 12). Non-screenshot confirms leave these
-  // fields absent; loop.ts reads them only for capture_*_tab resolves.
-  const pendingConfirmations = new Map<
-    string,
-    (result: {
-      approved: boolean;
-      reason?: "user-reject" | "aborted" | "pre-capture-failed";
-      screenshotResult?: ImageAttachment;
-      stale?: boolean;
-      failureReason?: string;
-    }) => void
-  >();
-  // P1-4 — tracks which session owns each pending confirmationId. Used to
-  // verify that an agent-confirm-response came from the session whose confirm
-  // card was displayed, preventing wrong-session approval (defense-in-depth
-  // behind the P0-1/P0-2 streaming guards).
-  const pendingConfirmationsBySession = new Map<string, string>();
-
   // Bug-fix-E — per-port set of session ids the SW dispatched a chat-start
   // / resume-task for through THIS port. On port.onDisconnect we use this
   // (not detectAndMarkPaused's global scan) to mark only this port's
@@ -1604,36 +1028,6 @@ chrome.runtime.onConnect.addListener((port) => {
   //       still in this set. The set only grows for the lifetime of one
   //       port (=one sidepanel session) which is bounded by user behaviour.
   const inFlightSessionIds = new Set<string>();
-
-  // Drain any pending high-risk confirm prompts when the task is aborted
-  // (Stop button, port disconnect, rotation-on-stacked-chat-start). Without
-  // this, sendConfirmRequest's promise never resolves and runAgentLoop hangs
-  // — finally never runs, no agent-done-task is emitted, the panel just
-  // sees streaming stop with no AgentSummary.
-  //
-  // Bug-fix-D — drain with reason='aborted'. Without this, the resolver
-  // would receive the structural-default and loop.ts would treat the
-  // hanging confirm as a user-reject, polluting the K-10 fatigue counter
-  // (3 panel-close-mid-confirm events would auto-terminate the task with
-  // "User repeatedly rejected").
-  //
-  // Issue #24 — previously this lived as `abortController.signal.addEventListener
-  // ("abort", ..., {once:true})`, which fires automatically on any abort. After
-  // the rotation refactor (per-task controllers), explicit call sites are
-  // simpler than re-attaching a listener on every rotation. Only chat-abort
-  // and onDisconnect actually originate aborts that warrant draining; loop-
-  // internal aborts use a separate `internalController` (loop.ts:884) that
-  // doesn't bubble back to ctx.signal.
-  const drainPendingConfirms = () => {
-    for (const [confirmId, resolve] of pendingConfirmations) {
-      // Phase 5 — discard any pending pre-capture (bytes would leak in
-      // memory if not cleaned up).
-      discardPreCapture(confirmId);
-      resolve({ approved: false, reason: "aborted" });
-    }
-    pendingConfirmations.clear();
-    pendingConfirmationsBySession.clear();
-  };
 
   // #30 — keep-alive scoped to in-flight tasks. ensure() at chat-start /
   // resume-task; maybeStop() after each task terminal state.
@@ -1663,8 +1057,8 @@ chrome.runtime.onConnect.addListener((port) => {
       if (!verifyPortSession(message.sessionId, "chat-start")) return;
       // Issue #24 (Bug 1) — rotate to a fresh AbortController for the new
       // task. If a prior task was still running (panel-state desync), the
-      // rotate helper aborts it and drains its pending confirms first.
-      rotateAbortController(abortRotation, drainPendingConfirms);
+      // rotate helper aborts it.
+      rotateAbortController(abortRotation, () => {});
       inFlightSessionIds.add(message.sessionId);
       keepAlive.ensure();
       handleChatStream(
@@ -1672,46 +1066,14 @@ chrome.runtime.onConnect.addListener((port) => {
         message.messages,
         message.sessionId,
         abortRotation.current,
-        pendingConfirmations,
-        pendingConfirmationsBySession,
         inFlightSessionIds,
         keepAlive,
       );
     } else if (message.type === "chat-abort") {
       abortRotation.current.abort();
-      drainPendingConfirms();
-    } else if (message.type === "agent-confirm-response") {
-      if (!verifyPortSession(message.sessionId, "agent-confirm-response")) return;
-      // P1-4 — verify the response belongs to the session that owns
-      // the confirmationId. Prevents wrong-session approval (defense-
-      // in-depth behind the P0-1/P0-2 streaming guards).
-      const expectedSession = pendingConfirmationsBySession.get(message.confirmationId);
-      if (expectedSession !== undefined && expectedSession !== message.sessionId) {
-        console.warn(
-          `[sw] agent-confirm-response sessionId mismatch: expected=${expectedSession} got=${message.sessionId} confirmId=${message.confirmationId} — refusing`,
-        );
-        port.postMessage({
-          type: "session-toast",
-          level: "warn",
-          text: "Approval rejected — session changed since the confirm card was shown.",
-          sessionId: message.sessionId,
-        });
-        return;
-      }
-      const resolver = pendingConfirmations.get(message.confirmationId);
-      if (resolver) {
-        resolver(
-          message.approved
-            ? { approved: true }
-            : { approved: false, reason: "user-reject" },
-        );
-        pendingConfirmations.delete(message.confirmationId);
-      }
     } else if (message.type === "panel-mounted") {
       if (!verifyPortSession(message.sessionId, "panel-mounted")) return;
-      // M1-U4 — R4: re-emit a live confirm to a re-mounted panel.
-      // Async — fire-and-forget; failures are logged but not fatal.
-      handlePanelMounted(port, message.sessionId, pendingConfirmations).catch(
+      handlePanelMounted(port, message.sessionId).catch(
         (e) => {
           console.warn(
             `[sw] panel-mounted handler failed for session=${message.sessionId}:`,
@@ -1724,15 +1086,13 @@ chrome.runtime.onConnect.addListener((port) => {
       // Issue #24 (Bug 1) — same rotation as chat-start; resume is a
       // task-start equivalent and must not inherit a prior task's aborted
       // signal.
-      rotateAbortController(abortRotation, drainPendingConfirms);
+      rotateAbortController(abortRotation, () => {});
       inFlightSessionIds.add(message.sessionId);
       keepAlive.ensure();
       handleResumeRequest(
         port,
         message.sessionId,
         abortRotation.current,
-        pendingConfirmations,
-        pendingConfirmationsBySession,
         inFlightSessionIds,
         keepAlive,
       ).catch((e) => {
@@ -1755,7 +1115,6 @@ chrome.runtime.onConnect.addListener((port) => {
         port,
         message.sessionId,
         message.confirmationId,
-        pendingConfirmations,
       ).catch((e) => {
         console.warn(
           `[sw] discard-task handler failed for session=${message.sessionId}:`,
@@ -1788,11 +1147,6 @@ chrome.runtime.onConnect.addListener((port) => {
 
     abortRotation.current.abort();
     keepAlive.stop();
-    // Drain pending confirmations with reason='aborted' (Bug-fix-D — see
-    // drainPendingConfirms JSDoc for K-10 fatigue rationale). Phase 5 —
-    // discardPreCapture inside drainPendingConfirms cleans up pre-capture
-    // bytes before resolving so they don't leak.
-    drainPendingConfirms();
 
     // Bug-fix-E — panel closed mid-task. The abort above kills the running
     // loop; before it dies the agent state is at stepIndex>0 (no tombstone
