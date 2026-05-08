@@ -103,6 +103,10 @@ export interface FakePort {
   __emit: (msg: unknown) => void;
   /** Test-only: fire all registered onDisconnect listeners. */
   __triggerDisconnect: () => void;
+  /** Test-only: the raw listener array (for tests that fire a specific listener). */
+  __onMessageListeners: Array<Listener<unknown>>;
+  /** Test-only: the raw disconnect listener array. */
+  __onDisconnectListeners: Array<Listener<unknown>>;
 }
 
 function createFakePort(name: string): FakePort {
@@ -125,6 +129,8 @@ function createFakePort(name: string): FakePort {
     __triggerDisconnect: () => {
       for (const l of disconnectListeners) l(undefined);
     },
+    __onMessageListeners: messageListeners,
+    __onDisconnectListeners: disconnectListeners,
   };
 }
 
