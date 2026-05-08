@@ -5,11 +5,11 @@ import type { PageSnapshot, ActionResult } from "../dom-actions/types";
  * for cross-tab tools. K-8 confirm-time origin re-verify: handlers compare
  * the live tab origin (chrome.tabs.get inside the handler) against this
  * map's origin (which the user saw on the confirm card), NOT against
- * pinnedOrigin. If a tab navigated to another origin between approval and
- * dispatch, the handler skips it (stale).
+ * pinnedOrigin. If a tab navigated to another origin between dispatch
+ * time and the handler reading its live origin, the handler skips it (stale).
  *
- * Loop dispatch builds this map from tabTargets (after approval) and passes
- * it on the same call as ctx; non-tab tools see undefined.
+ * The loop passes this as undefined (confirm layer removed); tab tools
+ * that use it handle undefined gracefully.
  */
 export interface ConfirmedTabTarget {
   origin: string;

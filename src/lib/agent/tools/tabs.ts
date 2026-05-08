@@ -276,7 +276,7 @@ const listTabsTool: Tool = {
     );
 
     // CRITICAL P3-T enforcement (adversarial review): scope=allWindows runs
-    // through the high-risk confirm card with tabTargets snapshotted at
+    // list_tabs scope=allWindows runs with confirmedTabTargets snapshotted at
     // confirm-time. The user approves a SPECIFIC set of tabs. If new tabs
     // open between approval and dispatch (bank notification, password
     // manager auto-open, etc.), they MUST NOT slip into the LLM's view.
@@ -393,7 +393,7 @@ const closeTabsTool: Tool = {
 
     // K-9 (v1.5): user-locked pin protects ALL pinnedTabs[] entries from agent close.
     // 'task' mode = the loop captured the pin at chat-start; the user has
-    // already given high-risk confirm consent for this close, and the
+    // K-9: only 'user' mode protects the pinned tab from close;
     // per-iteration origin check will gracefully abort the task if the
     // pinned tab disappears (observation: "Page origin changed").
     // 'user' mode = the user explicitly pinned these tabs via the dropdown;

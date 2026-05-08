@@ -121,8 +121,7 @@ export type DisplayMessage =
     }
   | {
       /** M1-U5 — session-level confirm card (R11 drift, future paused-resume).
-       *  Distinct from `agent-confirm` (per-tool confirm during a running
-       *  task) — driven by `SessionConfirmRequestMessage`. */
+       *  Driven by `SessionConfirmRequestMessage`. */
       role: "session-confirm";
       confirmationId: string;
       kind: "pinned-tab-drift" | "paused-resume";
