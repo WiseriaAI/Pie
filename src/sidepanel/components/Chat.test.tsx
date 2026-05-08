@@ -71,7 +71,6 @@ function makeSession(overrides?: Partial<UseSession>): UseSession {
     toast: null,
     sendMessage: vi.fn(),
     abort: vi.fn(),
-    resolveConfirm: vi.fn(),
     resumeTask: vi.fn(),
     discardTask: vi.fn(),
     clearMessages: vi.fn().mockResolvedValue(undefined),

@@ -1,5 +1,4 @@
 import type { ChatMessage } from "@/lib/model-router";
-import type { SkillDefinition } from "@/lib/skills";
 import type { Attachment } from "@/lib/images";
 import type { CapturedActionPayload, RecordedAction } from "@/lib/recording/types";
 
@@ -115,33 +114,6 @@ export type DisplayMessage =
       image?: AgentStepImageExtras;
     }
   | {
-      role: "agent-confirm";
-      confirmationId: string;
-      tool: string;
-      args: unknown;
-      resolvedElement: ResolvedElement;
-      riskReason: string;
-      resolved?: "approved" | "rejected";
-      metaSkillPreview?: {
-        existing: SkillDefinition | null;
-        effective: SkillDefinition;
-      };
-      /** Phase 5 — pre-captured screenshot thumbnail. Wire-only: SW pre-captures
-       *  before posting agent-confirm-request and embeds the bytes here so the
-       *  AgentConfirmCard can render the EXACT image the LLM will receive
-       *  (K-1 informed-approval). NEVER persisted (~MB-class bytes). */
-      screenshotPreview?: ScreenshotConfirmExtras;
-      /** v1.5 — for open_url confirm cards. Persisted in session storage
-       *  (small text — safe unlike screenshotPreview bytes). Re-emitted on
-       *  R4 panel re-mount via the stored pendingConfirm payload. */
-      openUrlPreview?: OpenUrlConfirmExtras;
-      /** Issue #33 follow-up — for origin-change confirm cards. Set when
-       *  `tool === ORIGIN_CHANGE_TOOL_SENTINEL`. Persisted with
-       *  `kind: "agent-origin-change"`; re-emitted same way as the other
-       *  preview fields. */
-      originChangePreview?: OriginChangeConfirmExtras;
-    }
-  | {
       role: "agent-summary";
       success: boolean;
       summary: string;
@@ -169,127 +141,6 @@ export interface ResolvedElement {
   tag: string;
   type?: string;
   href?: string;
-}
-
-/**
- * Phase 3 — multi-tab target descriptor used in confirm cards for
- * close_tabs / group_tabs / activate_tab / etc. SW pre-computes these
- * (chrome.tabs.get + URL parsing + sanitize) before sending the confirm
- * request so the panel renders read-only and consistent informed-approval
- * payload (Phase 3 invariant P3-E).
- *
- * favIconUrl is filtered to https:// or data:image/ only (SEC-5); other
- * protocols are stripped to undefined and the UI falls back to a default
- * icon — never trust a page-controlled favicon URL with anything else.
- *
- * title is sanitized via the same line-break / control-char / wrapper-escape
- * pipeline as wrapTabMetadata so panel rendering can't be subverted by a
- * page-controlled title (P3-G).
- */
-export interface TabTarget {
-  id: number;
-  title: string;
-  url: string;
-  origin: string;
-  favIconUrl?: string;
-  /** True when this tab.origin differs from the agent's pinned origin —
-   *  drives the cross-origin tag in the confirm card row. */
-  crossOrigin: boolean;
-  /** True when the tab no longer exists (chrome.tabs.get rejected) at the
-   *  time tabTargets was built. The card renders this row as "(closed)" but
-   *  the handler will skip it during dispatch. */
-  stale?: boolean;
-}
-
-/**
- * v1.5 — for open_url confirm cards. The SW parses the URL upstream so the
- * card can render host (URL.host, already punycode for IDN) + active flag
- * without re-parsing. The raw URL is also passed through so the card can
- * display the full address (folded for ≥1024 chars).
- */
-export interface OpenUrlConfirmExtras {
-  /** Raw URL the agent requested (validated http/https upstream by the tool). */
-  url: string;
-  /** URL.host (returns punycode form for IDN — defense against homograph attacks). */
-  host: string;
-  /** URL.origin (scheme://host[:port]). */
-  origin: string;
-  /** When true, the new tab steals the user's current focus. */
-  active: boolean;
-}
-
-/**
- * Phase 5 — pre-captured thumbnail embedded in confirm card so user
- * approves the EXACT image LLM will see (K-1 informed-approval).
- * capturedAt drives the 5 s stale invalidate (>5 s requires re-capture
- * + re-confirm).
- */
-export interface ScreenshotConfirmExtras {
-  thumbnail: string; // base64, post-resize (same bytes the LLM will see)
-  mediaType: string;
-  width: number;
-  height: number;
-  capturedAt: number; // Date.now()
-}
-
-/**
- * Issue #33 follow-up — origin-change confirm preview.
- *
- * The agent loop pins each task to (tabId, origin) at chat-start. When a
- * navigation (typically a `click` on a cross-origin anchor) flips the
- * tab's origin mid-task, the loop used to abort with "Page origin
- * changed, agent stopped for safety". That was a hard safety stop —
- * correct as a prompt-injection defence (a malicious page link could
- * otherwise hijack the agent to a phishing site) but unhelpful when the
- * navigation was the user's own intent.
- *
- * The new flow keeps the safety contract but lets the user confirm the
- * jump: the SW emits a confirm card carrying this extras payload; on
- * approve the loop updates `pinnedOrigin` + persists the new origin to
- * `SessionMeta.pinnedTabs` (so subsequent same-tab ops don't re-prompt);
- * on reject the loop aborts with the original "stopped for safety"
- * summary. The global skip-permissions toggle short-circuits the card
- * (auto-approve) on the SW side, same path as tool confirms.
- *
- * Wire convention: the tool confirm uses `tool: "__origin_change__"` as
- * a sentinel so the panel `AgentConfirmCard` can dispatch to the
- * origin-change layout without introducing a new message type.
- */
-export interface OriginChangeConfirmExtras {
-  /** Origin pinned at task-start (or last-approved jump). */
-  fromOrigin: string;
-  /** Origin currently observed on the pinned tab. */
-  toOrigin: string;
-  /** Full URL the tab is currently on. May be long; the card folds it. */
-  newUrl: string;
-  /** Tab title at the moment of the check (best-effort, possibly empty). */
-  newTitle: string;
-  /** The pinned tabId being navigated. */
-  tabId: number;
-}
-
-/** Sentinel `tool` value for origin-change confirms. Wire-only — never
- *  appears in tool registries or LLM-facing prompts. */
-export const ORIGIN_CHANGE_TOOL_SENTINEL = "__origin_change__";
-
-/**
- * Phase 3 — get_tab_content content preview (P3-U / R12 / SEC-2).
- * SW pre-fetches the tab content via executeScript before the confirm
- * request, applies escapeUntrustedWrappers + light strip, and ships the
- * first ~200 chars to the panel so the user can see what they're approving
- * before clicking through. Mirrors Phase 2.5 keyboard "confirm shows raw,
- * agent-step redacts" informed-approval invariant.
- */
-export interface TabContentPreview {
-  tabId: number;
-  origin: string;
-  /** First ~200 chars of the extracted content (after light strip). The
-   *  full content goes to the LLM only after the user approves. */
-  previewText: string;
-  /** Total bytes the handler will return on approval (preview-truncated
-   *  view of). Lets the UI label "showing X of Y bytes". */
-  totalBytes: number;
-  truncatedAtBytes: number;
 }
 
 // --- Agent: Service Worker → Side Panel ---
@@ -323,68 +174,12 @@ export interface AgentStepMessage {
    *  meta tools). Phase 2.6 — see plan R17. */
   skillAuthor?: "user" | "agent" | "builtIn";
   /**
-   * R2.5 — when the SW auto-approved this step due to global
-   * skipPermissions toggle (and the step would otherwise have shown a
-   * confirm card: high-risk tool, screenshot tool). Absent on regular
-   * approved/low-risk steps. Panel renders an audit footer when true.
-   */
-  autoApproved?: boolean;
-  /** Phase 5 follow-up — screenshot tools attach the captured image bytes
+   * Phase 5 follow-up — screenshot tools attach the captured image bytes
    *  here so the panel can render the same image in the step's details
    *  block (alongside the text observation). Absent for non-screenshot
    *  tools and for screenshot steps that ended in error. Wire-only:
    *  agent-step is React-state-only and never hits storage. */
   image?: AgentStepImageExtras;
-  /** M2-U2 — session routing. See ChatChunkMessage.sessionId. */
-  sessionId: string;
-}
-
-export interface AgentConfirmRequestMessage {
-  type: "agent-confirm-request";
-  confirmationId: string;
-  tool: string;
-  args: unknown;
-  resolvedElement: ResolvedElement;
-  riskReason: string;
-  /** Phase 2.6 — for create_skill / update_skill confirm cards, the SW
-   *  pre-computes the effective skill that will be persisted on approval
-   *  (and, for update_skill, the existing pre-update content). The confirm
-   *  card uses this to render the FULL merged content rather than only the
-   *  patch — without this, an update_skill that only patches `promptTemplate`
-   *  would hide the persistent `allowedTools` / `parameters` / etc. that
-   *  the user is implicitly re-approving (P0-D bypass closure).
-   *
-   *  `existing` is null for create_skill (no prior state) and the current
-   *  SkillDefinition for update_skill. */
-  metaSkillPreview?: {
-    existing: SkillDefinition | null;
-    effective: SkillDefinition;
-  };
-  /** Phase 3 — for cross-tab tools (close_tabs / group_tabs / activate_tab /
-   *  list_tabs allWindows / etc.) the SW pre-computes a TabTarget per tabId
-   *  in args. The card renders an `<TabTargetsList>` instead of the legacy
-   *  ResolvedElement single-element block. Origin summary is computed in
-   *  the panel from this array. (P3-E.) */
-  tabTargets?: TabTarget[];
-  /** Phase 3 — for `get_tab_content` confirm cards (P3-U). The SW pre-fetches
-   *  the tab content (executeScript), applies escapeUntrustedWrappers +
-   *  credential light-strip, and ships the first chunk to the panel for
-   *  informed approval. Handler reuses this cache on dispatch. */
-  contentPreview?: TabContentPreview;
-  /** Phase 5 — for screenshot tool confirm cards (capture_visible_tab /
-   *  capture_fullpage_tab). The SW pre-captures the image BEFORE sending the
-   *  confirm request so the user sees the EXACT bytes the LLM will receive
-   *  (K-1 informed-approval). Absent when pre-capture failed or is not
-   *  applicable to the tool. */
-  screenshotPreview?: ScreenshotConfirmExtras;
-  /** v1.5 — for open_url confirm cards (URL allowlist, host/origin display,
-   *  active flag badge). The SW pre-parses the URL so the card has stable
-   *  values without re-parsing client-side. */
-  openUrlPreview?: OpenUrlConfirmExtras;
-  /** Issue #33 follow-up — for origin-change confirm cards. Set when
-   *  `tool === ORIGIN_CHANGE_TOOL_SENTINEL`. Carries from/to origin + the
-   *  current URL/title so the user can decide whether to keep going. */
-  originChangePreview?: OriginChangeConfirmExtras;
   /** M2-U2 — session routing. See ChatChunkMessage.sessionId. */
   sessionId: string;
 }
@@ -399,17 +194,6 @@ export interface AgentDoneTaskMessage {
 }
 
 // --- Agent: Side Panel → Service Worker ---
-
-export interface AgentConfirmResponseMessage {
-  type: "agent-confirm-response";
-  confirmationId: string;
-  approved: boolean;
-  /** M2-U2 P1-4 — sessionId of the session whose confirm card the user
-   *  clicked. SW verifies this matches the session that owns the
-   *  confirmationId to prevent a wrong-session approval from executing
-   *  a high-risk action against the wrong tab/origin. */
-  sessionId: string;
-}
 
 /**
  * M1-U5 — panel → SW: user clicked the "Resume task" button on a
@@ -489,9 +273,8 @@ export interface PinnedTabDriftPayload {
 }
 
 /**
- * M1-U4 — non-tool confirm request. Distinct variant from
- * `AgentConfirmRequestMessage` to keep the existing tool-call confirm
- * channel uncluttered. `kind` discriminates between scenarios:
+ * M1-U4 — non-tool session confirm request. `kind` discriminates between
+ * scenarios:
  *
  *   - `"pinned-tab-drift"` — fired by M1-U5's resume flow when the
  *      user clicks 'Resume task' but the pinned tab is gone or the
@@ -603,7 +386,6 @@ export interface RecordingAbortedBroadcast {
 export type PortMessageToWorker =
   | ChatStartMessage
   | ChatAbortMessage
-  | AgentConfirmResponseMessage
   | PanelMountedMessage
   | ResumeTaskMessage
   | DiscardTaskMessage
@@ -616,7 +398,6 @@ export type PortMessageToPanel =
   | ChatDoneMessage
   | ChatErrorMessage
   | AgentStepMessage
-  | AgentConfirmRequestMessage
   | AgentDoneTaskMessage
   | SessionConfirmRequestMessage
   | SessionToastMessage

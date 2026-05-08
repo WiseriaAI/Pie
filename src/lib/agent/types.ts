@@ -1,12 +1,5 @@
 import type { PageSnapshot, ActionResult } from "../dom-actions/types";
 
-export type RiskLevel = "low" | "high";
-
-export interface RiskAssessment {
-  level: RiskLevel;
-  reason?: string;
-}
-
 /**
  * Phase 3 — confirm-time TabTarget snapshot injected into the handler context
  * for cross-tab tools. K-8 confirm-time origin re-verify: handlers compare

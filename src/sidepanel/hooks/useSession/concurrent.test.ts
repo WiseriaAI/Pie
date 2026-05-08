@@ -81,61 +81,6 @@ describe("useSession concurrent (#30) — Case 2: background done", () => {
   });
 });
 
-describe("useSession concurrent (#30) — Case 3: confirm in background", () => {
-  it("agent-confirm-request appears in slot, persists across switch, is approvable", async () => {
-    const { result } = renderHook(() => useSession());
-    await waitFor(() => expect(result.current.ready).toBe(true));
-    const idA = result.current.sessionId!;
-    const portA = chromeMock.runtime.__ports.at(-1)!;
-
-    // Start a task on A so streaming=true; confirm card arrives mid-task
-    act(() => {
-      result.current.sendMessage({ content: "go" });
-    });
-    expect(result.current.streaming).toBe(true);
-
-    // SW emits confirm-request on A mid-task
-    act(() => {
-      portA.__emit({
-        type: "agent-confirm-request",
-        sessionId: idA,
-        confirmationId: "c1",
-        tool: "click",
-        args: { selector: "#x" },
-        riskReason: "submit-button",
-      } as never);
-    });
-
-    // Switch to a new session B (A backgrounded, still streaming)
-    let idB: string | null = null;
-    await act(async () => {
-      idB = await result.current.createAndActivate();
-    });
-    expect(result.current.sessionId).toBe(idB);
-
-    // Switch back to A — slot preserved because streaming=true
-    await act(async () => {
-      await result.current.setActive(idA);
-    });
-    const confirm = result.current.messages.find(
-      (m: any) => m.role === "agent-confirm" && m.confirmationId === "c1",
-    );
-    expect(confirm).toBeDefined();
-    // Approve — port should receive the response
-    act(() => {
-      result.current.resolveConfirm("c1", true);
-    });
-    expect(portA.postMessage).toHaveBeenCalledWith(
-      expect.objectContaining({
-        type: "agent-confirm-response",
-        confirmationId: "c1",
-        approved: true,
-        sessionId: idA,
-      }),
-    );
-  });
-});
-
 describe("useSession concurrent (#30) — Case 5: Stop scoped to active", () => {
   it("abort() posts chat-abort on active port only", async () => {
     const { result } = renderHook(() => useSession());

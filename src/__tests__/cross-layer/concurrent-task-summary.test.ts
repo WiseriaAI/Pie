@@ -71,45 +71,4 @@ describe("cross-layer: concurrent agent-done-task transit (#30)", () => {
     });
     expect(result.current.streaming).toBe(false);
   });
-
-  it("SW-emitted agent-confirm-request on a backgrounded session is recoverable", async () => {
-    const { result } = renderHook(() => useSession());
-    await waitFor(() => expect(result.current.ready).toBe(true));
-    const idA = result.current.sessionId!;
-    const portA = chromeMock.runtime.__ports.at(-1)!;
-
-    // Start a task on A so streaming=true before the confirm arrives
-    act(() => {
-      result.current.sendMessage({ content: "start task" });
-    });
-    expect(result.current.streaming).toBe(true);
-
-    // SW emits confirm-request on A mid-task
-    act(() => {
-      portA.__emit({
-        type: "agent-confirm-request",
-        sessionId: idA,
-        confirmationId: "cx",
-        tool: "click",
-        args: { selector: "#submit" },
-        riskReason: "submit-button",
-      } as never);
-    });
-
-    // Switch away to new session B (A is backgrounded but still streaming)
-    await act(async () => {
-      await result.current.createAndActivate();
-    });
-
-    // Switch back — slot preserved because streaming=true
-    await act(async () => {
-      await result.current.setActive(idA);
-    });
-
-    const card = result.current.messages.find(
-      (m: any) => m.role === "agent-confirm" && m.confirmationId === "cx",
-    );
-    expect(card).toBeDefined();
-    expect(card).toMatchObject({ tool: "click", riskReason: "submit-button" });
-  });
 });

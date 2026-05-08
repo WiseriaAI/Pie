@@ -27,15 +27,8 @@ const SKILL_META_TOOL_NAMES_FOR_REGISTRY = [
 
 // Phase 3 cross-tab tools (always present in BUILT_IN_TOOLS).
 //
-// G-1 acceptance gate: every name listed here MUST also appear in
-// ALWAYS_HIGH_TAB_TOOLS in src/lib/agent/risk.ts (the build-time exhaustive
-// check enforces this). If a future PR introduces a low-risk cross-tab tool,
-// it MUST first upgrade SkillDefinition.allowedTools schema from string[] to
-// (name, scope) tuple — see plan G-1 / K-3.
-//
-// list_tabs is the only entry where risk depends on args (currentWindow vs
-// allWindows); risk.ts handles the args introspection, but the tool name
-// itself still belongs in this set so allowedTools validation accepts it.
+// list_tabs is an example where behavior depends on args (currentWindow vs
+// allWindows).
 export const TAB_TOOL_NAMES = [
   "list_tabs",
   "get_tab_content",
@@ -52,12 +45,6 @@ export const TAB_TOOL_NAMES = [
 //
 // class=read: no tab-state mutation. Pinned-tab-only — R7 cross-session
 // lock cannot fire (same session pins the target by construction).
-//
-// risk=always-high: enforced separately in risk.ts ALWAYS_HIGH_SCREENSHOT_TOOLS.
-// Class and risk are orthogonal axes — class drives R7 (cross-session
-// concurrency), risk drives confirm-card gating. R5/R6 mandate confirm
-// every capture (no "extractPageContentHardened"-style strip is possible
-// against pixel data).
 export const SCREENSHOT_TOOL_NAMES = [
   "capture_visible_tab",
   "capture_fullpage_tab",
@@ -105,9 +92,7 @@ export const KNOWN_KEYBOARD_TOOL_NAMES = [
 //
 // Build-time check below ensures every name in KNOWN_BUILT_IN_TOOL_NAMES
 // or KNOWN_KEYBOARD_TOOL_NAMES has a matching entry. A new tool that
-// doesn't declare a class throws at module load — matching the G-1 gate
-// pattern in risk.ts (every TAB_TOOL_NAMES entry must appear in either
-// ALWAYS_HIGH_TAB_TOOLS or ARGS_CONDITIONAL_TAB_TOOLS).
+// doesn't declare a class throws at module load.
 
 export type ToolClass = "read" | "write";
 
