@@ -31,7 +31,6 @@ export interface AgentStepData {
   resolvedElement?: ResolvedElement;
   status: "pending" | "ok" | "error";
   observation?: string;
-  autoApproved?: boolean;
   image?: AgentStepImageExtras;
 }
 
@@ -78,7 +77,6 @@ export default function AgentStepGroup({
                   resolvedElement={s.resolvedElement}
                   status={s.status}
                   observation={s.observation}
-                  autoApproved={s.autoApproved}
                   image={s.image}
                 />
               ))}
@@ -96,7 +94,6 @@ export default function AgentStepGroup({
         resolvedElement={currentStep.resolvedElement}
         status={currentStep.status}
         observation={currentStep.observation}
-        autoApproved={currentStep.autoApproved}
         image={currentStep.image}
       />
     </div>

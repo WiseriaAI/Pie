@@ -33,8 +33,7 @@ describe("abort-rotation", () => {
   it("rotate aborts a still-running prior controller and fires drain (panel-desync defense)", () => {
     // Defense-in-depth: panel `streaming` guard normally prevents stacked
     // chat-starts, but if it ever desyncs, rotate must abort the prior
-    // task's controller AND drain pending agent-confirm resolvers so the
-    // K-10 fatigue counter doesn't see them as user-rejects.
+    // task's controller and drain any pending resolvers.
     const rotation = createAbortRotation();
     const prior = rotation.current;
     const drain = vi.fn();

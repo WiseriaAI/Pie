@@ -35,9 +35,8 @@ import { createPortHandlers } from "./port-handlers";
  *
  * **M1-U4 — mount-immediate connection.** The port is opened on hook
  * mount, not on first sendMessage. Reasons:
- *   - R4 informed-approval: the SW may have a pending agent-confirm
- *     request that the user closed the panel during. Opening the port
- *     immediately + sending `panel-mounted` lets the SW re-emit it so
+ *   - On mount, opens port immediately + sends `panel-mounted` so the SW can
+ *     re-emit any live session state (e.g. pending session confirm requests).
  *     the panel re-renders the card without the user having to type.
  *   - the listener is attached once at mount and survives every
  *     subsequent stream (no re-attach per sendMessage), eliminating an
@@ -55,9 +54,6 @@ import { createPortHandlers } from "./port-handlers";
  *   - agent-step      → React state only (M1-U3 hooks the SW-side
  *                       snapshot for agent IR; this is the panel-side
  *                       DisplayMessage stream)
- *   - agent-confirm   → React state only (M1-U4 introduces persisted
- *                       pendingConfirm via SessionAgentState — but
- *                       the storage write happens on the SW side)
  */
 
 // deriveTitleFromMessages is imported from @/lib/sessions/title (lifted in M2-U3
@@ -163,10 +159,6 @@ export interface UseSession {
   /** Sends a chat-abort message to the SW. Caller is responsible for
    *  guarding against rapid-fire aborts. */
   abort: () => void;
-  /** Resolves a pending agent-confirm card. Posts the response to the
-   *  SW and marks the corresponding message as resolved in React
-   *  state. */
-  resolveConfirm: (confirmationId: string, approved: boolean) => void;
   /** M1-U5 — user clicks 'Resume task' on a paused session. SW
    *  decides whether to drift-card or restart the loop. */
   resumeTask: () => void;
@@ -290,7 +282,7 @@ export function useSession(): UseSession {
   // ── Mount: bootstrap active session + open per-session port ─────────
   // M3-U1 — port name is `chat-stream-${sessionId}`. The SW parses the
   // sessionId out of the name to anchor per-port state (abortController,
-  // pendingConfirmations, inFlightSessionIds). Switching active sessions
+  // inFlightSessionIds). Switching active sessions
   // disconnects the old port and connects a fresh one for the new id;
   // single-panel concurrent task switch remains gated by the streaming
   // guard (deferred to a future M3 unit). Cross-panel concurrency (two
@@ -617,35 +609,6 @@ export function useSession(): UseSession {
     }
   }, []);
 
-  const resolveConfirm = useCallback(
-    (confirmationId: string, approved: boolean) => {
-      const port = portsRef.current.get(sessionIdRef.current ?? "") ?? null;
-      if (!port) return;
-      // P1-4 — carry sessionId so SW can verify the response belongs to
-      // the same session that owns the confirmationId.
-      const id = sessionIdRef.current;
-      if (!id) return;
-      try {
-        port.postMessage({
-          type: "agent-confirm-response",
-          confirmationId,
-          approved,
-          sessionId: id,
-        });
-      } catch {
-        // port may already be closing — non-fatal
-      }
-      patchSlot(id, (prev) => ({
-        messages: prev.messages.map((m) =>
-          m.role === "agent-confirm" && m.confirmationId === confirmationId
-            ? { ...m, resolved: approved ? "approved" : "rejected" }
-            : m,
-        ),
-      }));
-    },
-    [patchSlot],
-  );
-
   const resumeTask = useCallback(() => {
     const port = portsRef.current.get(sessionIdRef.current ?? "") ?? null;
     const id = sessionIdRef.current;
@@ -709,7 +672,7 @@ export function useSession(): UseSession {
    *   1. Loads persisted messages for the new session from storage.
    *   2. Bumps lastAccessedAt so LRU order reflects user interaction.
    *   3. Sends panel-mounted on the existing port so the SW re-emits
-   *      any live pendingConfirm for the new session (R4 re-emit path).
+   *      any live session-confirm for the new session.
    */
   const setActive = useCallback(async (id: string): Promise<string | null> => {
     // #30 — streaming guard removed: switching sessions no longer kills tasks.
@@ -784,7 +747,7 @@ export function useSession(): UseSession {
    *
    * P0-1 guard: refuses when streaming=true (mirror of setActive guard).
    * Without this, messages from a still-running agent loop would route
-   * into the new session's UI (K-1 informed-approval bypass).
+   * into the new session's UI.
    */
   const createAndActivate = useCallback(async (): Promise<string | null> => {
     // #30 — streaming guard removed; old port stays connected for the
@@ -855,7 +818,6 @@ export function useSession(): UseSession {
     toast: active.toast,
     sendMessage,
     abort,
-    resolveConfirm,
     resumeTask,
     discardTask,
     clearMessages,

@@ -1,11 +1,7 @@
 export type {
-  RiskLevel,
-  RiskAssessment,
   ToolHandlerContext,
   Tool,
 } from "./types";
-
-export { isSensitiveInputTarget, classifyRisk } from "./risk";
 
 export { BUILT_IN_TOOLS } from "./tools";
 

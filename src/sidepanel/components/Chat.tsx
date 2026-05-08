@@ -13,7 +13,6 @@ import { resizePanel } from "@/lib/images/resize-panel";
 import type { ImageAttachment } from "@/lib/images";
 import type { UseSession } from "@/sidepanel/hooks/useSession";
 import AgentStepGroup, { type AgentStepData } from "./AgentStepGroup";
-import AgentConfirmCard from "./AgentConfirmCard";
 import PinnedTabDropdown from "./PinnedTabDropdown";
 import type { DisplayMessage } from "@/types";
 import InstanceSelector from "./InstanceSelector";
@@ -58,7 +57,6 @@ function buildSegments(messages: readonly DisplayMessage[]): RenderSegment[] {
         resolvedElement: s.resolvedElement,
         status: s.status,
         observation: s.observation,
-        autoApproved: s.autoApproved,
         image: s.image,
       });
       i++;
@@ -149,7 +147,6 @@ export default function Chat({
     clearUserPin,
     sendMessage: sessionSendMessage,
     abort,
-    resolveConfirm,
     clearMessages,
     clearError,
     clearToast,
@@ -834,9 +831,9 @@ After the skill completes, briefly summarize what was created (the user will see
             )}
 
             {segments.map((seg) => {
-              // M5 motion: bubble-in for content rows, scale-in for confirm
-              // cards (focus-pull on actionable surfaces). Wrappers carry the
-              // animation class so message components stay layout-agnostic.
+              // M5 motion: bubble-in for content rows, scale-in for
+              // session-confirm cards. Wrappers carry the animation class
+              // so message components stay layout-agnostic.
               // For agent-step groups, the wrapper plays bubble-in once on
               // group mount; subsequent in-place updates of the active step
               // don't replay because React reuses the same DOM nodes.
@@ -855,29 +852,6 @@ After the skill completes, briefly summarize what was created (the user will see
                 return (
                   <div key={firstIndex} className="bubble-in">
                     <MessageBubble message={msg} />
-                  </div>
-                );
-              }
-              if (msg.role === "agent-confirm") {
-                return (
-                  <div key={firstIndex} className="scale-in">
-                    <AgentConfirmCard
-                      tool={msg.tool}
-                      args={msg.args}
-                      resolvedElement={msg.resolvedElement}
-                      riskReason={msg.riskReason}
-                      resolved={msg.resolved}
-                      metaSkillPreview={msg.metaSkillPreview}
-                      screenshotPreview={msg.screenshotPreview}
-                      openUrlPreview={msg.openUrlPreview}
-                      originChangePreview={msg.originChangePreview}
-                      onApprove={() =>
-                        resolveConfirm(msg.confirmationId, true)
-                      }
-                      onReject={() =>
-                        resolveConfirm(msg.confirmationId, false)
-                      }
-                    />
                   </div>
                 );
               }

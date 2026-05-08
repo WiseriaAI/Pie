@@ -27,9 +27,6 @@ interface AgentStepLineProps {
   /** Initial expanded state. Currently always false; kept for future
    *  per-step persistence if useful. */
   defaultExpanded?: boolean;
-  /** R2.5 — when the SW auto-approved this step due to global
-   *  skipPermissions toggle. Panel renders an audit footer when true. */
-  autoApproved?: boolean;
   /** Phase 5 follow-up — screenshot tools attach the captured JPEG so the
    *  details block renders the same image alongside the text observation. */
   image?: AgentStepImageExtras;
@@ -42,7 +39,6 @@ export default function AgentStepLine({
   status,
   observation,
   defaultExpanded = false,
-  autoApproved,
   image,
 }: AgentStepLineProps) {
   const [expanded, setExpanded] = useState(defaultExpanded);
@@ -124,12 +120,6 @@ export default function AgentStepLine({
               </div>
             </div>
           )}
-        </div>
-      )}
-
-      {autoApproved && (
-        <div className="text-[10px] text-fg-3 italic">
-          auto-approved by skip-permissions
         </div>
       )}
     </div>

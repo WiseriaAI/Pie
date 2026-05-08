@@ -4,9 +4,8 @@
  *
  * **必须保持与本仓库其他 redact 路径一致**：
  *   - lib/dom-actions/type.ts 的 isSensitive (高敏 input dispatch 检测)
- *   - lib/agent/risk.ts 的 isSensitiveInputTarget (risk classifier)
  *
- * 三处共享同一组关键词；任一处补关键词时同步更新。
+ * 两处共享同一组关键词；任一处补关键词时同步更新。
  */
 
 interface ElementMeta {

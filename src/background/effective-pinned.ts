@@ -1,6 +1,6 @@
 // Phase 5 follow-up — first-task pin race fallback helper.
 //
-// sendConfirmRequest for screenshot tools uses closure-captured `pinned`
+// Screenshot tools use closure-captured `pinned`
 // from the SW's sessionMeta read at chat-start. That read happens before the
 // panel-side captureActivePinned + setSessionMeta fire-and-forget (documented
 // race at useSession.ts:760-790). For the very first chat-start the patch may

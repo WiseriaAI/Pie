@@ -1,8 +1,8 @@
 // Phase 2.6 — Skill autonomous CRUD meta tools.
 //
 // 4 tools registered into BUILT_IN_TOOLS:
-//   create_skill / update_skill — high risk (confirm card)
-//   delete_skill / list_skills  — low risk
+//   create_skill / update_skill — persist new capabilities
+//   delete_skill / list_skills  — read / reduce capabilities
 //
 // Each handler enforces 8 capability-grant invariants from the plan
 // (docs/plans/2026-05-01-001-feat-skill-autonomous-crud-plan.md):
@@ -10,11 +10,11 @@
 //   P0-A  update_skill rejects builtIn=true targets
 //   P0-B  parameters JSON Schema string fields total length ≤ 2 KB
 //   P0-C  update_skill taint: author='agent'
-//   P0-D  promptTemplate length ≤ 8 KB (paired with confirm-card cap bypass in Unit 7)
+//   P0-D  promptTemplate length ≤ 8 KB
 //   P1-E  schema additionalProperties:false + handler strips args.id explicitly
 //   P1-F  removed (#26 — allowedTools / R2 deleted)
 //   P1-G  removed (#26 — allowedTools / R2 deleted)
-//   P1-H  total skill_* storage ≤ 1 MB (defense against confirm-fatigue DoS)
+//   P1-H  total skill_* storage ≤ 1 MB
 
 import type { ActionResult } from "../../dom-actions/types";
 import type { Tool } from "../types";
@@ -102,7 +102,7 @@ function validateSkillContent(args: {
 const createSkillTool: Tool = {
   name: "create_skill",
   description:
-    "Persist a new reusable workflow as a callable Skill. The skill becomes a tool the agent can later invoke. Use sparingly — only when you recognize the user repeatedly performs a similar workflow. The user must confirm before save.",
+    "Persist a new reusable workflow as a callable Skill. The skill becomes a tool the agent can later invoke. Use sparingly — only when you recognize the user repeatedly performs a similar workflow.",
   parameters: {
     type: "object",
     additionalProperties: false,
@@ -297,10 +297,8 @@ const listSkillsTool: Tool = {
 // ── Confirm-card preview helper ──────────────────────────────────────────────
 //
 // Used by the loop dispatcher to pre-compute the effective skill that
-// create_skill / update_skill will persist if the user approves. AgentConfirmCard
-// renders this so update_skill confirms display the FULL merged skill, not just
-// the patch (P0-D + adversarial review adv-1). Best-effort: if args fail
-// validation here, the handler will reject after confirm, which is fine —
+// create_skill / update_skill will persist. Best-effort: if args fail
+// validation here, the handler will reject, which is fine —
 // the preview is for review only, not authority.
 
 export async function previewMetaSkillCall(

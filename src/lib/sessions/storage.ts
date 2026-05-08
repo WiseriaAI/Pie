@@ -592,7 +592,7 @@ export async function setPendingConfirm(
 
 /**
  * M1-U4 — scrub the pendingConfirm slot. Called from the SW's
- * `sendConfirmRequest` finally block so approve / reject / abort all
+ * task dispatch finally block so approve / reject / abort all
  * converge on the same cleanup. Idempotent: re-scrubbing an already-
  * empty slot is fine.
  *
