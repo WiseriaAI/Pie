@@ -1006,6 +1006,22 @@ export async function runAgentLoop(ctx: AgentLoopContext): Promise<void> {
           frames,
           semantic: topResult?.semantic ?? { headings: [], alerts: [], status: [] },
         };
+
+        const reachable = frames.filter((f) => !("unreachable" in f && f.unreachable));
+        const unreachable = frames.filter((f) => "unreachable" in f && f.unreachable);
+        const crossOrigin = reachable.filter((f) => f.crossOrigin);
+        console.log(
+          `[snapshot] step=${stepIndex} frames=${frames.length} (reachable=${reachable.length}` +
+            (crossOrigin.length ? ` cross_origin=${crossOrigin.length}` : "") +
+            (unreachable.length ? ` unreachable=${unreachable.length}` : "") +
+            ")",
+        );
+        for (const f of frames) {
+          const kind = "unreachable" in f && f.unreachable
+            ? `unreachable reason=${f.reason}`
+            : `${f.elements.length} elements` + (f.crossOrigin ? " cross_origin" : "");
+          console.log(`  frame_id=${f.frameId} ${f.frameUrl} — ${kind}`);
+        }
       } catch {
         await emitDone({
           type: "agent-done-task",
