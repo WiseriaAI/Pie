@@ -37,6 +37,7 @@ Anthropic (native), OpenAI, OpenRouter, MiniMax, ZhiPu (智谱), Bailian (百炼
 - `pnpm build` — Production build
 - `pnpm test` / `pnpm test:watch` — vitest run
 - 提交前跑 `pnpm test` 与 `pnpm build`（build-time invariants 在 `risk.ts` / `tool-names.ts` 会 throw）
+- 远端 GH 操作前先 `gh auth switch --user WiseriaAI`；默认 active 账号 `wenkang-xie` 在 org 仓库无 admin scope（Pages API / repo settings 会 404）
 
 ## Development
 
@@ -75,6 +76,7 @@ Anthropic (native), OpenAI, OpenRouter, MiniMax, ZhiPu (智谱), Bailian (百炼
 - `docs/plans/` — superpowers `planning` skill 产出（实施 plan），含 Phase 1–3 历史 plan 合并归档
 - `docs/release-notes/` — 用户可见 changelog
 - `docs/design.md` — 早期 Phase 0–3 设计构想（历史档案）
+- `docs/archive/index.html` — 项目档案知识库（单文件，vanilla JS / 零依赖）；编辑 `archiveData` 数组 → push 到 main → `.github/workflows/deploy-archive-pages.yml` 自动部署到 https://wiseriaai.github.io/pie-ai-agent/ ；Pages source = GitHub Actions，仅上传 `docs/archive/`，其他 docs/ 不进 Pages
 
 ### Convention：superpowers brainstorm / plan 输出位置
 
