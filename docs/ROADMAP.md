@@ -214,7 +214,7 @@ GitHub `state:open` 的 3 条 feat 性 issue（虽未打 label，但标题均为
 |---|---|---|---|
 | **P0** | [#30](https://github.com/WiseriaAI/Pie/issues/30) | feat(session): 并发会话支持 — 当前 task 后台继续 / 新建 session 不影响（M3-U6+） | ✅ **SHIPPED 2026-05-08** — panel state migration to per-session `Map<sessionId, T>` + slots/slotsRef hub + createPortHandlers factory + setActive/createAndActivate simplified + #29 streaming guard removed + SW R13(c) evictOnSetActive removed + SW keep-alive scoped to in-flight tasks. ~14 tasks / cross-layer regression for agent-done-task transit / 700+ tests pass / acceptance AC-1..AC-9 met. Closes §3 / §9 / §10 M3-U6+ anchors. Trace doc → `docs/solutions/2026-05-03-multi-session-invariant-trace.md` §M3-U6 (appended) |
 | **P1** | [#34](https://github.com/WiseriaAI/Pie/issues/34) | feat: agent working 中途可发送新指令，当前单次 loop 完成后参与后续循环 | scope 含糊 — 必须先 brainstorm 收窄 3 处：a) "插入"是覆盖原始 task 还是纯附加 / b) 是否要二次 confirm / c) 同 loop 后多条 pending 是合并提交还是分批。默认建议：纯附加（不动 task） + 不 confirm（输入即排队） + 多条按时序合并到下一轮 user role + 用 `[User Mid-Task Instruction]:` 标签让 LLM 区分。与 #30 互补但**应在 #30 之后启动**：当前单 port + 单 streaming state 的 architecture 下，pending queue 会和 #29 streaming guard 互锁；#30 ship 后 pending queue 自然 per-session 隔离 |
-| **P2** | [#38](https://github.com/WiseriaAI/Pie/issues/38) | feat: 输入时支持引用页内内容（组件元素、文字、图片）及划词显示组件 | 工作量最大、scope 最含糊、prompt-injection 风险最高。issue 含 4 个独立 feature 维度（DOM 元素引用 / 划词组件边界识别 / side panel 引用面板 / SPA+iframe+Canvas+OCR 兼容），任一都够独立 milestone。`src/content/` 当前是 placeholder（DOM 操作走 `executeScript`），引用功能需要常驻 content script 监听 selection / mousemove / click — 需先评估 ship 常驻 content script 的成本（vs 现有 `executeScript` 套路）+ 与 R15 image untrusted boundary 的协作。先 brainstorm 强制 narrow v1 — 推荐 v1 = 纯文字选中 → chat chip 注入 + 选中元素截图复用 Phase 5 image attach pipeline；v2 剥离组件边界 heuristic / iframe / Canvas+OCR。引用内容必须走 `<untrusted_page_content>` wrapper（同 R15 image boundary） |
+| ✅ | [#38](https://github.com/WiseriaAI/Pie/issues/38) | feat: 输入时支持引用页内内容（组件元素、文字、图片）及划词显示组件 | **SHIPPED 2026-05-15 v1** (v0.10.0) — A 文字 + B 元素截图 + D chip 行；首个常驻 content script。划词智能边界 / iframe / Canvas / OCR / 引用快捷键 推 v2。Spec `docs/specs/2026-05-14-issue-38-page-content-reference-design.md`；Plan `docs/plans/2026-05-14-issue-38-page-content-reference.md` |
 
 **Acceptance gate（3 条共用）**：
 - 都未单独 brainstorm 过；P0 的 issue body 最贴近 ready-to-plan，P1/P2 都需先走完整 brainstorm
@@ -274,6 +274,7 @@ GitHub `state:open` 的 3 条 feat 性 issue（虽未打 label，但标题均为
 - ✅ 自定义 OpenAI-compat Provider（§12）— 2026-05-07
 - ✅ 并发会话支持（§12 #30, P0）— 2026-05-08
 - ✅ §13 P1 quick wins（prompt drift + 软换行）— 2026-05-08 (PR #45)
+- ✅ 页内内容引用 v1（§12 #38）— 2026-05-15 (v0.10.0)
 
 ---
 
