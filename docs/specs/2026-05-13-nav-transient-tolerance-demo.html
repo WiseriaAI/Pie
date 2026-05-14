@@ -1,0 +1,744 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>Navigation Transient Tolerance — Design Demo</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --bg-elev: #161b22;
+    --bg-card: #1c2128;
+    --border: #30363d;
+    --border-soft: #21262d;
+    --fg: #e6edf3;
+    --fg-muted: #8b949e;
+    --fg-dim: #6e7681;
+    --accent: #58a6ff;
+    --green: #3fb950;
+    --red: #f85149;
+    --yellow: #d29922;
+    --purple: #bc8cff;
+    --cyan: #39c5cf;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: var(--bg);
+    color: var(--fg);
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+  .container {
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 48px 32px 96px;
+  }
+  header.hero {
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 32px;
+    margin-bottom: 48px;
+  }
+  .eyebrow {
+    color: var(--accent);
+    font-family: var(--mono);
+    font-size: 12px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    margin-bottom: 8px;
+  }
+  h1 {
+    font-size: 32px;
+    margin: 0 0 12px;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+  }
+  .lede {
+    color: var(--fg-muted);
+    font-size: 16px;
+    max-width: 760px;
+  }
+  h2 {
+    font-size: 22px;
+    margin: 64px 0 16px;
+    padding-top: 16px;
+    border-top: 1px solid var(--border-soft);
+    letter-spacing: -0.01em;
+  }
+  h2:first-of-type { border-top: none; padding-top: 0; }
+  h3 {
+    font-size: 15px;
+    color: var(--fg-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    margin: 32px 0 12px;
+    font-weight: 600;
+  }
+  p { margin: 12px 0; }
+  code, .mono {
+    font-family: var(--mono);
+    font-size: 0.92em;
+    background: var(--bg-elev);
+    padding: 1px 6px;
+    border-radius: 4px;
+    border: 1px solid var(--border-soft);
+  }
+  pre {
+    background: var(--bg-elev);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px 18px;
+    overflow-x: auto;
+    font-family: var(--mono);
+    font-size: 13px;
+    line-height: 1.55;
+  }
+  pre code { background: none; border: none; padding: 0; }
+
+  /* timeline */
+  .timeline {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 24px;
+    margin: 16px 0;
+  }
+  .timeline-label {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--fg-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    margin-bottom: 12px;
+  }
+  .timeline-row {
+    display: grid;
+    grid-template-columns: 64px 1fr;
+    align-items: center;
+    gap: 12px;
+    padding: 6px 0;
+    border-bottom: 1px dashed var(--border-soft);
+  }
+  .timeline-row:last-child { border-bottom: none; }
+  .tick {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--fg-dim);
+    text-align: right;
+  }
+  .event {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .pill {
+    font-family: var(--mono);
+    font-size: 10px;
+    padding: 2px 8px;
+    border-radius: 999px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    flex-shrink: 0;
+  }
+  .pill.llm   { background: rgba(188, 140, 255, .15); color: var(--purple); border: 1px solid rgba(188, 140, 255, .35); }
+  .pill.sw    { background: rgba(57, 197, 207, .12); color: var(--cyan); border: 1px solid rgba(57, 197, 207, .3); }
+  .pill.chrome{ background: rgba(88, 166, 255, .12); color: var(--accent); border: 1px solid rgba(88, 166, 255, .3); }
+  .pill.stop  { background: rgba(248, 81, 73, .15); color: var(--red); border: 1px solid rgba(248, 81, 73, .4); }
+  .pill.ok    { background: rgba(63, 185, 80, .12); color: var(--green); border: 1px solid rgba(63, 185, 80, .35); }
+  .pill.wait  { background: rgba(210, 153, 34, .12); color: var(--yellow); border: 1px solid rgba(210, 153, 34, .35); }
+
+  .event-body { color: var(--fg); font-size: 14px; }
+  .event-body em { color: var(--fg-muted); font-style: normal; font-size: 12px; }
+
+  /* architecture diagram */
+  .arch {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 20px;
+    margin: 24px 0;
+  }
+  .arch-block {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px;
+  }
+  .arch-block.new {
+    border-color: rgba(63, 185, 80, .5);
+    background: linear-gradient(180deg, rgba(63, 185, 80, .04) 0%, transparent 100%);
+  }
+  .arch-block.modified {
+    border-color: rgba(210, 153, 34, .4);
+  }
+  .arch-block h4 {
+    margin: 0 0 4px;
+    font-size: 15px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .arch-block .path {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--fg-dim);
+    margin-bottom: 12px;
+    word-break: break-all;
+  }
+  .status-tag {
+    font-family: var(--mono);
+    font-size: 10px;
+    padding: 2px 7px;
+    border-radius: 4px;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+  }
+  .status-tag.new { background: rgba(63, 185, 80, .15); color: var(--green); }
+  .status-tag.mod { background: rgba(210, 153, 34, .15); color: var(--yellow); }
+  .status-tag.untouched { background: var(--bg-elev); color: var(--fg-dim); border: 1px solid var(--border-soft); }
+  .arch-block ul { margin: 0; padding-left: 18px; font-size: 13px; color: var(--fg-muted); }
+  .arch-block li { margin: 4px 0; }
+
+  /* matrix tables */
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 16px 0;
+    font-size: 14px;
+  }
+  th, td {
+    text-align: left;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border-soft);
+    vertical-align: top;
+  }
+  th {
+    color: var(--fg-muted);
+    font-weight: 600;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    border-bottom: 1px solid var(--border);
+  }
+  td.mono { font-family: var(--mono); font-size: 12.5px; }
+  tr.ok    td:first-child { border-left: 3px solid var(--green); }
+  tr.stop  td:first-child { border-left: 3px solid var(--red); }
+  tr.wait  td:first-child { border-left: 3px solid var(--yellow); }
+
+  /* decision grid */
+  .decisions {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: 14px;
+    margin: 20px 0;
+  }
+  .decision {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px;
+  }
+  .decision .q {
+    font-size: 12px;
+    color: var(--fg-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    margin-bottom: 6px;
+  }
+  .decision .a {
+    font-size: 16px;
+    font-weight: 600;
+    margin-bottom: 8px;
+  }
+  .decision .a .v { color: var(--accent); }
+  .decision .why {
+    font-size: 12.5px;
+    color: var(--fg-muted);
+  }
+
+  /* legend */
+  .legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 16px;
+    margin: 16px 0 8px;
+    font-size: 12px;
+    color: var(--fg-muted);
+  }
+  .legend-item { display: flex; align-items: center; gap: 6px; }
+
+  /* callout */
+  .callout {
+    background: var(--bg-card);
+    border-left: 3px solid var(--accent);
+    border-radius: 4px;
+    padding: 12px 16px;
+    margin: 16px 0;
+    font-size: 14px;
+  }
+  .callout.red    { border-left-color: var(--red); }
+  .callout.green  { border-left-color: var(--green); }
+  .callout.yellow { border-left-color: var(--yellow); }
+  .callout strong { color: var(--fg); }
+
+  /* arrows between archs */
+  .arch-flow {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin: 8px 0 16px;
+    color: var(--fg-dim);
+    font-family: var(--mono);
+    font-size: 12px;
+    gap: 12px;
+  }
+
+  /* code diff */
+  .diff-block {
+    background: var(--bg-elev);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+    margin: 14px 0;
+  }
+  .diff-header {
+    background: var(--bg-card);
+    border-bottom: 1px solid var(--border);
+    padding: 8px 14px;
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--fg-muted);
+    display: flex;
+    justify-content: space-between;
+  }
+  .diff-body {
+    padding: 12px 14px;
+    font-family: var(--mono);
+    font-size: 12.5px;
+    line-height: 1.65;
+    overflow-x: auto;
+  }
+  .diff-add { background: rgba(63, 185, 80, .08); color: var(--green); display: block; }
+  .diff-rem { background: rgba(248, 81, 73, .08); color: var(--red); display: block; text-decoration: line-through; opacity: .6; }
+  .diff-ctx { display: block; color: var(--fg-muted); }
+
+  footer.meta {
+    margin-top: 64px;
+    padding-top: 24px;
+    border-top: 1px solid var(--border);
+    color: var(--fg-dim);
+    font-size: 12px;
+    font-family: var(--mono);
+    display: flex;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+  .toc {
+    background: var(--bg-card);
+    border: 1px solid var(--border-soft);
+    border-radius: 8px;
+    padding: 14px 20px;
+    margin: 0 0 32px;
+    font-size: 13.5px;
+  }
+  .toc ol { margin: 4px 0 0; padding-left: 20px; color: var(--fg-muted); }
+  .toc a { color: var(--accent); text-decoration: none; }
+  .toc a:hover { text-decoration: underline; }
+  @media (max-width: 720px) {
+    .arch { grid-template-columns: 1fr; }
+    .container { padding: 24px 18px 64px; }
+    h1 { font-size: 24px; }
+  }
+</style>
+</head>
+<body>
+<div class="container">
+
+<header class="hero">
+  <div class="eyebrow">DESIGN DOC · 2026-05-13 · ISSUE: pinned-tab restricted URL race</div>
+  <h1>Navigation Transient Tolerance</h1>
+  <p class="lede">
+    让 agent loop 顶部 origin check 与 <code>open_url</code> handler 在页面 navigation in-flight 期间不再误判
+    <code>about:blank</code> 为 restricted URL —— 双保险结构覆盖 open_url / focus_tab / click /
+    页面自跳 / 用户操作 共 6 条 navigation transient 路径。
+  </p>
+</header>
+
+<nav class="toc">
+  <div style="color: var(--fg-muted); font-size: 12px; letter-spacing: .06em; text-transform: uppercase; margin-bottom: 6px;">Sections</div>
+  <ol>
+    <li><a href="#problem">现状：撞 race 的链路</a></li>
+    <li><a href="#fixed">方案：双保险时序</a></li>
+    <li><a href="#arch">架构：模块组织</a></li>
+    <li><a href="#decisions">决策矩阵（4 个锁定点）</a></li>
+    <li><a href="#errors">错误处理矩阵</a></li>
+    <li><a href="#coverage">覆盖矩阵（6 条 race 路径）</a></li>
+    <li><a href="#code">关键代码改动</a></li>
+    <li><a href="#tests">测试策略</a></li>
+    <li><a href="#scope">Out of scope</a></li>
+  </ol>
+</nav>
+
+<!-- ─────────── Problem ─────────── -->
+<h2 id="problem">1 · 现状：撞 race 的链路</h2>
+
+<p>
+  Loop 顶部 origin check (<code>loop.ts:912</code>) 每轮起手读
+  <code>chrome.tabs.get(pinnedTabId)</code>，命中
+  <code>isRestrictedUrl(url)</code>（含 <code>about:</code> 前缀）即 hard-stop。
+  问题：navigation in-flight 的 tab.url 短暂为 <code>about:blank</code>，被误判。
+</p>
+
+<div class="legend">
+  <span class="legend-item"><span class="pill llm">LLM</span> tool call</span>
+  <span class="legend-item"><span class="pill sw">SW</span> Service Worker / agent loop</span>
+  <span class="legend-item"><span class="pill chrome">Chrome</span> 浏览器 API</span>
+  <span class="legend-item"><span class="pill wait">WAIT</span> 应该等</span>
+  <span class="legend-item"><span class="pill stop">STOP</span> 任务终止</span>
+  <span class="legend-item"><span class="pill ok">OK</span> 正常 settle</span>
+</div>
+
+<div class="timeline">
+  <div class="timeline-label">现状时序 — 用户报告的失败场景</div>
+
+  <div class="timeline-row"><div class="tick">T0</div>
+    <div class="event"><span class="pill llm">LLM</span>
+      <div class="event-body"><strong>open_url("https://docs.example.com")</strong> <em>慢站，冷启 1–3s</em></div></div></div>
+
+  <div class="timeline-row"><div class="tick">T0+5ms</div>
+    <div class="event"><span class="pill sw">SW</span>
+      <div class="event-body"><code>chrome.tabs.create({url})</code> 立即返回 <code>tab.id=42</code>，
+        <code>tab.url="about:blank"</code>，<code>status="loading"</code></div></div></div>
+
+  <div class="timeline-row"><div class="tick">T0+8ms</div>
+    <div class="event"><span class="pill sw">SW</span>
+      <div class="event-body"><code>appendPinnedTab({tabId:42, origin:"https://docs.example.com"})</code> 写入 storage</div></div></div>
+
+  <div class="timeline-row"><div class="tick">T0+12ms</div>
+    <div class="event"><span class="pill sw">SW</span>
+      <div class="event-body">handler 返回 <code>success</code>，进入下一轮（同轮 LLM 已 batch <code>focus_tab(42)</code>）</div></div></div>
+
+  <div class="timeline-row"><div class="tick">T1</div>
+    <div class="event"><span class="pill sw">SW</span>
+      <div class="event-body">下一轮顶部 <code>readFocusFromStorage</code> → focused = tab 42</div></div></div>
+
+  <div class="timeline-row"><div class="tick">T1+1ms</div>
+    <div class="event"><span class="pill chrome">Chrome</span>
+      <div class="event-body"><code>tabs.get(42)</code> 返回 <code>url="about:blank"</code>（navigation 仍 in-flight）</div></div></div>
+
+  <div class="timeline-row"><div class="tick">T1+2ms</div>
+    <div class="event"><span class="pill stop">STOP</span>
+      <div class="event-body"><code>isRestrictedUrl("about:blank")</code> ⇒ <code>true</code>（startsWith("about:")）<br>
+        <em>summary = "Page navigated to a restricted URL, agent stopped"</em></div></div></div>
+
+  <div class="timeline-row"><div class="tick">T2 ≈ T0+1s</div>
+    <div class="event"><span class="pill chrome">Chrome</span>
+      <div class="event-body">webNavigation.onCommitted 才触发 → tab.url 才变 https://docs.example.com<br>
+        <em>太晚了，loop 已经在 T1+2ms 终止</em></div></div></div>
+</div>
+
+<div class="callout red">
+  <strong>结构性原因：</strong> <code>isRestrictedUrl</code> 不区分 "navigation 未 commit 的初始 sentinel" vs
+  "页面真停在 chrome:// / data: / file:// 等无法操作的 origin"。
+</div>
+
+<!-- ─────────── Fixed ─────────── -->
+<h2 id="fixed">2 · 方案：双保险时序</h2>
+
+<p>
+  两道护栏：<strong>open_url handler 内等 commit</strong>（第一道）+ <strong>loop 顶部 origin
+  check 之前等 commit</strong>（第二道，统一收敛点）。任一 path 漏掉，另一道接住。
+</p>
+
+<div class="timeline">
+  <div class="timeline-label">修复后时序 — 同样场景，双保险版</div>
+
+  <div class="timeline-row"><div class="tick">T0</div>
+    <div class="event"><span class="pill llm">LLM</span>
+      <div class="event-body"><strong>open_url("https://docs.example.com")</strong></div></div></div>
+
+  <div class="timeline-row"><div class="tick">T0+5ms</div>
+    <div class="event"><span class="pill chrome">Chrome</span>
+      <div class="event-body"><code>chrome.tabs.create({url})</code> 返回 tab.id=42 (about:blank)</div></div></div>
+
+  <div class="timeline-row"><div class="tick">T0+8ms</div>
+    <div class="event"><span class="pill wait">WAIT</span>
+      <div class="event-body"><code>waitForUrlSettle(42, "https://docs.example.com", 5000)</code><br>
+        <em>注册 chrome.webNavigation.onCommitted listener（frameId=0, tabId=42）</em></div></div></div>
+
+  <div class="timeline-row"><div class="tick">T0+1.2s</div>
+    <div class="event"><span class="pill chrome">Chrome</span>
+      <div class="event-body">onCommitted 触发 → tabs.get(42).url = "https://docs.example.com/..."<br>
+        origin 匹配 ⇒ resolve <code>{committed: true, url}</code></div></div></div>
+
+  <div class="timeline-row"><div class="tick">T0+1.2s</div>
+    <div class="event"><span class="pill sw">SW</span>
+      <div class="event-body"><code>appendPinnedTab</code> + 返回 <code>success</code></div></div></div>
+
+  <div class="timeline-row"><div class="tick">T1</div>
+    <div class="event"><span class="pill sw">SW</span>
+      <div class="event-body">下一轮起手，tab.url 已是目标 URL → 标准 origin check 通过</div></div></div>
+
+  <div class="timeline-row"><div class="tick">T1+2ms</div>
+    <div class="event"><span class="pill ok">OK</span>
+      <div class="event-body">snapshot → 继续 ReAct 循环</div></div></div>
+</div>
+
+<div class="callout green">
+  <strong>容错性：</strong> 即便 handler 内 wait 漏（比如未来加新的 navigation 触发路径），loop
+  顶部第二道也会接住所有 transient。
+</div>
+
+<!-- ─────────── Architecture ─────────── -->
+<h2 id="arch">3 · 架构：模块组织</h2>
+
+<div class="arch">
+  <div class="arch-block new">
+    <h4>wait-for-url-settle.ts <span class="status-tag new">NEW</span></h4>
+    <div class="path">src/lib/agent/wait-for-url-settle.ts</div>
+    <ul>
+      <li>navigation-commit 等待 helper</li>
+      <li><code>chrome.webNavigation.onCommitted</code>（frameId=0）+ timeout cap</li>
+      <li>5 种 resolve 结果：committed / timeout / origin-mismatch / tab-gone / aborted</li>
+      <li>signal 支持 — 与 loop internal abort 协作</li>
+      <li>try/finally cleanup listener</li>
+    </ul>
+  </div>
+
+  <div class="arch-block modified">
+    <h4>wait-for-settle.ts <span class="status-tag untouched">不动</span></h4>
+    <div class="path">src/lib/agent/wait-for-settle.ts</div>
+    <ul>
+      <li>现有 <code>withActionSettle</code> — click / type / keyboard 用</li>
+      <li>语义：action 后等 page <em>安静</em>（quietMs window）</li>
+      <li>与新 helper 语义独立但共享 webNavigation API</li>
+      <li>不重构、不复用，避免污染稳定模块</li>
+    </ul>
+  </div>
+
+  <div class="arch-block modified">
+    <h4>loop.ts <span class="status-tag mod">MODIFIED</span></h4>
+    <div class="path">src/lib/agent/loop.ts:912</div>
+    <ul>
+      <li>顶部 origin check 加一道 transient 容忍</li>
+      <li>trigger: <code>!url || url === "about:blank"</code></li>
+      <li>fast-fail: pendingUrl origin 不匹配立刻 STOP</li>
+      <li>否则 <code>waitForUrlSettle(... 5000)</code></li>
+      <li>fall-through 到现有 <code>isRestrictedUrl</code> + origin check</li>
+    </ul>
+  </div>
+
+  <div class="arch-block modified">
+    <h4>tabs.ts <span class="status-tag mod">MODIFIED</span></h4>
+    <div class="path">src/lib/agent/tools/tabs.ts:1158 (openUrlTool)</div>
+    <ul>
+      <li>chrome.tabs.create 之后 await <code>waitForUrlSettle</code></li>
+      <li>commit 失败 → handler-level fail（<strong>不</strong> STOP task）</li>
+      <li>不撤销失败的 tab —— 留给 LLM 自决 close_tabs</li>
+      <li>error message 携带 reason（timeout / origin-mismatch）</li>
+    </ul>
+  </div>
+</div>
+
+<h3>不动的模块</h3>
+<table>
+  <thead><tr><th>模块</th><th>原因</th></tr></thead>
+  <tbody>
+    <tr><td class="mono">isRestrictedUrl (loop.ts:319)</td><td>保持 <code>about:</code> 拦截语义；transient 容忍在调用之前判断</td></tr>
+    <tr><td class="mono">safeParseOrigin</td><td>仅给 fast-fail 用 pendingUrl 解析</td></tr>
+    <tr><td class="mono">focus_tab handler</td><td>仍是 always-low 纯指针更新；下一轮顶部 settle 接住</td></tr>
+    <tr><td class="mono">withActionSettle</td><td>click/type/keyboard 现有 settle 稳定，不动</td></tr>
+    <tr><td class="mono">manifest.json</td><td>webNavigation permission 已就位（recording v1 引入）</td></tr>
+  </tbody>
+</table>
+
+<!-- ─────────── Decisions ─────────── -->
+<h2 id="decisions">4 · 决策矩阵（4 个锁定点）</h2>
+
+<div class="decisions">
+  <div class="decision">
+    <div class="q">Scope</div>
+    <div class="a"><span class="v">双保险</span></div>
+    <div class="why">loop 顶部 + open_url handler 同时改。loop 顶部是统一收敛点，open_url 内 wait 提升 handler 错误清晰度。</div>
+  </div>
+
+  <div class="decision">
+    <div class="q">Timeout</div>
+    <div class="a"><span class="v">5000 ms</span></div>
+    <div class="why">够 cover Gmail / GitHub / 飞书 冷启；不会让 LLM 在面板前哑等过久。比现有 withActionSettle max=3000ms 长，因为新 tab 加载比单次 click 慢。</div>
+  </div>
+
+  <div class="decision">
+    <div class="q">pendingUrl 策略</div>
+    <div class="a"><span class="v">fast-fail</span></div>
+    <div class="why">pendingUrl 存在 + origin 不匹配 ⇒ 立刻 STOP（节省 5s wait）。其他情况 wait + timeout 后走标准 check。安全语义同"完全忽略"，但漂洗场景出错信息更快。</div>
+  </div>
+
+  <div class="decision">
+    <div class="q">Timeout 后文案</div>
+    <div class="a"><span class="v">复用 restricted</span></div>
+    <div class="why">沿用 "Page navigated to a restricted URL, agent stopped"。最小改动，不引入新 user-visible 错误类型；用户从 panel 视角行为一致。</div>
+  </div>
+</div>
+
+<!-- ─────────── Errors ─────────── -->
+<h2 id="errors">5 · 错误处理矩阵</h2>
+
+<table>
+  <thead><tr><th>wait 结果</th><th>loop 顶部行为</th><th>open_url handler 行为</th></tr></thead>
+  <tbody>
+    <tr class="ok"><td>commit ≤5s + origin 匹配</td><td>更新 currentUrl，继续 snapshot</td><td><code>success: true</code> + appendPinnedTab</td></tr>
+    <tr class="stop"><td>pendingUrl fast-fail（origin 不匹配）</td><td>STOP "origin changed"</td><td>理论不到此分支</td></tr>
+    <tr class="stop"><td>onCommitted 报告 origin 不匹配</td><td>STOP "origin changed"</td><td><code>success: false</code> + error</td></tr>
+    <tr class="stop"><td>5s timeout，url 仍 transient</td><td>STOP "restricted URL"（复用文案）</td><td><code>success: false</code> + "did not commit within 5s"</td></tr>
+    <tr class="stop"><td>tab 关闭（tabs.get reject）</td><td>STOP "Tab was closed"</td><td><code>success: false</code> + "tab gone"</td></tr>
+    <tr class="wait"><td>signal aborted（user Stop）</td><td>finally 走标准 abort emit</td><td>handler ctx signal 协作</td></tr>
+  </tbody>
+</table>
+
+<!-- ─────────── Coverage ─────────── -->
+<h2 id="coverage">6 · 覆盖矩阵（6 条 race 路径）</h2>
+
+<table>
+  <thead><tr><th>navigation 触发路径</th><th>谁接住</th><th>备注</th></tr></thead>
+  <tbody>
+    <tr class="ok"><td><strong>open_url</strong> 创建新 tab</td><td>open_url handler settle</td><td>主要场景；用户报告的原 race</td></tr>
+    <tr class="ok"><td>open_url + 同轮 focus_tab + 慢站</td><td>open_url settle 已等到 → loop 顶部不再 transient</td><td>双保险都不需要触发</td></tr>
+    <tr class="ok"><td><strong>click</strong> 触发 cross-doc nav</td><td>现有 withActionSettle + loop 顶部 settle</td><td>quietMs=500 不够时顶部接住</td></tr>
+    <tr class="ok"><td>type + Enter 触发 form submit</td><td>同上</td><td>同上</td></tr>
+    <tr class="ok"><td>页面 JS 自跳 / meta refresh</td><td>loop 顶部 settle</td><td>无 handler 可挂</td></tr>
+    <tr class="ok"><td>用户手动操作 pinned tab（刷新 / 回退）</td><td>loop 顶部 settle</td><td>同上</td></tr>
+    <tr class="ok"><td>focus_tab 切到加载中 tab</td><td>loop 顶部 settle</td><td>focus_tab handler 仍是指针更新，不挂 wait</td></tr>
+  </tbody>
+</table>
+
+<!-- ─────────── Code ─────────── -->
+<h2 id="code">7 · 关键代码改动</h2>
+
+<h3>新 helper 接口</h3>
+<pre><code>// src/lib/agent/wait-for-url-settle.ts
+export type UrlSettleResult =
+  | { committed: true; url: string }
+  | { committed: false; reason: "timeout" | "origin-mismatch" | "tab-gone"; observedUrl?: string };
+
+export async function waitForUrlSettle(
+  tabId: number,
+  expectedOrigin: string,
+  timeoutMs: number,
+  signal?: AbortSignal,
+): Promise&lt;UrlSettleResult&gt;;</code></pre>
+
+<h3>Loop 顶部改造</h3>
+<div class="diff-block">
+  <div class="diff-header"><span>src/lib/agent/loop.ts</span><span>~L912</span></div>
+  <div class="diff-body">
+<span class="diff-ctx">const currentTab = await chrome.tabs.get(pinnedTabId);</span>
+<span class="diff-add">+ // transient 检测 — B 核心</span>
+<span class="diff-add">+ if (!currentTab.url || currentTab.url === "about:blank") {</span>
+<span class="diff-add">+   if (currentTab.pendingUrl) {</span>
+<span class="diff-add">+     const pendingOrigin = safeParseOrigin(currentTab.pendingUrl);</span>
+<span class="diff-add">+     if (pendingOrigin && pendingOrigin !== pinnedOrigin) {</span>
+<span class="diff-add">+       await emitDone(STOP_origin_changed, "abort"); return;</span>
+<span class="diff-add">+     }</span>
+<span class="diff-add">+   }</span>
+<span class="diff-add">+   const r = await waitForUrlSettle(pinnedTabId, pinnedOrigin, 5000, signal);</span>
+<span class="diff-add">+   if (!r.committed) {</span>
+<span class="diff-add">+     if (r.reason === "origin-mismatch") await emitDone(STOP_origin_changed, "abort");</span>
+<span class="diff-add">+     else if (r.reason === "tab-gone")   await emitDone(STOP_tab_closed, "abort");</span>
+<span class="diff-add">+     else /* timeout */                  await emitDone(STOP_restricted, "abort");</span>
+<span class="diff-add">+     return;</span>
+<span class="diff-add">+   }</span>
+<span class="diff-add">+   currentUrl = r.url;</span>
+<span class="diff-add">+ }</span>
+<span class="diff-ctx">if (!currentTab.url || isRestrictedUrl(currentTab.url)) { /* existing */ }</span>
+<span class="diff-ctx">// origin check 继续 ...</span>
+  </div>
+</div>
+
+<h3>open_url handler 改造</h3>
+<div class="diff-block">
+  <div class="diff-header"><span>src/lib/agent/tools/tabs.ts</span><span>openUrlTool · ~L1158</span></div>
+  <div class="diff-body">
+<span class="diff-ctx">newTab = await chrome.tabs.create({ url: a.url, active });</span>
+<span class="diff-ctx">if (typeof newTab.id !== "number" || newTab.id &lt; 0) { /* existing */ }</span>
+<span class="diff-add">+ const r = await waitForUrlSettle(newTab.id, parsed.origin, 5000);</span>
+<span class="diff-add">+ if (!r.committed) {</span>
+<span class="diff-add">+   return {</span>
+<span class="diff-add">+     success: false,</span>
+<span class="diff-add">+     error: `open_url: tab ${newTab.id} created but navigation did not commit to ${parsed.origin} within 5s (${r.reason}).`,</span>
+<span class="diff-add">+   };</span>
+<span class="diff-add">+ }</span>
+<span class="diff-ctx">if (ctx.appendPinnedTab) { /* existing */ }</span>
+<span class="diff-ctx">return { success: true, observation: ... };</span>
+  </div>
+</div>
+
+<!-- ─────────── Tests ─────────── -->
+<h2 id="tests">8 · 测试策略</h2>
+
+<table>
+  <thead><tr><th>文件</th><th>覆盖</th></tr></thead>
+  <tbody>
+    <tr>
+      <td class="mono">wait-for-url-settle.test.ts<br><span class="status-tag new">NEW</span></td>
+      <td>
+        onCommitted 匹配 origin → committed:true ·
+        不匹配 → origin-mismatch ·
+        5s 无事件 → timeout ·
+        tabs.get reject → tab-gone ·
+        signal abort → 立即 return ·
+        listener cleanup（commit + timeout 两路径都验证）·
+        re-entrant 两 tabId 各自 listener 不串
+      </td>
+    </tr>
+    <tr>
+      <td class="mono">loop.test.ts (扩)</td>
+      <td>
+        transient + commit 内 5s → 继续 snapshot ·
+        pendingUrl mismatch fast-fail → STOP "origin changed" ·
+        5s timeout → STOP "restricted URL"（断言文案沿用现有）·
+        非 transient url → 不调 settle（节流校验）
+      </td>
+    </tr>
+    <tr>
+      <td class="mono">tabs.test.ts openUrlTool (扩)</td>
+      <td>
+        create + commit 成功 → success path ·
+        commit timeout → handler fail + 描述性 error ·
+        chrome.tabs.create reject → 现有 path 不动
+      </td>
+    </tr>
+    <tr>
+      <td class="mono">cross-layer regression</td>
+      <td>
+        panel 收到 done summary，"restricted URL" 仅在真 timeout 时出现，
+        慢站场景 commit 成功不再误报
+      </td>
+    </tr>
+  </tbody>
+</table>
+
+<!-- ─────────── Scope ─────────── -->
+<h2 id="scope">9 · Out of scope（明确不做）</h2>
+
+<table>
+  <tbody>
+    <tr><td class="mono">不动 isRestrictedUrl</td><td><code>about:</code> 拦截语义不变；transient 容忍在调用前判断</td></tr>
+    <tr><td class="mono">不动 withActionSettle</td><td>click/type/keyboard 现有 settle 稳定，不重构</td></tr>
+    <tr><td class="mono">不引入新错误文案</td><td>timeout 复用 "restricted URL" 文案（决策 4）</td></tr>
+    <tr><td class="mono">不撤销失败的 tab</td><td>open_url commit 失败保留 tab，LLM 自决 close_tabs</td></tr>
+    <tr><td class="mono">不动 manifest</td><td>webNavigation permission 已就位</td></tr>
+    <tr><td class="mono">不复活 confirm 路径</td><td>confirm 层 2026-05-08 已删，本期严守</td></tr>
+    <tr><td class="mono">不动 focus_tab handler</td><td>仍是 always-low 指针更新；下一轮顶部 settle 接住</td></tr>
+  </tbody>
+</table>
+
+<footer class="meta">
+  <span>spec draft · 2026-05-13 · scope = 双保险 / 5s / fast-fail / 复用文案</span>
+  <span>chrome-ai-agent (Pie) · navigation transient tolerance</span>
+</footer>
+
+</div>
+</body>
+</html>

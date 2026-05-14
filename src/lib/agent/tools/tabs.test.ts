@@ -408,9 +408,41 @@ describe("open_url tool", () => {
     expect(r.error).toMatch(/invalid URL/);
   });
 
+  // ── Issue #50: open_url waits for navigation commit ──────────────────────
+  //
+  // chrome.tabs.create returns the instant a tab is allocated, with
+  // url="about:blank". Before this change, openUrlTool would return
+  // success immediately — leaving the loop's next-iteration origin check
+  // to either race the commit or STOP on about:blank. Now the handler
+  // awaits waitForUrlSettle and translates the result.
+
+  function fireOnCommittedNext(tabId: number, frameId: number) {
+    // Drain microtasks so the addListener call inside waitForUrlSettle
+    // has executed, then fire onCommitted.
+    return new Promise<void>((resolve) => {
+      queueMicrotask(() => {
+        const listeners = chromeMock.webNavigation.__committedListeners.slice();
+        for (const l of listeners) {
+          l({
+            tabId,
+            frameId,
+            url: "ignored",
+            timeStamp: Date.now(),
+            processId: 0,
+          } as Parameters<typeof l>[0]);
+        }
+        resolve();
+      });
+    });
+  }
+
   it("creates tab and pushes pin on success", async () => {
+    chromeMock.tabs.__tabsById.set(999, {
+      id: 999,
+      url: "https://example.com/page",
+    });
     const append = vi.fn().mockResolvedValue(undefined);
-    const r = await openUrlTool.handler(
+    const handlerPromise = openUrlTool.handler(
       { url: "https://example.com/page" },
       {
         tabId: 12,
@@ -419,6 +451,8 @@ describe("open_url tool", () => {
         appendPinnedTab: append,
       },
     );
+    await fireOnCommittedNext(999, 0);
+    const r = await handlerPromise;
     expect(r.success).toBe(true);
     expect(
       (chromeMock.tabs as unknown as { create: ReturnType<typeof vi.fn> })
@@ -436,8 +470,12 @@ describe("open_url tool", () => {
   });
 
   it("respects active=true", async () => {
+    chromeMock.tabs.__tabsById.set(999, {
+      id: 999,
+      url: "https://example.com/",
+    });
     const append = vi.fn().mockResolvedValue(undefined);
-    const r = await openUrlTool.handler(
+    const handlerPromise = openUrlTool.handler(
       { url: "https://example.com/", active: true },
       {
         tabId: 12,
@@ -445,6 +483,9 @@ describe("open_url tool", () => {
         appendPinnedTab: append,
       },
     );
+    await fireOnCommittedNext(999, 0);
+    const r = await handlerPromise;
+    expect(r.success).toBe(true);
     expect(
       (chromeMock.tabs as unknown as { create: ReturnType<typeof vi.fn> })
         .create,
@@ -456,15 +497,131 @@ describe("open_url tool", () => {
   });
 
   it("succeeds without appendPinnedTab writer (test/legacy harness)", async () => {
-    const r = await openUrlTool.handler(
+    chromeMock.tabs.__tabsById.set(999, {
+      id: 999,
+      url: "https://example.com/",
+    });
+    const handlerPromise = openUrlTool.handler(
       { url: "https://example.com/" },
       { tabId: 12, snapshot: { url: "", title: "", elements: [] } },
     );
+    await fireOnCommittedNext(999, 0);
+    const r = await handlerPromise;
     expect(r.success).toBe(true);
     // No appendPinnedTab present, but the tab was still created.
     expect(
       (chromeMock.tabs as unknown as { create: ReturnType<typeof vi.fn> })
         .create,
     ).toHaveBeenCalled();
+  });
+
+  it("Issue #50 — awaits navigation commit; appendPinnedTab fires only on success", async () => {
+    chromeMock.tabs.__tabsById.set(999, {
+      id: 999,
+      url: "https://example.com/landing",
+    });
+    (chromeMock.tabs as unknown as { create: unknown }).create = vi
+      .fn()
+      .mockResolvedValue({ id: 999, url: "about:blank" });
+
+    const append = vi.fn().mockResolvedValue(undefined);
+    // Kick off the handler, then fire onCommitted concurrently.
+    const handlerPromise = openUrlTool.handler(
+      { url: "https://example.com/landing" },
+      {
+        tabId: 12,
+        snapshot: { url: "", title: "", elements: [] },
+        appendPinnedTab: append,
+      },
+    );
+    await fireOnCommittedNext(999, 0);
+
+    const r = await handlerPromise;
+    expect(r.success).toBe(true);
+    expect(append).toHaveBeenCalledWith({
+      tabId: 999,
+      origin: "https://example.com",
+    });
+    expect(r.observation).toMatch(/Opened tab 999/);
+  });
+
+  it("Issue #50 — handler fails when commit times out; appendPinnedTab is NOT called and tab is NOT removed", async () => {
+    vi.useFakeTimers();
+    try {
+      (chromeMock.tabs as unknown as { create: unknown }).create = vi
+        .fn()
+        .mockResolvedValue({ id: 777, url: "about:blank" });
+      const append = vi.fn().mockResolvedValue(undefined);
+      const removeSpy = vi.fn();
+      (chromeMock.tabs as unknown as { remove: unknown }).remove = removeSpy;
+
+      const handlerPromise = openUrlTool.handler(
+        { url: "https://example.com/page" },
+        {
+          tabId: 12,
+          snapshot: { url: "", title: "", elements: [] },
+          appendPinnedTab: append,
+        },
+      );
+
+      // Let the timeout fire without ever emitting onCommitted.
+      await vi.advanceTimersByTimeAsync(5000);
+      const r = await handlerPromise;
+
+      expect(r.success).toBe(false);
+      expect(r.error).toMatch(/did not commit/i);
+      expect(r.error).toMatch(/timeout/i);
+      expect(r.error).toMatch(/close_tabs\(\[777\]\)/);
+      expect(append).not.toHaveBeenCalled();
+      expect(removeSpy).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("Issue #50 — handler fails with origin-mismatch reason when chrome navigates elsewhere", async () => {
+    // chrome.tabs.create returned tab id 888, but the page that committed
+    // ended up at a different origin (server-side redirect / typo'd URL).
+    chromeMock.tabs.__tabsById.set(888, {
+      id: 888,
+      url: "https://other.example/redirected",
+    });
+    (chromeMock.tabs as unknown as { create: unknown }).create = vi
+      .fn()
+      .mockResolvedValue({ id: 888, url: "about:blank" });
+
+    const append = vi.fn().mockResolvedValue(undefined);
+    const handlerPromise = openUrlTool.handler(
+      { url: "https://example.com/page" },
+      {
+        tabId: 12,
+        snapshot: { url: "", title: "", elements: [] },
+        appendPinnedTab: append,
+      },
+    );
+    await fireOnCommittedNext(888, 0);
+
+    const r = await handlerPromise;
+    expect(r.success).toBe(false);
+    expect(r.error).toMatch(/origin-mismatch/);
+    expect(append).not.toHaveBeenCalled();
+  });
+
+  it("Issue #50 — chrome.tabs.create rejection path remains unchanged (no settle call)", async () => {
+    (chromeMock.tabs as unknown as { create: unknown }).create = vi
+      .fn()
+      .mockRejectedValue(new Error("quota exceeded"));
+    const beforeListenerCount =
+      chromeMock.webNavigation.__committedListeners.length;
+    const r = await openUrlTool.handler(
+      { url: "https://example.com/" },
+      { tabId: 12, snapshot: { url: "", title: "", elements: [] } },
+    );
+    expect(r.success).toBe(false);
+    expect(r.error).toMatch(/chrome\.tabs\.create failed/);
+    // No settle attempt → no leaked listener.
+    expect(chromeMock.webNavigation.__committedListeners.length).toBe(
+      beforeListenerCount,
+    );
   });
 });

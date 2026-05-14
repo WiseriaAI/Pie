@@ -1,6 +1,7 @@
 import type { ActionResult } from "../../dom-actions/types";
 import type { ConfirmedTabTarget, Tool, ToolHandlerContext } from "../types";
 import { escapeUntrustedWrappers, escapeWrapperAttribute } from "../untrusted-wrappers";
+import { waitForUrlSettle } from "../wait-for-url-settle";
 
 /**
  * Phase 3 — parse a chrome.tabs.Tab.url into an origin string. Returns ""
@@ -1230,25 +1231,45 @@ const openUrlTool: Tool = {
     if (typeof newTab.id !== "number" || newTab.id < 0) {
       return { success: false, error: "open_url: chrome returned no tab id" };
     }
+
+    // Issue #50 — wait for the new tab to actually commit to the
+    // requested origin before declaring success and writing the pin.
+    // chrome.tabs.create resolves immediately with url="about:blank";
+    // returning success at that point would race the loop's next-
+    // iteration origin check. On commit failure we leave the tab open
+    // (the LLM can close_tabs([id]) explicitly) and skip appendPinnedTab
+    // so pinnedTabs[] never holds an entry that won't pass origin check.
+    const newTabId = newTab.id;
+    const settle = await waitForUrlSettle(newTabId, parsed.origin, 5000);
+    if (!settle.committed) {
+      return {
+        success: false,
+        error:
+          `open_url: tab ${newTabId} created but navigation did not commit to ${parsed.origin} ` +
+          `within 5s (${settle.reason}). The tab is left open — use close_tabs([${newTabId}]) to clean up ` +
+          `or retry with a different URL.`,
+      };
+    }
+
     if (ctx.appendPinnedTab) {
       try {
-        await ctx.appendPinnedTab({ tabId: newTab.id, origin: parsed.origin });
+        await ctx.appendPinnedTab({ tabId: newTabId, origin: parsed.origin });
       } catch (e) {
         return {
           success: true,
           observation:
-            `Opened tab ${newTab.id} at ${parsed.origin}, but failed to add it ` +
+            `Opened tab ${newTabId} at ${parsed.origin}, but failed to add it ` +
             `to the session's pinnedTabs (${e instanceof Error ? e.message : String(e)}). ` +
-            `Use focus_tab(${newTab.id}) anyway; if it fails, retry open_url next iteration.`,
+            `Use focus_tab(${newTabId}) anyway; if it fails, retry open_url next iteration.`,
         };
       }
     }
     return {
       success: true,
       observation:
-        `Opened tab ${newTab.id} at ${parsed.origin}` +
+        `Opened tab ${newTabId} at ${parsed.origin}` +
         (active ? " (focused: stole user's view)" : " (background)") +
-        `. Added to pinnedTabs[]; call focus_tab(${newTab.id}) on the next iteration to operate on it.`,
+        `. Added to pinnedTabs[]; call focus_tab(${newTabId}) on the next iteration to operate on it.`,
     };
   },
 };
