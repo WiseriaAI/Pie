@@ -77,6 +77,12 @@ import {
 import { createKeepAlive, type KeepAlive } from "./keep-alive";
 import { cleanupLegacySkipPermissions } from "./cleanup-migration";
 import { cleanupThinShellSkills } from "@/lib/skills/migration-cleanup-thinshell";
+import {
+  handleQuoteTextCaptured,
+  handleQuoteElementCaptured,
+  broadcastPickerEnter,
+  broadcastPickerExit,
+} from "./quote-bridge";
 
 // Run V1→V2 migration once on SW load (idempotent via schema_version sentinel).
 migrateV1toV2().catch((e) => console.error("migration v2 failed", e));
@@ -442,6 +448,22 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === "extract-page") {
     handleExtractPage().then(sendResponse);
     return true; // async response
+  }
+
+  if (message.type === "quote-text-captured" || message.type === "quote-element-captured") {
+    void (async () => {
+      let out;
+      if (message.type === "quote-text-captured") {
+        out = await handleQuoteTextCaptured(sender, message.payload);
+      } else {
+        out = await handleQuoteElementCaptured(sender, message.payload);
+      }
+      if (!out) return;
+      for (const port of portsBySession.values()) {
+        try { port.postMessage(out); } catch { /* port closed */ }
+      }
+    })();
+    return;
   }
 });
 
@@ -1227,6 +1249,10 @@ chrome.runtime.onConnect.addListener((port) => {
       handleRecordingDiscard(port, message).catch((e) => {
         console.warn(`[sw] recording-discard failed for session=${message.sessionId}:`, e);
       });
+    } else if (message.type === "picker:start") {
+      void broadcastPickerEnter((message as { tabId: number }).tabId);
+    } else if (message.type === "picker:stop") {
+      void broadcastPickerExit((message as { tabId: number }).tabId);
     }
   });
 
