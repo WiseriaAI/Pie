@@ -12,7 +12,8 @@
     <a href="PRIVACY.md">Privacy</a> ·
     <a href="CHANGELOG.md">Changelog</a> ·
     <a href="docs/ROADMAP.md">Roadmap</a> ·
-    <a href="docs/ARCHITECTURE.md">Architecture</a>
+    <a href="docs/ARCHITECTURE.md">Architecture</a> ·
+    <a href="https://wiseriaai.github.io/pie-ai-agent/">Archive</a>
   </p>
 </div>
 

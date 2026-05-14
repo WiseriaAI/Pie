@@ -1,0 +1,1298 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Pie · Project Archive</title>
+  <style>
+    :root {
+      --c-canvas: #FAFBFC;
+      --c-surface: #FFFFFF;
+      --c-field: #F4F6F8;
+      --c-line: #E4E8EC;
+      --c-fg-1: #14181D;
+      --c-fg-2: #5A6470;
+      --c-fg-3: #98A1AC;
+      --c-fg-4: #B8BFC8;
+      --c-accent: #4A5C6E;
+      --c-warning: #B85A4D;
+      --c-dot-grid: rgba(20, 24, 29, 0.04);
+      --c-accent-tint: rgba(74, 92, 110, 0.08);
+      --c-accent-line: rgba(74, 92, 110, 0.3);
+      --c-warning-tint: rgba(184, 90, 77, 0.08);
+      --c-warning-line: rgba(184, 90, 77, 0.4);
+      --c-surface-deep: #F0F2F4;
+      --c-overlay-strong: rgba(20, 24, 29, 0.5);
+    }
+    [data-theme="dark"] {
+      --c-canvas: #0B0D10;
+      --c-surface: #14171C;
+      --c-field: #1A1E25;
+      --c-line: #22272F;
+      --c-fg-1: #E5E8EC;
+      --c-fg-2: #8A929E;
+      --c-fg-3: #525965;
+      --c-fg-4: #3A4049;
+      --c-accent: #B8C8D6;
+      --c-warning: #C26B5E;
+      --c-dot-grid: rgba(232, 236, 242, 0.05);
+      --c-accent-tint: rgba(184, 200, 214, 0.08);
+      --c-accent-line: rgba(184, 200, 214, 0.3);
+      --c-warning-tint: rgba(194, 107, 94, 0.08);
+      --c-warning-line: rgba(194, 107, 94, 0.45);
+      --c-surface-deep: #0F1216;
+      --c-overlay-strong: rgba(8, 13, 16, 0.72);
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; height: 100%; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+        "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+      font-size: 14px;
+      line-height: 1.55;
+      color: var(--c-fg-1);
+      background-color: var(--c-canvas);
+      background-image: radial-gradient(var(--c-dot-grid) 1px, transparent 1px);
+      background-size: 14px 14px;
+    }
+    code, .mono {
+      font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+      font-size: 13px;
+    }
+
+    .app {
+      display: grid;
+      grid-template-rows: 48px 1fr;
+      height: 100vh;
+    }
+    .topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 16px;
+      border-bottom: 1px solid var(--c-line);
+      background: var(--c-surface);
+    }
+    .topbar .brand {
+      font-weight: 600;
+      font-size: 14px;
+      letter-spacing: 0.01em;
+    }
+    .topbar .brand .sep { color: var(--c-fg-3); margin: 0 8px; }
+    .topbar .meta { color: var(--c-fg-2); font-size: 12px; font-weight: 400; }
+    .topbar .actions { display: flex; gap: 8px; align-items: center; }
+    .topbar button {
+      background: transparent;
+      border: 1px solid var(--c-line);
+      color: var(--c-fg-2);
+      padding: 4px 10px;
+      font-size: 12px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-family: inherit;
+    }
+    .topbar button:hover { background: var(--c-accent-tint); color: var(--c-fg-1); }
+    .topbar .kbd {
+      font-family: ui-monospace, monospace;
+      font-size: 11px;
+      background: var(--c-field);
+      padding: 2px 6px;
+      border-radius: 3px;
+      color: var(--c-fg-2);
+      margin-left: 4px;
+    }
+    .main {
+      display: grid;
+      grid-template-columns: 220px 1fr;
+      min-height: 0;
+    }
+    .sidebar {
+      border-right: 1px solid var(--c-line);
+      background: var(--c-surface);
+      overflow-y: auto;
+      padding: 16px 0;
+    }
+    .sidebar h4 {
+      margin: 12px 16px 8px;
+      font-size: 11px;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--c-fg-3);
+      font-weight: 600;
+    }
+    .sidebar nav { display: flex; flex-direction: column; }
+    .sidebar nav a {
+      padding: 6px 16px 6px 20px;
+      color: var(--c-fg-2);
+      text-decoration: none;
+      border-left: 2px solid transparent;
+      font-size: 13.5px;
+    }
+    .sidebar nav a:hover { background: var(--c-accent-tint); color: var(--c-fg-1); }
+    .sidebar nav a.is-active {
+      background: var(--c-accent-tint);
+      color: var(--c-fg-1);
+      border-left-color: var(--c-accent);
+    }
+    .sidebar .phase-strip {
+      margin: 16px;
+      padding: 10px 12px;
+      border: 1px solid var(--c-line);
+      border-radius: 4px;
+      font-size: 11px;
+      color: var(--c-fg-3);
+      font-family: ui-monospace, monospace;
+      letter-spacing: 0.04em;
+      line-height: 1.6;
+    }
+    .panel {
+      overflow-y: auto;
+      padding: 32px 40px 80px;
+      max-width: 920px;
+    }
+    .panel header h1 {
+      margin: 0 0 4px;
+      font-size: 22px;
+      font-weight: 600;
+      letter-spacing: -0.01em;
+    }
+    .panel header .tags {
+      display: flex;
+      gap: 6px;
+      margin-top: 8px;
+      margin-bottom: 24px;
+      flex-wrap: wrap;
+    }
+    .panel header .tag {
+      font-family: ui-monospace, monospace;
+      font-size: 11px;
+      padding: 2px 7px;
+      border: 1px solid var(--c-accent-line);
+      color: var(--c-accent);
+      border-radius: 3px;
+    }
+    .section { margin-bottom: 28px; }
+    .section > .label {
+      font-size: 11px;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--c-fg-3);
+      font-weight: 600;
+      margin-bottom: 8px;
+    }
+    .section > .body { color: var(--c-fg-1); }
+    .section > .body p { margin: 0 0 8px; }
+    .bullet {
+      display: grid;
+      grid-template-columns: 90px 1fr;
+      gap: 12px;
+      padding: 6px 8px;
+      border-radius: 3px;
+      transition: background-color 0.12s ease;
+    }
+    .bullet .k { color: var(--c-fg-3); font-size: 12px; padding-top: 1px; }
+    .bullet code {
+      color: var(--c-fg-1);
+      background: var(--c-field);
+      padding: 1px 5px;
+      border-radius: 3px;
+    }
+    .bullet.is-flow-hover { background: var(--c-accent-tint); }
+    .why-item {
+      padding: 10px 0;
+      border-top: 1px solid var(--c-line);
+    }
+    .why-item:first-child { border-top: none; }
+    .why-item .decision { font-weight: 500; }
+    .why-item .rationale { color: var(--c-fg-2); margin-top: 4px; }
+    .invariants-toggle {
+      cursor: pointer;
+      user-select: none;
+      font-size: 11px;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--c-fg-3);
+      font-weight: 600;
+      margin-bottom: 8px;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .invariants-toggle:hover { color: var(--c-fg-1); }
+    .invariants-list {
+      display: none;
+      border-top: 1px solid var(--c-line);
+    }
+    .invariants-list.is-open { display: block; }
+    .invariant {
+      display: grid;
+      grid-template-columns: 100px 1fr;
+      gap: 12px;
+      padding: 8px 0 8px 10px;
+      border-bottom: 1px solid var(--c-line);
+      border-left: 2px solid var(--c-accent-line);
+      font-size: 13px;
+    }
+    .invariant .tag {
+      font-family: ui-monospace, monospace;
+      font-size: 11px;
+      color: var(--c-accent);
+    }
+
+    .flow-svg {
+      display: block;
+      width: 100%;
+      max-width: 600px;
+      height: auto;
+      background: var(--c-field);
+      border: 1px solid var(--c-line);
+      border-radius: 4px;
+    }
+    .flow-svg .node rect {
+      fill: var(--c-surface);
+      stroke: var(--c-line);
+      stroke-width: 1;
+      transition: fill 0.12s ease, stroke 0.12s ease;
+    }
+    .flow-svg .node text {
+      font-family: ui-monospace, monospace;
+      font-size: 11px;
+      fill: var(--c-fg-1);
+      pointer-events: none;
+    }
+    .flow-svg .edge {
+      stroke: var(--c-fg-3);
+      stroke-width: 1;
+      fill: none;
+    }
+    .flow-svg .edge-label {
+      font-family: ui-monospace, monospace;
+      font-size: 10px;
+      fill: var(--c-fg-3);
+    }
+    .flow-svg .node.is-hover rect {
+      fill: var(--c-accent-tint);
+      stroke: var(--c-accent);
+    }
+    .flow-svg .node { cursor: default; }
+
+    .search-overlay {
+      position: fixed;
+      inset: 0;
+      background: var(--c-overlay-strong);
+      display: none;
+      align-items: flex-start;
+      justify-content: center;
+      padding-top: 80px;
+      z-index: 100;
+    }
+    .search-overlay.is-open { display: flex; }
+    .search-box {
+      width: min(640px, 80vw);
+      background: var(--c-surface);
+      border: 1px solid var(--c-line);
+      border-radius: 6px;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.12);
+      overflow: hidden;
+    }
+    .search-box input {
+      width: 100%;
+      padding: 14px 16px;
+      background: transparent;
+      border: none;
+      border-bottom: 1px solid var(--c-line);
+      font-family: inherit;
+      font-size: 15px;
+      color: var(--c-fg-1);
+      outline: none;
+    }
+    .search-results { max-height: 50vh; overflow-y: auto; }
+    .search-results:empty { display: none; }
+    .search-results .hit {
+      padding: 10px 16px;
+      border-bottom: 1px solid var(--c-line);
+      cursor: pointer;
+    }
+    .search-results .hit:last-child { border-bottom: none; }
+    .search-results .hit:hover, .search-results .hit.is-focused {
+      background: var(--c-accent-tint);
+    }
+    .search-results .hit .ttl { font-weight: 500; font-size: 13.5px; }
+    .search-results .hit .snip {
+      color: var(--c-fg-2); font-size: 12px; margin-top: 2px;
+      font-family: ui-monospace, monospace;
+    }
+
+    .phase-card {
+      position: fixed;
+      right: 16px;
+      bottom: 16px;
+      width: 240px;
+      background: var(--c-surface);
+      border: 1px solid var(--c-line);
+      border-radius: 6px;
+      padding: 8px 12px;
+      font-size: 11px;
+      color: var(--c-fg-2);
+      box-shadow: 0 2px 12px rgba(0,0,0,0.06);
+      cursor: pointer;
+      z-index: 50;
+    }
+    .phase-card:hover { border-color: var(--c-accent-line); }
+    .phase-card .title {
+      font-size: 10px;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--c-fg-3);
+      margin-bottom: 6px;
+    }
+    .phase-card .dots {
+      display: flex;
+      gap: 4px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+    .phase-card .dot {
+      font-family: ui-monospace, monospace;
+      font-size: 10px;
+      padding: 1px 6px;
+      border: 1px solid var(--c-line);
+      border-radius: 3px;
+      color: var(--c-fg-3);
+    }
+    .phase-card .dot.is-active {
+      background: var(--c-accent-tint);
+      border-color: var(--c-accent-line);
+      color: var(--c-accent);
+    }
+
+    @media (max-width: 960px) {
+      .main {
+        grid-template-columns: 1fr;
+        grid-template-rows: auto 1fr;
+      }
+      .sidebar {
+        border-right: none;
+        border-bottom: 1px solid var(--c-line);
+        max-height: 200px;
+      }
+      .panel { padding: 24px 20px 80px; }
+      .phase-card { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand">
+        Pie<span class="sep">·</span>Project Archive
+        <span class="sep">·</span>
+        <span class="meta">v0.8.0 · 2026-05-13</span>
+      </div>
+      <div class="actions">
+        <button id="search-btn" title="Search (/)">/ <span class="kbd">search</span></button>
+        <button id="theme-btn" title="Toggle theme">☼</button>
+      </div>
+    </header>
+    <div class="main">
+      <aside class="sidebar">
+        <h4>Subsystems</h4>
+        <nav id="nav-subsystems"></nav>
+        <h4>Cross-cuts</h4>
+        <nav id="nav-crosscuts"></nav>
+        <div class="phase-strip" id="phase-strip">0 · 1 · 2 · 2.5 · 2.6 · 3 · 4 · 5 · v1.5</div>
+      </aside>
+      <main class="panel" id="panel">
+        <div style="color: var(--c-fg-3);">loading…</div>
+      </main>
+    </div>
+  </div>
+
+  <div class="search-overlay" id="search-overlay" role="dialog" aria-modal="true">
+    <div class="search-box">
+      <input type="text" id="search-input" placeholder="搜索 subsystem / invariant…" />
+      <div class="search-results" id="search-results"></div>
+    </div>
+  </div>
+
+  <div class="phase-card" id="phase-card" title="Open Phase timeline">
+    <div class="title">phases · click for timeline</div>
+    <div class="dots" id="phase-dots"></div>
+  </div>
+
+  <script>
+    const archiveData = [
+      // ─────────────── Subsystems ───────────────
+      {
+        slug: 'agent-loop',
+        kind: 'subsystem',
+        title: 'Agent Loop (ReAct)',
+        phaseTags: ['P1', 'P2', 'P2.6', 'M3'],
+        what: 'ReAct loop on the Service Worker: reason → tool → observe → loop. 一 task 一 mutex。',
+        whatLong: 'Agent 任务全在 Service Worker 上跑。每个 task 进 mutex；用户消息走 sidepanel→SW port；模型回流式输出，工具调用拆 ContentBlock IR 在 SW 内部传递，写 storage 时序列化成 string-only ChatMessage。',
+        how: [
+          { label: '入口', code: 'src/lib/agent/loop.ts → runAgentLoop()' },
+          { label: 'prompt 构造', code: 'src/lib/agent/prompt.ts' },
+          { label: '工具注册', code: 'src/lib/agent/tools/registry.ts' },
+          { label: '滑窗压缩', code: 'src/lib/agent/sliding-window.ts' },
+          { label: 'wire type', code: 'AgentMessage (IR) vs ChatMessage (string-only)' },
+        ],
+        why: [
+          { decision: '为什么 ReAct 而不是 plan-and-execute', rationale: '页面状态高度动态，计划在执行前就失效；ReAct 每轮重新观察更稳。' },
+          { decision: '为什么 loop 跑在 SW 上而不是 sidepanel', rationale: 'sidepanel 随窗口关闭，SW 才有任务持久性；keep-alive 25s getPlatformInfo() 续命。' },
+          { decision: '为什么 IR 用 ContentBlock 但 wire 序列化成 string', rationale: '渲染层不应感知 LLM 协议；写盘也只持 raw agentMessages，redact 在 panel 渲染时做。' },
+        ],
+        flow: {
+          nodes: [
+            { id: 'user', label: 'user msg', x: 30, y: 30 },
+            { id: 'reason', label: 'reason', x: 170, y: 30 },
+            { id: 'tool', label: 'tool?', x: 310, y: 30 },
+            { id: 'done', label: 'done', x: 450, y: 30 },
+            { id: 'exec', label: 'execute', x: 310, y: 110 },
+            { id: 'observe', label: 'observe', x: 170, y: 110 },
+          ],
+          edges: [
+            { from: 'user', to: 'reason' },
+            { from: 'reason', to: 'tool' },
+            { from: 'tool', to: 'done', label: 'no' },
+            { from: 'tool', to: 'exec', label: 'yes' },
+            { from: 'exec', to: 'observe' },
+            { from: 'observe', to: 'reason' },
+          ],
+          bulletMap: { reason: 1, tool: 2, observe: 3, exec: 2 },
+        },
+        invariants: [
+          { tag: 'P3-A', text: 'tabId+origin pinned at task start；每轮 origin 重检' },
+          { tag: 'P3-F', text: 'one task = one mutex on SW' },
+          { tag: 'M3-U1', text: 'ChatMessage wire = string-only；AgentMessage IR 仅 SW 内部' },
+          { tag: 'R14', text: 'image input + unsupported model → task paused → failed' },
+        ],
+      },
+
+      {
+        slug: 'provider-router',
+        kind: 'subsystem',
+        title: 'Provider × Model Router',
+        phaseTags: ['P1', 'P2', 'P5'],
+        what: '8 个 provider 通过 registry + id-keyed dispatch 走统一接口。OpenAI-compat 共享 core，Anthropic/Gemini 走 native。',
+        whatLong: 'Provider registry 记录 metadata (capability flags / defaultBaseUrl)；dispatch 按 provider id 路由到对应模块。5 家 OpenAI-compat 走 _shared/openai-compat-core.ts。Custom provider 一律 OpenAI-compat。加 provider = registry entry + 模块文件 + manifest host_permission。',
+        how: [
+          { label: 'registry', code: 'src/lib/model-router/registry.ts' },
+          { label: 'dispatch', code: 'src/lib/model-router/providers/index.ts' },
+          { label: 'shared core', code: 'providers/_shared/openai-compat-core.ts' },
+          { label: 'native', code: 'providers/anthropic.ts · providers/gemini.ts' },
+          { label: 'model fetch', code: 'src/lib/openrouter-models-fetch.ts' },
+        ],
+        why: [
+          { decision: '为什么 id-keyed dispatch 而不是 provider 自注册', rationale: 'TypeScript exhaustiveness 检查能锁住；加 provider 必经改 dispatch 表，避免漏。' },
+          { decision: '为什么 5 家共享 OpenAI-compat core 而不是各写各的', rationale: '少 5 份 SSE 解析 / retry / auth header 重复；OpenRouter 用 hooks 加自家 headers。' },
+          { decision: '为什么 baseUrl 锁在 provider 层不让 instance override', rationale: 'V1→V2 migration 静默丢弃用户手填 baseUrl；信任模型只依赖 official endpoint。' },
+        ],
+        flow: {
+          nodes: [
+            { id: 'app', label: 'UI', x: 30, y: 60 },
+            { id: 'reg', label: 'registry', x: 170, y: 60 },
+            { id: 'disp', label: 'dispatch', x: 310, y: 60 },
+            { id: 'shared', label: 'oai-compat', x: 450, y: 20 },
+            { id: 'native', label: 'native', x: 450, y: 100 },
+          ],
+          edges: [
+            { from: 'app', to: 'reg' },
+            { from: 'reg', to: 'disp' },
+            { from: 'disp', to: 'shared', label: 'oai' },
+            { from: 'disp', to: 'native', label: 'anthropic/gemini' },
+          ],
+          bulletMap: { reg: 0, disp: 1, shared: 2, native: 3 },
+        },
+        invariants: [
+          { tag: 'P-REG-1', text: 'capability flags (vision / tools / maxContextTokens) 在 ModelMeta per-model' },
+          { tag: 'P-REG-2', text: 'custom provider baseUrl 在 provider 层定义；instance 不能 override' },
+          { tag: 'P-REG-3', text: 'custom provider 一律走 OpenAI-compat wire（无 hooks）' },
+          { tag: 'P-REG-4', text: '<all_urls> host_permission 是 custom provider fetch 的前提' },
+        ],
+      },
+
+      {
+        slug: 'multi-instance',
+        kind: 'subsystem',
+        title: 'Multi-Instance Config',
+        phaseTags: ['P5'],
+        what: '同 provider × N 个独立 instance：每个有独立 nickname / model / apiKey。AES-GCM 加密落 chrome.storage.local。',
+        whatLong: 'Instance 用 UUID 作 key (instance_${uuid})，索引在 instances_index，全局选中走 active_instance_id。Session 可 override 当前 instance。Task start 时 SW snapshot ModelConfig 到 checkpoint，中途换 active 不影响 in-flight loop。',
+        how: [
+          { label: '存储', code: 'src/lib/instances.ts → CRUD on instance_${uuid}' },
+          { label: '加密', code: 'src/lib/crypto.ts (Web Crypto AES-GCM)' },
+          { label: 'V1→V2', code: 'src/lib/migration-v2.ts (静默丢弃 baseUrl)' },
+          { label: 'custom model 池', code: 'provider-custom-models.ts (pcm_${provider})' },
+        ],
+        why: [
+          { decision: '为什么 instance 而不是 provider × model 二维', rationale: '用户可能有 2 把 OpenAI key（个人 + 公司），需要 nickname 区分。Session 选 instance 比选 provider/model 自然。' },
+          { decision: '为什么加密密钥也存 local', rationale: 'BYOK 信任模型 = 本机即信任域；远程同步密钥反而扩攻击面。' },
+          { decision: '为什么 task 开始 snapshot ModelConfig 进 checkpoint', rationale: '中途换 instance 不应改变正在跑的 loop 的模型；下一个 task 才用新 config。' },
+        ],
+        flow: {
+          nodes: [
+            { id: 'ui', label: 'Settings', x: 30, y: 60 },
+            { id: 'inst', label: 'instances_index', x: 170, y: 60 },
+            { id: 'enc', label: 'AES-GCM', x: 310, y: 60 },
+            { id: 'store', label: 'local storage', x: 450, y: 60 },
+          ],
+          edges: [
+            { from: 'ui', to: 'inst' },
+            { from: 'inst', to: 'enc' },
+            { from: 'enc', to: 'store' },
+          ],
+          bulletMap: { inst: 0, enc: 1, store: 0 },
+        },
+        invariants: [
+          { tag: 'P-INST-1', text: 'API keys 用 Web Crypto AES-GCM 加密落 chrome.storage.local' },
+          { tag: 'P-INST-2', text: 'V1→V2 migration 静默丢弃老用户手填的 baseUrl' },
+          { tag: 'P-INST-3', text: 'task start 时 snapshot ModelConfig；中途改 active 不影响 in-flight loop' },
+          { tag: 'P-INST-4', text: 'pcm_${provider} 跨 instance 共享自定义 model id 池' },
+        ],
+      },
+
+      {
+        slug: 'skills',
+        kind: 'subsystem',
+        title: 'Skills 框架',
+        phaseTags: ['P2', 'P2.6'],
+        what: 'Built-in skill + user CRUD。Skill 解析为 tools subset 注入 prompt。create_skill_from_recording 由 LLM 显式调用。',
+        whatLong: 'Skill 类型 + 存储 + builtin + resolveSkillToTools。Scope 当前已解禁；全局 skip-permissions toggle 决定首次执行是否弹 R10 二次 confirm（confirm 层已删后语义变弱）。create_skill 是 meta tool。',
+        how: [
+          { label: '类型', code: 'src/lib/skills/types.ts' },
+          { label: '存储', code: 'src/lib/skills/storage.ts' },
+          { label: 'builtin', code: 'src/lib/skills/builtin/' },
+          { label: 'resolve', code: 'resolveSkillToTools()' },
+          { label: 'meta tool', code: 'src/lib/agent/tools/skill-meta.ts' },
+        ],
+        why: [
+          { decision: '为什么 skill = tool subset 而不是 DSL', rationale: '复用 ReAct 已有的 tool calling 路径；不引入新解释器。' },
+          { decision: '为什么 builtin skill 也走 storage 接口', rationale: 'SkillsList UI 不必区分来源；编辑覆盖时 builtin 复本独立。' },
+          { decision: '为什么 create_skill_from_recording 走 LLM 而不是直接生成', rationale: '用户可加自由 prompt 改写录制；LLM 也填 description/tag；R10 二次 confirm 当 review。' },
+        ],
+        flow: {
+          nodes: [
+            { id: 'list', label: 'SkillsList', x: 30, y: 60 },
+            { id: 'res', label: 'resolve', x: 170, y: 60 },
+            { id: 'tools', label: 'tools subset', x: 310, y: 60 },
+            { id: 'agent', label: 'agent loop', x: 460, y: 60 },
+          ],
+          edges: [
+            { from: 'list', to: 'res' },
+            { from: 'res', to: 'tools' },
+            { from: 'tools', to: 'agent' },
+          ],
+          bulletMap: { res: 3, tools: 0, agent: 4 },
+        },
+        invariants: [
+          { tag: 'P2.6-S1', text: 'Skill scope 解禁；全局 skip-permissions toggle 控制 R10 二次 confirm' },
+          { tag: 'P2.6-S2', text: 'create_skill / create_skill_from_recording 是 meta tools 走 LLM 调用' },
+          { tag: 'P2.6-S3', text: '编辑 skill 直接覆盖；无 version 历史' },
+        ],
+      },
+
+      {
+        slug: 'sessions',
+        kind: 'subsystem',
+        title: 'Sessions / per-session sandbox',
+        phaseTags: ['M1', 'M2', 'M3'],
+        what: 'Multi-session 持久化 + per-session port + per-session pinnedTabs + ownerToken + cross-session lock。',
+        whatLong: 'M1 单 session 持久化 + SW restart recovery + R11 drift card。M2 multi-session UI drawer + LLM 标题 + LRU archive + 30d 硬删。M3 per-session port (chat-stream-${sessionId}) + per-session pinned tab/origin + R7 cross-session lock + CDP ownerToken {sessionId,tabId} + queueTabOp 串行化。',
+        how: [
+          { label: '状态机', code: 'src/lib/sessions/state-machine.ts' },
+          { label: '生命周期', code: 'lifecycle.ts (archive/delete)' },
+          { label: '标题', code: 'title.ts (LLM 生成)' },
+          { label: 'pinned 注册', code: 'pinned-tab-registry.ts' },
+          { label: 'writeAtomic', code: 'archive/restore 单调用原子写' },
+        ],
+        why: [
+          { decision: '为什么持久化 raw agentMessages 而不是 redacted', rationale: 'LLM resume 需要原始 context；redact 只在 panel 渲染时做。' },
+          { decision: '为什么 per-session port 而不是单 port + sessionId 字段', rationale: 'M3 多 session 并发；port 隔离让 sidepanel 端 routing 简单；老 port 死掉不影响其他 session。' },
+          { decision: '为什么 ownerToken 是 {sessionId, tabId} 复合', rationale: 'CDP debugger detach 时要确认是自己 attach 的；多 session 共享 tab 时只有发起 session 能 detach。' },
+        ],
+        flow: {
+          nodes: [
+            { id: 'panel', label: 'sidepanel', x: 30, y: 60 },
+            { id: 'port', label: 'per-session port', x: 180, y: 60 },
+            { id: 'sw', label: 'SW dispatch', x: 350, y: 60 },
+            { id: 'store', label: 'storage', x: 350, y: 130 },
+          ],
+          edges: [
+            { from: 'panel', to: 'port' },
+            { from: 'port', to: 'sw' },
+            { from: 'sw', to: 'store' },
+          ],
+          bulletMap: { port: 1, sw: 0, store: 4 },
+        },
+        invariants: [
+          { tag: 'M1-1', text: 'SW restart 检测未完成 task → 推 resume 卡到 Chat' },
+          { tag: 'M3-U2', text: 'per-session port chat-stream-${sessionId}' },
+          { tag: 'M3-U3', text: 'R7 cross-session lock 串行化 tab 操作' },
+          { tag: 'M3-U4', text: 'ownerToken = {sessionId, tabId} 用于 CDP attach/detach 鉴权' },
+          { tag: 'M3-U5', text: 'queueTabOp 串行化同 tab 上的并发请求' },
+        ],
+      },
+
+      {
+        slug: 'dom-cdp',
+        kind: 'subsystem',
+        title: 'DOM Actions + CDP Keyboard',
+        phaseTags: ['P1', 'P2.5'],
+        what: 'chrome.scripting.executeScript 注入 self-contained fn；CDP debugger 处理 canvas-based 编辑器键盘。',
+        whatLong: 'DOM 操作不走 content script，走 executeScript 一次性注入：闭包不可用，args 通过 executeScript 第二参数。CDP keyboard 给 Google Docs / Slides 等 canvas 编辑器用——它们不响应普通 click/keydown。CDP tools 永远 high risk。',
+        how: [
+          { label: 'DOM 注入', code: 'src/lib/dom-actions/ (一文件一 action)' },
+          { label: 'CDP keyboard', code: 'src/lib/agent/tools/keyboard.ts' },
+          { label: 'attach/detach', code: 'background/cdp-session.ts' },
+        ],
+        why: [
+          { decision: '为什么不写 content script', rationale: 'side-panel 常驻；activeTab 不够；<all_urls> host_permission + executeScript 更简单。' },
+          { decision: '为什么 injected fn 必须 self-contained', rationale: 'executeScript 隔离上下文，闭包变量取不到；args 只能通过参数传。' },
+          { decision: '为什么 CDP keyboard 永远 high', rationale: 'debugger API 越权风险大；与 R1/R2 confirm 模型矛盾，所以一律最高。' },
+        ],
+        flow: {
+          nodes: [
+            { id: 'agent', label: 'agent loop', x: 30, y: 60 },
+            { id: 'exec', label: 'executeScript', x: 200, y: 25 },
+            { id: 'cdp', label: 'CDP debugger', x: 200, y: 110 },
+            { id: 'page', label: 'target page', x: 380, y: 60 },
+          ],
+          edges: [
+            { from: 'agent', to: 'exec', label: 'DOM' },
+            { from: 'agent', to: 'cdp', label: 'canvas' },
+            { from: 'exec', to: 'page' },
+            { from: 'cdp', to: 'page' },
+          ],
+          bulletMap: { exec: 0, cdp: 1 },
+        },
+        invariants: [
+          { tag: 'P1-D1', text: 'injected fn 必须 self-contained；args 通过 executeScript 参数传' },
+          { tag: 'P2.5-K1', text: 'CDP keyboard tools 永远 high risk' },
+          { tag: 'K-8', text: 'verifyConfirmedOrigin bypass 当 confirm 记录不存在（post confirm-layer 删除）' },
+        ],
+      },
+
+      {
+        slug: 'cross-tab',
+        kind: 'subsystem',
+        title: 'Cross-Tab (Pinned + Origin)',
+        phaseTags: ['P3', 'v1.5'],
+        what: 'task 开始时 pin tabId+origin。Multi-pin v1.5 加 open_url / focus_tab。Origin 每轮重检。',
+        whatLong: 'pinnedTabs[] schema + currentFocusTabId。URL allow-list 只放 http/https。IDN punycode 显示防 homograph。所有 tab tools 在 risk.ts build-time check 锁住——TAB_TOOL_NAMES 必须出现在 ALWAYS_HIGH_TAB_TOOLS 或 ARGS_CONDITIONAL_TAB_TOOLS，否则 throw。',
+        how: [
+          { label: '工具', code: 'src/lib/agent/tools/tabs.ts' },
+          { label: 'pin 注册', code: 'sessions/pinned-tab-registry.ts' },
+          { label: 'tool 名常量', code: 'agent/tool-names.ts (build-time invariant)' },
+          { label: 'UI', code: 'PinnedTabDropdown (multi-select)' },
+        ],
+        why: [
+          { decision: '为什么 pin tabId AND origin', rationale: '只 pin tabId 防不了被 nav 走；只 pin origin 防不了同 origin 不同 tab。两个一起才稳。' },
+          { decision: '为什么 multi-pin 不做 cross-origin nav', rationale: 'pre-multi-pin review 暴露 4 个 invariant 互动复杂度（server-side redirect / pin-in-transit DoS / inTransitOrigin race / shared-pin broken）；推 v1.1 单独 brainstorm。' },
+          { decision: '为什么 IDN 显示用 punycode', rationale: '防 unicode homograph 假 URL 欺骗。' },
+        ],
+        flow: {
+          nodes: [
+            { id: 'task', label: 'task start', x: 30, y: 60 },
+            { id: 'pin', label: 'pin tab+origin', x: 170, y: 60 },
+            { id: 'loop', label: 'each round', x: 320, y: 60 },
+            { id: 'check', label: 'origin recheck', x: 460, y: 60 },
+          ],
+          edges: [
+            { from: 'task', to: 'pin' },
+            { from: 'pin', to: 'loop' },
+            { from: 'loop', to: 'check' },
+            { from: 'check', to: 'loop', label: 'ok' },
+          ],
+          bulletMap: { pin: 1, check: 2 },
+        },
+        invariants: [
+          { tag: 'P3-A', text: 'tabId+origin pinned at task start' },
+          { tag: 'P3-F', text: 'origin re-check every round' },
+          { tag: 'R6', text: 'URL allow-list 显式 protocol === http/https' },
+          { tag: 'R7', text: 'cross-session lock 防多 session 同时操作同 tab' },
+          { tag: 'v1.5', text: 'pinnedTabs[] + currentFocusTabId；IDN punycode 显示' },
+        ],
+      },
+
+      {
+        slug: 'multimodal',
+        kind: 'subsystem',
+        title: 'Multimodal (Vision)',
+        phaseTags: ['P5'],
+        what: '用户上传 ≤3 张 + LLM 调 screenshot tools。No-persist SW 缓存 30MB LRU。Anthropic/OpenAI/OpenRouter 三家 vision。',
+        whatLong: '用户路径：粘贴 / 拖拽 / 按钮 → auto-resize 1568px JPEG q85 + EXIF strip。LLM 路径：capture_visible_tab / capture_fullpage_tab 两个工具，always-high。SW per-session cache 30MB / last-3-turn LRU / 4 个 evict 路径。R14 fail-on-image：模型不支持 vision 时 task 进 paused → failed。',
+        how: [
+          { label: '用户上传', code: 'sidepanel/ChatInput image handler' },
+          { label: 'screenshot tools', code: 'tools/capture-*.ts (always-high)' },
+          { label: 'SW 缓存', code: 'background/image-cache.ts (no-persist LRU)' },
+          { label: 'untrusted boundary', code: 'R15 system prompt warn LLM about image' },
+        ],
+        why: [
+          { decision: '为什么 no-persist 而不是写盘', rationale: '图大、隐私敏感；用户上传图不需要 resume 也跨不了 session。30MB 缓冲足够 last-3-turn。' },
+          { decision: '为什么 capture tools always-high', rationale: '截屏会暴露当前页面整体上下文给 LLM，比单个 DOM action 信息泄漏面大。' },
+          { decision: '为什么 fail-on-image 而不是 silent-drop', rationale: 'silent drop 让用户以为模型看到了；fail-fast 强迫用户切换 instance。' },
+        ],
+        flow: {
+          nodes: [
+            { id: 'upload', label: 'user upload', x: 30, y: 20 },
+            { id: 'cap', label: 'LLM capture', x: 30, y: 110 },
+            { id: 'cache', label: 'SW cache 30MB', x: 220, y: 60 },
+            { id: 'send', label: 'send to provider', x: 410, y: 60 },
+          ],
+          edges: [
+            { from: 'upload', to: 'cache' },
+            { from: 'cap', to: 'cache' },
+            { from: 'cache', to: 'send' },
+          ],
+          bulletMap: { upload: 0, cap: 1, cache: 2 },
+        },
+        invariants: [
+          { tag: 'R14', text: 'image input + unsupported model = task paused → failed' },
+          { tag: 'R15', text: 'image untrusted boundary system prompt' },
+          { tag: 'P5-V1', text: '用户上传 auto-resize 1568px JPEG q85 + EXIF strip' },
+          { tag: 'P5-V2', text: 'SW cache 30MB / last-3-turn LRU / 4 evict 路径' },
+        ],
+      },
+
+      {
+        slug: 'untrusted',
+        kind: 'subsystem',
+        title: 'Prompt Injection 防御',
+        phaseTags: ['P2'],
+        what: '<untrusted_*> wrapper 是唯一 escape 入口；只进 user role，never 进 system role。',
+        whatLong: '页面 snapshot、tab metadata、用户消息这三类不可信内容统一用 <untrusted_page_content> / <untrusted_tab_metadata> / <untrusted_user_message> 包裹后进 user role。System role 保持纯净的 agent 指令。untrusted-wrappers.ts 是唯一构造入口，靠 build-time check 保证别处不能直接拼字符串。',
+        how: [
+          { label: '唯一入口', code: 'src/lib/agent/untrusted-wrappers.ts' },
+          { label: 'wire 校验', code: 'tool-names.ts build-time invariant' },
+          { label: 'prompt 构造', code: 'agent/prompt.ts (system 仅放 agent 指令)' },
+        ],
+        why: [
+          { decision: '为什么 wrapper 而不是 escape 字符', rationale: 'LLM 对 XML-like tag 更有"这是数据"语义直觉；纯 escape 容易被 prompt injection 反 escape。' },
+          { decision: '为什么 never 进 system role', rationale: 'system role 在多家 provider 都享有更高指令优先级；让外部输入污染 system 等于扩攻击面。' },
+          { decision: '为什么 user 消息也包', rationale: '用户消息可能被剪贴板劫持或自动化注入；统一 wrapper 简化模型对"哪段是 trust 哪段不是"的判断。' },
+        ],
+        flow: {
+          nodes: [
+            { id: 'page', label: 'page snapshot', x: 30, y: 20 },
+            { id: 'meta', label: 'tab metadata', x: 30, y: 75 },
+            { id: 'usr', label: 'user msg', x: 30, y: 130 },
+            { id: 'wrap', label: 'wrapper', x: 220, y: 75 },
+            { id: 'user', label: 'user role', x: 400, y: 75 },
+            { id: 'sys', label: 'system role', x: 400, y: 15 },
+          ],
+          edges: [
+            { from: 'page', to: 'wrap' },
+            { from: 'meta', to: 'wrap' },
+            { from: 'usr', to: 'wrap' },
+            { from: 'wrap', to: 'user' },
+          ],
+          bulletMap: { wrap: 0, user: 2, sys: 2 },
+        },
+        invariants: [
+          { tag: 'P2-U1', text: 'untrusted 内容 only 通过 untrusted-wrappers.ts 构造' },
+          { tag: 'P2-U2', text: 'untrusted wrappers never 进 system role' },
+          { tag: 'P2-U3', text: '页面 snapshot + tab metadata + user message 三类都要包' },
+        ],
+      },
+
+      {
+        slug: 'streaming',
+        kind: 'subsystem',
+        title: 'Streaming / Wire 协议',
+        phaseTags: ['P1', 'M3'],
+        what: 'chrome.runtime.connect() port，per-session 命名 chat-stream-${sessionId}。SSE parser 同时处理 \\n / \\r\\n。keep-alive 25s。',
+        whatLong: 'sendMessage 不能流式，必须 port。port 命名带 sessionId 让 multi-session 隔离。SSE 解析器要兼容两种换行因为不同 provider 不同。SW 25s 调一次 getPlatformInfo() 续命防 30s 自动停。',
+        how: [
+          { label: 'SW 端', code: 'src/background/chat-port.ts' },
+          { label: 'sidepanel 端', code: 'sidepanel/hooks/useChatStream.ts' },
+          { label: 'SSE parser', code: 'src/lib/model-router/sse.ts' },
+          { label: 'keep-alive', code: 'src/background/keep-alive.ts' },
+        ],
+        why: [
+          { decision: '为什么 port 不用 sendMessage', rationale: 'sendMessage 是 req-resp 一次性；流式 token 必须长连接。' },
+          { decision: '为什么 port 名带 sessionId', rationale: 'M3 multi-session 并发；老 port 死掉不影响其他 session；sidepanel 路由简单。' },
+          { decision: '为什么 SSE parser 处理 \\r\\n', rationale: '部分 provider gateway 把 \\n 转 \\r\\n；不处理会 block 在 buffer 等不到换行。' },
+        ],
+        flow: {
+          nodes: [
+            { id: 'panel', label: 'sidepanel', x: 30, y: 60 },
+            { id: 'port', label: 'chat-stream port', x: 170, y: 60 },
+            { id: 'sw', label: 'SW', x: 340, y: 60 },
+            { id: 'sse', label: 'SSE parser', x: 340, y: 130 },
+            { id: 'prov', label: 'provider', x: 480, y: 60 },
+          ],
+          edges: [
+            { from: 'panel', to: 'port' },
+            { from: 'port', to: 'sw' },
+            { from: 'sw', to: 'prov' },
+            { from: 'prov', to: 'sse' },
+            { from: 'sse', to: 'port', label: 'stream' },
+          ],
+          bulletMap: { port: 0, sw: 0, sse: 2 },
+        },
+        invariants: [
+          { tag: 'P1-S1', text: 'streaming 走 chrome.runtime.connect()，never sendMessage' },
+          { tag: 'P1-S2', text: 'SSE parser 同时处理 \\n 和 \\r\\n 行尾' },
+          { tag: 'P1-S3', text: 'keep-alive 25s 调 getPlatformInfo() 续命' },
+          { tag: 'M3-U2', text: 'port 命名 chat-stream-${sessionId} per-session 隔离' },
+        ],
+      },
+
+      {
+        slug: 'record-replay',
+        kind: 'subsystem',
+        title: 'Record & Replay',
+        phaseTags: ['P3+'],
+        what: 'sidepanel Record → DOM event capture → trace 作为 chip 注入 chat 输入框 → 用户加 prompt → LLM 显式调 create_skill_from_recording。',
+        whatLong: '回放完全复用 ReAct + click/type 工具路径，不写新执行引擎。R10 first-run confirm 卡片是 capability review surface。Phase 2.6 capability + Phase 3 cross-tab + M3 multi-session 全自动兼容。',
+        how: [
+          { label: '录制', code: 'src/sidepanel/record/capture.ts (DOM events)' },
+          { label: '注入', code: 'trace → chat input chip' },
+          { label: '创建', code: 'create_skill_from_recording (built-in skill)' },
+          { label: '回放', code: '复用 click/type tool path' },
+        ],
+        why: [
+          { decision: '为什么 trace 进 chat 让 LLM 创建 skill', rationale: '用户可加自由 prompt 改写录制；LLM 也填 description/tag；R10 二次 confirm 当 review。' },
+          { decision: '为什么不写独立回放引擎', rationale: 'click/type 工具已经稳；写新引擎要重做 cross-tab / multi-session / risk classifier 兼容。' },
+        ],
+        flow: {
+          nodes: [
+            { id: 'rec', label: 'Record btn', x: 30, y: 60 },
+            { id: 'cap', label: 'DOM capture', x: 170, y: 60 },
+            { id: 'chip', label: 'chip → chat', x: 320, y: 60 },
+            { id: 'llm', label: 'create_skill', x: 470, y: 60 },
+          ],
+          edges: [
+            { from: 'rec', to: 'cap' },
+            { from: 'cap', to: 'chip' },
+            { from: 'chip', to: 'llm' },
+          ],
+          bulletMap: { cap: 0, chip: 1, llm: 2 },
+        },
+        invariants: [
+          { tag: 'RR-1', text: '回放复用 click/type 工具路径；不写独立执行引擎' },
+          { tag: 'RR-2', text: 'R10 first-run confirm 是 capability review surface' },
+          { tag: 'RR-3', text: 'v1 仅单 tab；cross-tab 录制 v1.1 backlog' },
+        ],
+      },
+
+      // ─────────────── Cross-cuts ───────────────
+      {
+        slug: 'confirm-removed',
+        kind: 'crosscut',
+        title: 'Confirm 层删除变迁',
+        phaseTags: ['P2.5', 'P3', '2026-05-08'],
+        what: 'Risk classifier → confirm card → skip-permissions toggle → K-10 reject-3-strikes 全部撤回。Confirm 层 2026-05-08 彻底删除。',
+        whatLong: 'Phase 2.5 引入 risk classifier 区分 low/high 工具；P3 加 cross-origin / 敏感字段升级 + reject-3-strikes 防滥用。后来全局 skip-permissions toggle 出现，用户基本一直 on。2026-05-08 评估实际防御价值 vs UI confirm fatigue，决定彻底删 confirm 层。K-8 verifyConfirmedOrigin 改 bypass when no confirm record。',
+        how: [
+          { label: '删除 commit', code: '73d6d84 fix(tabs): bypass K-8 verifyConfirmedOrigin' },
+          { label: '前置 PR', code: 'feat/remove-confirm-layer (PR #48)' },
+          { label: '残留 wire', code: 'K-8 bypass 是 post-cleanup 兼容' },
+        ],
+        why: [
+          { decision: '为什么撤 confirm 而不是改设计', rationale: '所有用户 skip-permissions 都是 on；confirm fatigue 远大于实际防御价值。真正的安全护栏是 origin pin + URL allow-list + untrusted wrapper，confirm 是 UI 反复打断。' },
+          { decision: '为什么 K-8 bypass 而不是删 verifyConfirmedOrigin 整段', rationale: 'cross-tab 还在用 origin 验证；只删 confirm-driven 部分，留 origin check 本身。' },
+          { decision: '为什么不留 toggle 给愿意 confirm 的用户', rationale: '维护两条 path 的成本远超少数用户需求；未来可以用 skill 级别"询问后再继续"的 prompt pattern 替代。' },
+        ],
+        flow: {
+          nodes: [
+            { id: 'p25', label: 'P2.5 risk', x: 30, y: 60 },
+            { id: 'p3', label: 'P3 升级条件', x: 170, y: 60 },
+            { id: 'skip', label: 'skip toggle', x: 320, y: 60 },
+            { id: 'rm', label: '2026-05-08 删', x: 470, y: 60 },
+          ],
+          edges: [
+            { from: 'p25', to: 'p3' },
+            { from: 'p3', to: 'skip' },
+            { from: 'skip', to: 'rm' },
+          ],
+          bulletMap: { p25: 0, rm: 0 },
+        },
+        invariants: [
+          { tag: 'K-8', text: 'verifyConfirmedOrigin bypass 当 confirm 记录不存在（post confirm-layer removal）' },
+          { tag: 'POST-RM-1', text: '真正护栏是 origin pin + URL allow-list + untrusted wrapper；confirm 不再担任安全角色' },
+        ],
+      },
+
+      {
+        slug: 'phases',
+        kind: 'crosscut',
+        title: 'Phase 时间线',
+        phaseTags: ['*'],
+        what: 'Phase 0 → 1 → 2 → 2.5 → 2.6 → 3 → 4 (M1/M2/M3) → 5 (v1) → v1.5。每个 phase 加了什么 + 新增 invariant + 关键 PR。',
+        whatLong: '完整演进时间线。所有子系统都能 trace 回某个 phase。Backlog 不在这里，看 docs/ROADMAP.md。',
+        how: [
+          { label: 'source', code: 'docs/ROADMAP.md' },
+          { label: 'invariant', code: 'docs/solutions/*.md' },
+        ],
+        why: [
+          { decision: '为什么时间轴而不是分支图', rationale: '项目只有 main 一条主线；分支图会过度承诺 parallel work。' },
+        ],
+        flow: {
+          nodes: [
+            { id: 'p0', label: 'P0', x: 20, y: 60 },
+            { id: 'p1', label: 'P1', x: 80, y: 60 },
+            { id: 'p2', label: 'P2', x: 140, y: 60 },
+            { id: 'p25', label: 'P2.5', x: 200, y: 60 },
+            { id: 'p26', label: 'P2.6', x: 270, y: 60 },
+            { id: 'p3', label: 'P3', x: 340, y: 60 },
+            { id: 'p4', label: 'P4', x: 400, y: 60 },
+            { id: 'p5', label: 'P5', x: 460, y: 60 },
+            { id: 'v15', label: 'v1.5', x: 520, y: 60 },
+          ],
+          edges: [
+            { from: 'p0', to: 'p1' },
+            { from: 'p1', to: 'p2' },
+            { from: 'p2', to: 'p25' },
+            { from: 'p25', to: 'p26' },
+            { from: 'p26', to: 'p3' },
+            { from: 'p3', to: 'p4' },
+            { from: 'p4', to: 'p5' },
+            { from: 'p5', to: 'v15' },
+          ],
+          bulletMap: {},
+        },
+        invariants: [
+          { tag: 'P0', text: 'spike：扩展骨架 + side panel 启动 + 1 provider 验证' },
+          { tag: 'P1', text: '基础 Agent Loop + 多 provider + DOM actions + streaming + AES-GCM 加密' },
+          { tag: 'P2', text: 'Skills 框架 + untrusted-wrappers prompt injection 防御' },
+          { tag: 'P2.5', text: 'CDP keyboard for canvas editors + risk classifier (已撤)' },
+          { tag: 'P2.6', text: 'Skill scope + skill 自主 CRUD + skip-permissions toggle (已撤)' },
+          { tag: 'P3', text: 'cross-tab pinned tab + origin re-check + 工具 risk 升级矩阵 (已撤)' },
+          { tag: 'P4-M1', text: '单 session 持久化 + SW restart recovery + R11 drift card' },
+          { tag: 'P4-M2', text: 'multi-session UI drawer + LLM 标题 + LRU archive' },
+          { tag: 'P4-M3', text: 'per-session port + per-session pin + ownerToken + R7 lock' },
+          { tag: 'P5', text: '多模态：用户上传 + screenshot tools + R14 fail-on-image + R15 untrusted' },
+          { tag: 'v1.5', text: 'multi-pin + open_url + focus_tab + IDN punycode' },
+          { tag: '2026-05-08', text: 'Confirm 层彻底删除（risk / confirm card / skip toggle / reject-3-strikes）' },
+        ],
+      },
+    ];
+
+    // ───────────────────── render ─────────────────────
+
+    function escapeHtml(s) {
+      return String(s).replace(/[&<>"']/g, c => (
+        { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+      ));
+    }
+
+    function renderSidebar() {
+      const navSub = document.getElementById('nav-subsystems');
+      const navCross = document.getElementById('nav-crosscuts');
+      navSub.innerHTML = '';
+      navCross.innerHTML = '';
+      archiveData.forEach(d => {
+        const a = document.createElement('a');
+        a.href = '#' + d.slug;
+        a.dataset.slug = d.slug;
+        a.textContent = d.title;
+        (d.kind === 'crosscut' ? navCross : navSub).appendChild(a);
+      });
+    }
+
+    function setActiveSlug(slug) {
+      document.querySelectorAll('.sidebar nav a').forEach(a => {
+        a.classList.toggle('is-active', a.dataset.slug === slug);
+      });
+    }
+
+    function renderPanel(slug) {
+      const d = archiveData.find(x => x.slug === slug) || archiveData[0];
+      const panel = document.getElementById('panel');
+      panel.scrollTop = 0;
+      panel.innerHTML = `
+        <header>
+          <h1>${escapeHtml(d.title)}</h1>
+          <div class="tags">${d.phaseTags.map(t => `<span class="tag">${escapeHtml(t)}</span>`).join('')}</div>
+        </header>
+        <div class="section">
+          <div class="label">what</div>
+          <div class="body">
+            <p><strong>${escapeHtml(d.what)}</strong></p>
+            <p style="color: var(--c-fg-2)">${escapeHtml(d.whatLong)}</p>
+          </div>
+        </div>
+        <div class="section">
+          <div class="label">how</div>
+          <div class="body" id="how-list">
+            ${d.how.map((h, i) => `
+              <div class="bullet" data-bullet-index="${i}">
+                <div class="k">${escapeHtml(h.label)}</div>
+                <div><code>${escapeHtml(h.code)}</code></div>
+              </div>`).join('')}
+          </div>
+        </div>
+        <div class="section">
+          <div class="label">flow</div>
+          <div class="body" id="flow-host"></div>
+        </div>
+        <div class="section">
+          <div class="label">why</div>
+          <div class="body">
+            ${d.why.map(w => `
+              <div class="why-item">
+                <div class="decision">${escapeHtml(w.decision)}</div>
+                <div class="rationale">${escapeHtml(w.rationale)}</div>
+              </div>`).join('')}
+          </div>
+        </div>
+        <div class="section">
+          <div class="invariants-toggle" id="inv-toggle">▸ invariants (${d.invariants.length})</div>
+          <div class="invariants-list" id="inv-list">
+            ${d.invariants.map(inv => `
+              <div class="invariant">
+                <span class="tag">${escapeHtml(inv.tag)}</span>
+                <span>${escapeHtml(inv.text)}</span>
+              </div>`).join('')}
+          </div>
+        </div>
+      `;
+      setActiveSlug(d.slug);
+      renderFlow(d);
+      renderPhaseCard(d);
+      const tog = document.getElementById('inv-toggle');
+      const list = document.getElementById('inv-list');
+      tog.addEventListener('click', () => {
+        const open = list.classList.toggle('is-open');
+        tog.textContent = `${open ? '▾' : '▸'} invariants (${d.invariants.length})`;
+      });
+    }
+
+    function renderFlow(d) {
+      const host = document.getElementById('flow-host');
+      if (!d.flow || !d.flow.nodes.length) { host.innerHTML = ''; return; }
+      const { nodes, edges, bulletMap } = d.flow;
+      const W = 600, H = 180, NW = 110, NH = 28;
+      const nodeById = Object.fromEntries(nodes.map(n => [n.id, n]));
+      const edgePath = (a, b) => {
+        const ax = a.x + NW / 2, ay = a.y + NH / 2;
+        const bx = b.x + NW / 2, by = b.y + NH / 2;
+        const dx = bx - ax, dy = by - ay;
+        const len = Math.sqrt(dx * dx + dy * dy);
+        if (len === 0) return `M${ax},${ay}`;
+        const padA = Math.min(NW / 2 + 2, Math.abs(dx) > Math.abs(dy) ? NW / 2 + 2 : NH / 2 + 2);
+        const padB = Math.min(NW / 2 + 6, Math.abs(dx) > Math.abs(dy) ? NW / 2 + 6 : NH / 2 + 6);
+        const ux = dx / len, uy = dy / len;
+        return `M${ax + ux * padA},${ay + uy * padA} L${bx - ux * padB},${by - uy * padB}`;
+      };
+      const svg = `
+        <svg class="flow-svg" viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet">
+          <defs>
+            <marker id="arr" viewBox="0 0 10 10" refX="8" refY="5"
+                    markerWidth="6" markerHeight="6" orient="auto">
+              <path d="M0,0 L10,5 L0,10 z" fill="currentColor" />
+            </marker>
+          </defs>
+          <g style="color: var(--c-fg-3);">
+          ${edges.map(e => {
+            const a = nodeById[e.from], b = nodeById[e.to];
+            if (!a || !b) return '';
+            const mid = { x: (a.x + b.x) / 2 + NW / 2, y: (a.y + b.y) / 2 + NH / 2 };
+            return `
+              <path class="edge" d="${edgePath(a, b)}" marker-end="url(#arr)" />
+              ${e.label ? `<text class="edge-label" x="${mid.x + 4}" y="${mid.y - 4}">${escapeHtml(e.label)}</text>` : ''}
+            `;
+          }).join('')}
+          </g>
+          ${nodes.map(n => `
+            <g class="node" data-node-id="${n.id}">
+              <rect x="${n.x}" y="${n.y}" width="${NW}" height="${NH}" rx="3" />
+              <text x="${n.x + NW / 2}" y="${n.y + NH / 2 + 4}" text-anchor="middle">${escapeHtml(n.label)}</text>
+            </g>
+          `).join('')}
+        </svg>
+      `;
+      host.innerHTML = svg;
+      wireFlowHover(d);
+    }
+
+    function wireFlowHover(d) {
+      const map = d.flow.bulletMap || {};
+      const inv = {};
+      Object.entries(map).forEach(([nid, bi]) => { inv[bi] = (inv[bi] || []).concat(nid); });
+      document.querySelectorAll('.flow-svg .node').forEach(g => {
+        const nid = g.dataset.nodeId;
+        const bi = map[nid];
+        const bullet = bi != null ? document.querySelector(`[data-bullet-index="${bi}"]`) : null;
+        g.addEventListener('mouseenter', () => {
+          g.classList.add('is-hover');
+          if (bullet) bullet.classList.add('is-flow-hover');
+        });
+        g.addEventListener('mouseleave', () => {
+          g.classList.remove('is-hover');
+          if (bullet) bullet.classList.remove('is-flow-hover');
+        });
+      });
+      document.querySelectorAll('.bullet[data-bullet-index]').forEach(b => {
+        const bi = b.dataset.bulletIndex;
+        const linkedNodes = inv[bi] || [];
+        b.addEventListener('mouseenter', () => {
+          b.classList.add('is-flow-hover');
+          linkedNodes.forEach(nid => {
+            const node = document.querySelector(`.flow-svg .node[data-node-id="${nid}"]`);
+            if (node) node.classList.add('is-hover');
+          });
+        });
+        b.addEventListener('mouseleave', () => {
+          b.classList.remove('is-flow-hover');
+          linkedNodes.forEach(nid => {
+            const node = document.querySelector(`.flow-svg .node[data-node-id="${nid}"]`);
+            if (node) node.classList.remove('is-hover');
+          });
+        });
+      });
+    }
+
+    // ───────────────────── theme ─────────────────────
+
+    function applyTheme(theme) {
+      document.documentElement.setAttribute('data-theme', theme);
+      document.getElementById('theme-btn').textContent = theme === 'dark' ? '☾' : '☼';
+    }
+    function initTheme() {
+      const saved = localStorage.getItem('archiveTheme');
+      const prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+      applyTheme(saved || (prefersDark ? 'dark' : 'light'));
+      document.getElementById('theme-btn').addEventListener('click', () => {
+        const next = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+        applyTheme(next);
+        localStorage.setItem('archiveTheme', next);
+      });
+    }
+
+    // ───────────────────── search ─────────────────────
+
+    function matchHits(q) {
+      q = q.trim().toLowerCase();
+      if (!q) return [];
+      const hits = [];
+      archiveData.forEach(d => {
+        const hay = [
+          d.title,
+          d.what,
+          d.whatLong,
+          ...(d.invariants || []).map(i => i.tag + ' ' + i.text),
+          ...(d.how || []).map(h => h.label + ' ' + h.code),
+        ];
+        const idx = hay.findIndex(h => (h || '').toLowerCase().includes(q));
+        if (idx >= 0) {
+          const text = hay[idx];
+          const i = text.toLowerCase().indexOf(q);
+          const snip = (i > 20 ? '…' : '') + text.slice(Math.max(0, i - 20), i + q.length + 50) + (i + q.length + 50 < text.length ? '…' : '');
+          hits.push({ slug: d.slug, title: d.title, snip });
+        }
+      });
+      return hits.slice(0, 10);
+    }
+
+    let focusedIdx = 0;
+    function renderHits(hits) {
+      const host = document.getElementById('search-results');
+      host.innerHTML = hits.map((h, i) => `
+        <div class="hit ${i === 0 ? 'is-focused' : ''}" data-slug="${escapeHtml(h.slug)}">
+          <div class="ttl">${escapeHtml(h.title)}</div>
+          <div class="snip">${escapeHtml(h.snip)}</div>
+        </div>`).join('');
+      host.querySelectorAll('.hit').forEach(el => {
+        el.addEventListener('click', () => {
+          location.hash = '#' + el.dataset.slug;
+          closeSearch();
+        });
+      });
+    }
+    function openSearch() {
+      const ov = document.getElementById('search-overlay');
+      ov.classList.add('is-open');
+      const input = document.getElementById('search-input');
+      input.value = '';
+      document.getElementById('search-results').innerHTML = '';
+      focusedIdx = 0;
+      setTimeout(() => input.focus(), 0);
+    }
+    function closeSearch() {
+      document.getElementById('search-overlay').classList.remove('is-open');
+    }
+    function initSearch() {
+      const input = document.getElementById('search-input');
+      document.getElementById('search-btn').addEventListener('click', openSearch);
+      document.addEventListener('keydown', e => {
+        if (e.key === '/' && document.activeElement.tagName !== 'INPUT' && !document.getElementById('search-overlay').classList.contains('is-open')) {
+          e.preventDefault();
+          openSearch();
+        } else if (e.key === 'Escape') {
+          closeSearch();
+        }
+      });
+      input.addEventListener('input', () => {
+        const hits = matchHits(input.value);
+        renderHits(hits);
+        focusedIdx = 0;
+      });
+      input.addEventListener('keydown', e => {
+        const hits = document.querySelectorAll('.search-results .hit');
+        if (!hits.length) return;
+        if (e.key === 'ArrowDown') {
+          e.preventDefault();
+          focusedIdx = (focusedIdx + 1) % hits.length;
+          hits.forEach((h, i) => h.classList.toggle('is-focused', i === focusedIdx));
+        } else if (e.key === 'ArrowUp') {
+          e.preventDefault();
+          focusedIdx = (focusedIdx - 1 + hits.length) % hits.length;
+          hits.forEach((h, i) => h.classList.toggle('is-focused', i === focusedIdx));
+        } else if (e.key === 'Enter') {
+          e.preventDefault();
+          const slug = hits[focusedIdx].dataset.slug;
+          location.hash = '#' + slug;
+          closeSearch();
+        }
+      });
+      document.getElementById('search-overlay').addEventListener('click', e => {
+        if (e.target.id === 'search-overlay') closeSearch();
+      });
+    }
+
+    // ───────────────────── phase card ─────────────────────
+
+    const PHASE_ORDER = ['P0', 'P1', 'P2', 'P2.5', 'P2.6', 'P3', 'P4', 'P5', 'v1.5'];
+    function phaseTagToBucket(tag) {
+      if (tag === '*') return null;
+      if (tag.startsWith('M')) return 'P4';
+      if (tag.startsWith('P4-M')) return 'P4';
+      if (tag === 'P3+') return 'P3';
+      if (PHASE_ORDER.includes(tag)) return tag;
+      const match = PHASE_ORDER.find(p => tag === p);
+      if (match) return match;
+      return null;
+    }
+    function renderPhaseCard(d) {
+      const active = new Set();
+      (d.phaseTags || []).forEach(t => {
+        const b = phaseTagToBucket(t);
+        if (b) active.add(b);
+      });
+      if (d.slug === 'phases') PHASE_ORDER.forEach(p => active.add(p));
+      const host = document.getElementById('phase-dots');
+      host.innerHTML = PHASE_ORDER.map(p => `<span class="dot ${active.has(p) ? 'is-active' : ''}">${p}</span>`).join('');
+    }
+    document.getElementById('phase-card').addEventListener('click', () => {
+      location.hash = '#phases';
+    });
+
+    // ───────────────────── boot ─────────────────────
+
+    function currentSlug() {
+      return location.hash.slice(1) || 'agent-loop';
+    }
+    function boot() {
+      renderSidebar();
+      initTheme();
+      initSearch();
+      renderPanel(currentSlug());
+      window.addEventListener('hashchange', () => renderPanel(currentSlug()));
+    }
+    boot();
+  </script>
+</body>
+</html>
