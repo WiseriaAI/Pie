@@ -913,3 +913,128 @@ describe("unmount lifecycle (#30)", () => {
     expect(portB.disconnect).toHaveBeenCalledTimes(1);
   });
 });
+
+// SW idle-out (MV3 ~30s 空闲后 SW 被 Chrome 终止) 让 panel 这侧的 port
+// 静默断开。如果不清 portsRef + 不重连，下一次 sendMessage 会在 dead port
+// 上 postMessage 抛 "Attempting to use a disconnected port object"，side
+// panel 卡死在 streaming 状态。
+describe("port lifecycle — SW idle-out / disconnect recovery", () => {
+  it("port disconnect 后 sendMessage 自动新建 port 并发送 chat-start", async () => {
+    const { result } = renderHook(() => useSession());
+    await waitFor(() => expect(result.current.ready).toBe(true));
+
+    expect(chromeMock.runtime.__ports).toHaveLength(1);
+    const stale = chromeMock.runtime.__ports[0]!;
+    // 模拟 SW idle-out — port 在 panel 侧静默断开。
+    act(() => stale.__triggerDisconnect());
+
+    act(() => result.current.sendMessage({ content: "after revival" }));
+
+    // 应该有第二条 port（lazy reconnect）。
+    expect(chromeMock.runtime.__ports).toHaveLength(2);
+    const fresh = chromeMock.runtime.__ports[1]!;
+    expect(fresh.name).toBe(`chat-stream-${result.current.sessionId}`);
+
+    // chat-start 落在新 port 上，旧 port 不再收到任何 chat-start。
+    const staleChatStart = stale.postMessage.mock.calls.find(
+      (c) => (c[0] as { type: string }).type === "chat-start",
+    );
+    expect(staleChatStart).toBeUndefined();
+    const freshChatStart = fresh.postMessage.mock.calls.find(
+      (c) => (c[0] as { type: string }).type === "chat-start",
+    );
+    expect(freshChatStart).toBeDefined();
+
+    expect(result.current.streaming).toBe(true);
+    expect(result.current.error).toBeNull();
+  });
+
+  it("postMessage 抛 disconnected 错时静默重连重发（用户透明）", async () => {
+    const { result } = renderHook(() => useSession());
+    await waitFor(() => expect(result.current.ready).toBe(true));
+
+    const stale = chromeMock.runtime.__ports[0]!;
+    // 模拟 race：port 还在 portsRef 但 postMessage 已抛 disconnected。
+    // 只有 chat-start 会抛（panel-mounted 已发完）。
+    stale.postMessage.mockImplementationOnce(() => {
+      throw new Error("Attempting to use a disconnected port object");
+    });
+
+    act(() => result.current.sendMessage({ content: "hello" }));
+
+    // 第一次 postMessage 在 stale 上失败 → lazy reconnect → 在新 port 上成功。
+    expect(chromeMock.runtime.__ports).toHaveLength(2);
+    const fresh = chromeMock.runtime.__ports[1]!;
+    const freshChatStart = fresh.postMessage.mock.calls.find(
+      (c) => (c[0] as { type: string }).type === "chat-start",
+    );
+    expect(freshChatStart).toBeDefined();
+    expect(result.current.streaming).toBe(true);
+    expect(result.current.error).toBeNull();
+  });
+
+  it("两次 postMessage 连续失败 → revert streaming + 写 error", async () => {
+    const { result } = renderHook(() => useSession());
+    await waitFor(() => expect(result.current.ready).toBe(true));
+
+    const mountPort = chromeMock.runtime.__ports[0]!;
+    mountPort.postMessage.mockImplementation(() => {
+      throw new Error("Attempting to use a disconnected port object");
+    });
+
+    // 让 lazy reconnect 后的新 port 也立刻抛错。完成测试后还原 connect
+    // 的 default 实现，避免污染后续 test（vi 不会自动 reset implementation）。
+    const origImpl = chromeMock.runtime.connect.getMockImplementation()!;
+    chromeMock.runtime.connect.mockImplementation((info) => {
+      const p = origImpl(info);
+      p.postMessage.mockImplementation(() => {
+        throw new Error("Attempting to use a disconnected port object");
+      });
+      return p;
+    });
+
+    try {
+      act(() => result.current.sendMessage({ content: "hello" }));
+
+      // streaming 必须 revert，否则 UI 永远卡在 spinner 上。
+      await waitFor(() => expect(result.current.streaming).toBe(false));
+      expect(result.current.error).toBe("无法连接到后台服务，请重试");
+      // 用户消息仍持久化（不丢），用户可重试。
+      expect(result.current.messages).toEqual([
+        { role: "user", content: "hello" },
+      ]);
+    } finally {
+      chromeMock.runtime.connect.mockImplementation(origImpl);
+    }
+  });
+
+  it("disconnect 时 portsRef 中身份不匹配的新 port 不被误删", async () => {
+    // 保护手动 reconnect 场景：sibling 重连可能已写入新 port，此时 stale
+    // disconnect 不该把新 port 从 portsRef 移除。createAndActivate 后旧
+    // session 的 port 仍然独立挂在 portsRef 里，断开旧 session 的 port
+    // 不应影响新 session。
+    const { result } = renderHook(() => useSession());
+    await waitFor(() => expect(result.current.ready).toBe(true));
+
+    const portA = chromeMock.runtime.__ports[0]!;
+    const idA = result.current.sessionId!;
+
+    let idB: string | null = null;
+    await act(async () => {
+      idB = await result.current.createAndActivate();
+    });
+    const portB = chromeMock.runtime.__ports[1]!;
+    expect(portB.name).toBe(`chat-stream-${idB}`);
+
+    // 断开 A 的 port — B 的 port 不该被波及，B 上 sendMessage 不重连。
+    act(() => portA.__triggerDisconnect());
+    act(() => result.current.sendMessage({ content: "on B" }));
+
+    expect(chromeMock.runtime.__ports).toHaveLength(2);
+    const bChatStart = portB.postMessage.mock.calls.find(
+      (c) => (c[0] as { type: string }).type === "chat-start",
+    );
+    expect(bChatStart).toBeDefined();
+    void idA; // silence unused
+  });
+});

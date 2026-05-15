@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ChatMessage } from "@/lib/model-router";
 import type { ImageAttachment } from "@/lib/images";
-import type { DisplayMessage, PortMessageToPanel } from "@/types";
+import type { DisplayMessage, PortMessageToPanel, PortMessageToWorker } from "@/types";
 import {
   createSession,
   getSessionMeta,
@@ -292,11 +292,68 @@ export function useSession(): UseSession {
     (id: string) => {
       const port = chrome.runtime.connect({ name: `chat-stream-${id}` });
       port.onMessage.addListener(portHandlers.handleMessage);
-      port.onDisconnect.addListener(portHandlers.makeDisconnectHandler(id));
-      port.postMessage({ type: "panel-mounted", sessionId: id });
+      const flushOnDisconnect = portHandlers.makeDisconnectHandler(id);
+      port.onDisconnect.addListener(() => {
+        // SW idle-out / crash 会让 port 在 panel 这侧静默断开。先丢掉 ref
+        // 再 flush，下一次 send 才会通过 getOrReconnectPort 拿到新 port，
+        // 而不是把消息塞进已经死掉的 handle 触发 "disconnected port" 抛错。
+        // 身份比对保护手动 reconnect 场景：sibling 重连可能已写入新 port。
+        if (portsRef.current.get(id) === port) {
+          portsRef.current.delete(id);
+        }
+        flushOnDisconnect();
+      });
+      // panel-mounted 的 postMessage 也包 try：极端竞态下新建的 port 可能
+      // 立刻死（SW 又在重启），不能让握手抛错冒出 connectPortFor —
+      // postWithReconnect 后续的 tryOnce 会再次失败并走 revert 路径。
+      try {
+        port.postMessage({ type: "panel-mounted", sessionId: id });
+      } catch (e) {
+        console.warn(`[useSession] panel-mounted failed on fresh port for session=${id}:`, e);
+      }
       return port;
     },
     [portHandlers],
+  );
+
+  // Lazy 重连：sendMessage / abort / resume / discard 共用。portsRef
+  // 里没 entry（mount 时未连接 / SW idle-out 后被 onDisconnect 清理）
+  // 时新建一条 port，否则复用现有的。
+  const getOrReconnectPort = useCallback(
+    (id: string): chrome.runtime.Port => {
+      const existing = portsRef.current.get(id);
+      if (existing) return existing;
+      const fresh = connectPortFor(id);
+      portsRef.current.set(id, fresh);
+      return fresh;
+    },
+    [connectPortFor],
+  );
+
+  // postMessage 容错：disconnected port 上 postMessage 抛同步错误。
+  // 一次失败静默重连重发；两次都失败返回 false 由 caller 决定如何 revert
+  // UI 状态。SW 重启对用户完全透明 —— 新 port 上 panel-mounted 会触发
+  // SW handlePanelMounted 从 storage 重建 session 状态。
+  const postWithReconnect = useCallback(
+    (id: string, payload: PortMessageToWorker): boolean => {
+      const tryOnce = (p: chrome.runtime.Port): boolean => {
+        try {
+          p.postMessage(payload);
+          return true;
+        } catch {
+          return false;
+        }
+      };
+      let port = getOrReconnectPort(id);
+      if (tryOnce(port)) return true;
+      if (portsRef.current.get(id) === port) {
+        portsRef.current.delete(id);
+        try { port.disconnect(); } catch {}
+      }
+      port = getOrReconnectPort(id);
+      return tryOnce(port);
+    },
+    [getOrReconnectPort],
   );
 
   useEffect(() => {
@@ -454,18 +511,15 @@ export function useSession(): UseSession {
   }, [sessionId]);
 
   // ── sendMessage ────────────────────────────────────────────────────
-  // M1-U4 — does NOT open a port; reuses the persistent one opened at
-  // mount. If the port has died (disconnect during a prior stream),
-  // sendMessage refuses rather than silently re-opening; the user can
-  // close + reopen the panel to recover. This keeps lifecycle simple
-  // and matches plan M1-U5's "SW death is observable" expectation.
+  // M1-U4 mount-immediate connection + transparent reconnect: panel mount
+  // 时建立 port，SW idle-out / 崩溃后 panel 这侧的 port 会自动断开 +
+  // 被 onDisconnect 从 portsRef 清掉。sendMessage 通过 postWithReconnect
+  // 自动 lazy 重连一次。两次都失败才 revert streaming 标记并暴露 error。
   const sendMessage = useCallback(
     (input: SendMessageInput) => {
       if (slotsRef.current.get(sessionIdRef.current ?? "")?.streaming) return;
       const id = sessionIdRef.current;
       if (!id) return;
-      const port = portsRef.current.get(sessionIdRef.current ?? "") ?? null;
-      if (!port) return;
       const userMessage: DisplayMessage = {
         role: "user",
         content: input.content,
@@ -542,11 +596,22 @@ export function useSession(): UseSession {
       // Fire-and-forget; failures are non-fatal.
       void persistMessagesById(id, updated);
 
-      port.postMessage({
+      const sent = postWithReconnect(id, {
         type: "chat-start",
         messages: chatMessages,
         sessionId: id,
       });
+      if (!sent) {
+        // SW 连续两次拒收（罕见：连重连后的新 port 也立刻死）→ 撤回
+        // streaming 状态让用户能再次发送。用户消息已经持久化到 storage，
+        // 不会丢；下次 sendMessage 会基于现有 messages 数组继续追加。
+        patchSlot(id, {
+          streaming: false,
+          streamFinished: true,
+          error: "无法连接到后台服务，请重试",
+        });
+        return;
+      }
 
       // M3-U2 (post-acceptance) — pin capture is a separate
       // fire-and-forget that ONLY patches pinnedTabId / pinnedOrigin
@@ -596,51 +661,45 @@ export function useSession(): UseSession {
         })();
       }
     },
-    [persistMessagesById, patchSlot],
+    [persistMessagesById, patchSlot, postWithReconnect],
   );
 
   const abort = useCallback(() => {
-    const port = portsRef.current.get(sessionIdRef.current ?? "") ?? null;
-    if (!port) return;
-    try {
-      port.postMessage({ type: "chat-abort" });
-    } catch {
-      // port may already be closing — non-fatal
-    }
-  }, []);
+    const id = sessionIdRef.current;
+    if (!id) return;
+    // chat-abort 走 lazy 重连：若 SW 已 idle-out，新建 port 让 SW 重启后
+    // 收到 abort（无运行 task 时 SW 静默忽略）。两次失败也无副作用 ——
+    // panel disconnect handler 已经把 streaming 翻成 false。
+    postWithReconnect(id, { type: "chat-abort" });
+  }, [postWithReconnect]);
 
   const resumeTask = useCallback(() => {
-    const port = portsRef.current.get(sessionIdRef.current ?? "") ?? null;
     const id = sessionIdRef.current;
-    if (!port || !id) return;
+    if (!id) return;
     patchSlot(id, {
       streaming: true,
       accumulated: "",
       streamFinished: false,
       error: null,
     });
-    try {
-      port.postMessage({ type: "resume-task", sessionId: id });
-    } catch {
-      // port may be in the process of closing — non-fatal
-      // If post fails, revert streaming flag so the UI doesn't get stuck
+    const sent = postWithReconnect(id, { type: "resume-task", sessionId: id });
+    if (!sent) {
+      // 两次重连均失败 — 撤回 streaming 标记，否则 UI 卡在 spinner。
       patchSlot(id, { streaming: false, streamFinished: true });
     }
-  }, [patchSlot]);
+  }, [patchSlot, postWithReconnect]);
 
   const discardTask = useCallback((confirmationId: string) => {
-    const port = portsRef.current.get(sessionIdRef.current ?? "") ?? null;
     const id = sessionIdRef.current;
-    if (!port || !id) return;
-    try {
-      port.postMessage({
-        type: "discard-task",
-        sessionId: id,
-        confirmationId,
-      });
-    } catch {
-      // port may be in the process of closing — non-fatal
-    }
+    if (!id) return;
+    // discard 是确认型操作，wire 失败不阻塞 panel 侧 resolved 标记：
+    // 即便 SW 没收到，下次 panel mount 时 confirmation 已被 panel
+    // 标 discarded，不会再追踪。
+    postWithReconnect(id, {
+      type: "discard-task",
+      sessionId: id,
+      confirmationId,
+    });
     patchSlot(id, (prev) => ({
       messages: prev.messages.map((m) =>
         m.role === "session-confirm" && m.confirmationId === confirmationId
@@ -648,7 +707,7 @@ export function useSession(): UseSession {
           : m,
       ),
     }));
-  }, [patchSlot]);
+  }, [patchSlot, postWithReconnect]);
 
   const clearMessages = useCallback(async () => {
     const id = sessionIdRef.current;
