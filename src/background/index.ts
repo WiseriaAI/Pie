@@ -459,8 +459,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         out = await handleQuoteElementCaptured(sender, message.payload);
       }
       if (!out) return;
-      for (const port of portsBySession.values()) {
-        try { port.postMessage(out); } catch { /* port closed */ }
+      // 每个 port 绑定一个 sessionId（port name = chat-stream-${sessionId}）。
+      // 派发时为每个 port 注入它自己的 sessionId，panel 的 port handler 才能
+      // 路由到对应 slot。
+      for (const [sessionId, port] of portsBySession.entries()) {
+        try { port.postMessage({ ...out, sessionId }); } catch { /* port closed */ }
       }
     })();
     return;
@@ -1108,6 +1111,11 @@ chrome.runtime.onConnect.addListener((port) => {
     port.disconnect();
     return;
   }
+
+  // quote-bridge dispatch (issue #38) needs sessionId→port mapping the moment the
+  // panel connects, not when a recording starts. Without this, quote-added never
+  // reaches the panel because the dispatch loop iterates an empty map.
+  portsBySession.set(portSessionId, port);
 
   // R13(c) evictOnSetActive removed (#30) — multi-session: a new port no
   // longer means the previous active session is exiting. Image-cache 30 MB

@@ -13,7 +13,7 @@ function newId(): string {
 export async function handleQuoteTextCaptured(
   sender: chrome.runtime.MessageSender,
   payload: QuoteTextCapturedMessage["payload"],
-): Promise<QuoteAddedMessage | null> {
+): Promise<Omit<QuoteAddedMessage, "sessionId"> | null> {
   const tabId = sender.tab?.id;
   if (typeof tabId !== "number") return null;
   const quote: Quote = {
@@ -29,7 +29,7 @@ export async function handleQuoteTextCaptured(
 export async function handleQuoteElementCaptured(
   sender: chrome.runtime.MessageSender,
   payload: QuoteElementCapturedMessage["payload"],
-): Promise<QuoteAddedMessage | null> {
+): Promise<Omit<QuoteAddedMessage, "sessionId"> | null> {
   const tabId = sender.tab?.id;
   if (typeof tabId !== "number") return null;
 

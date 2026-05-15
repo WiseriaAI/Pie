@@ -40,8 +40,10 @@ export type QuoteElementCapturedMessage = {
 };
 
 // --- SW → panel ---
+// sessionId 由 SW 派发时填入（每个 port 绑定一个 sessionId），panel 用它路由到对应 slot。
 export type QuoteAddedMessage = {
   type: "quote-added";
+  sessionId: string;
   quote: Quote;
 };
 

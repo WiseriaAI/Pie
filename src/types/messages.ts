@@ -1,6 +1,7 @@
 import type { ChatMessage } from "@/lib/model-router";
 import type { Attachment } from "@/lib/images";
 import type { CapturedActionPayload, RecordedAction } from "@/lib/recording/types";
+import type { QuoteAddedMessage } from "./quotes";
 
 // --- Page Content ---
 
@@ -416,4 +417,5 @@ export type PortMessageToPanel =
   | RecordingStartedBroadcast        // NEW
   | RecordingActionBroadcast         // NEW
   | RecordingFinishedBroadcast       // NEW
-  | RecordingAbortedBroadcast;       // NEW
+  | RecordingAbortedBroadcast        // NEW
+  | QuoteAddedMessage;               // issue #38

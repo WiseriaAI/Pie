@@ -14,7 +14,10 @@ function handleSelection(): void {
     return;
   }
   const range = sel.getRangeAt(sel.rangeCount - 1);
-  const rect = range.getBoundingClientRect();
+  // getBoundingClientRect 返回整个 range 的并集 bbox，多行/跨段时 right/top 会飘到最右上角
+  // 而不是结束 cursor 那行。用 getClientRects() 最后一个 rect = end cursor 所在行。
+  const rects = range.getClientRects();
+  const rect = rects.length > 0 ? rects[rects.length - 1] : range.getBoundingClientRect();
   showBubble({
     anchorTop: rect.top,
     anchorLeft: rect.right,
