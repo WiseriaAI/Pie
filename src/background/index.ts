@@ -467,6 +467,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.type === "quote-text-captured" || message.type === "quote-element-captured") {
+    // ROADMAP §14 v1.1 #4 — auto-open side panel on bubble click. Must run
+    // synchronously inside the onMessage handler to preserve the trusted
+    // user-gesture chain (bubble click → content sendMessage → here). Any
+    // await before this would invalidate the gesture and Chrome would reject
+    // sidePanel.open with "must be called in response to a user gesture".
+    const senderTabId = sender.tab?.id;
+    if (typeof senderTabId === "number") {
+      chrome.sidePanel.open({ tabId: senderTabId }).catch((e) => {
+        console.warn("[sw] sidePanel.open from quote bubble failed:", e);
+      });
+    }
     void (async () => {
       let out;
       if (message.type === "quote-text-captured") {
