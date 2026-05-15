@@ -388,3 +388,34 @@ GitHub `state:open` 的 3 条 feat 性 issue（虽未打 label，但标题均为
 - **P2 走 brainstorm 流程**：4 项各自需 brainstorm，与 §10/§11 已知 backlog 一同排队；优先级在 §12 #34 (P1) 之后
 - **P3 留给观察期**：先看哪几项的用户报告最多再选着做
 - **P4/P5 + 重复**：close issue 时点明，不入工作排期
+
+---
+
+## 14. Issue #38 v1.1 follow-ups + v2 backlog（页内引用 v1 ship 后已知 deferred）
+
+v1 SHIPPED 2026-05-15 (v0.10.0)。本节按 v1.1 collection / v2 独立 spec / 观察期 backlog 三批整理；来源 spec `docs/specs/2026-05-14-issue-38-page-content-reference-design.md` §9 + 2026-05-15 测试期间新发现。
+
+### v1.1 collection（小动作，单 PR 一周内）
+
+| 项 | 来源 | 备注 |
+|---|---|---|
+| **bubble 边界 right/left overflow fallback** | 测试新发现 | `floating-bubble.ts` 当前只处理 `anchorTop < 0` 时回退到下方，没处理 selection 贴 viewport 右边时 bubble 被裁掉；同样要补左边界 |
+| **stale content script self-heal** | 测试新发现 | 扩展 reload 后已打开的旧 tab content script 死了但 bubble 还能渲染、`chrome.runtime.sendMessage` 静默失败。两条修法：SW startup `chrome.scripting.executeScript` 主动 reinject 到 `chrome.tabs.query({})`；content script 自己 try/catch 包 sendMessage + `console.error` surface "Extension context invalidated"。前者要防重复 listener，后者只 surface 不自愈 |
+| **chip 容量 / BYOK token 收口** | spec §7.2 v1.1 backlog | reactive 上限三轴：chip 数量 / 总字符 / 总 image bytes；超出 → 阻止新增 + toast 提示。阈值待观察期定 |
+| **划词后自动展开 sidepanel** | spec §9 v1 不做（理由：mouseup 非 user gesture） | 复评：bubble click 是 trusted user gesture，`chrome.sidePanel.open({ tabId })` 应可直接调；spec §9 那条理由要更新 |
+| **引用快捷键** | spec §9 v1 不做 | manifest `commands` 字段，划词后按 ⌘⇧Q / Ctrl⇧Q 直接添加文字引用，免点 bubble |
+
+### v2 独立 spec（大工程，各自 brainstorm → plan → PR）
+
+| 项 | 来源 | 备注 |
+|---|---|---|
+| **C 智能组件边界高亮** | spec §9 | heuristic 算法：React fiber root 探测 / 语义化标签 / aria-label boundary。spec §9 明文写"单独 v2 项" |
+| **iframe 内容引用** | spec §9 | `all_frames: true` + 跨域 same-origin policy + nested frames + SW capture 多 frame 协议。content script 注入策略要重写 |
+| **Canvas / OCR 兜底** | spec §9 | tesseract.js（client）vs 服务端 OCR pipeline 选型；与 BYOK 成本模型协同 |
+
+### 观察期 backlog（先看用户实际使用再决策）
+
+| 项 | 来源 | 备注 |
+|---|---|---|
+| **chip 持久化** | spec §9 v1 不做（理由：跟"一次性引用"语义冲突） | 等用户反馈是否真有跨 SW restart / panel 重启保留 staged chip 的需求 |
+| **引用历史** | spec §9 v1 不做 | "看历史引用过什么" UI + storage 模型，需要单独 brainstorm |
