@@ -99,6 +99,12 @@ cleanupThinShellSkills().catch((e) =>
 // for broadcasting recording-action-broadcast back to the panel.
 const portsBySession = new Map<string, chrome.runtime.Port>();
 
+function dispatchQuoteAdded(out: { type: "quote-added"; quote: import("@/types").Quote }): void {
+  for (const [sessionId, port] of portsBySession.entries()) {
+    try { port.postMessage({ ...out, sessionId }); } catch { /* port closed */ }
+  }
+}
+
 function findRecordingSessionByTabId(tabId: number | undefined): RecordingSession | null {
   if (tabId === undefined) return null;
   for (const sess of recordingState.values()) {
@@ -489,12 +495,63 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       // 每个 port 绑定一个 sessionId（port name = chat-stream-${sessionId}）。
       // 派发时为每个 port 注入它自己的 sessionId，panel 的 port handler 才能
       // 路由到对应 slot。
-      for (const [sessionId, port] of portsBySession.entries()) {
-        try { port.postMessage({ ...out, sessionId }); } catch { /* port closed */ }
-      }
+      dispatchQuoteAdded(out);
     })();
     return;
   }
+});
+
+// ROADMAP §14 v1.1 #5 — keyboard shortcut for "add selection as quote".
+// manifest.commands["quote-selection"] declares the command (no
+// suggested_key; user binds it at chrome://extensions/shortcuts).
+// Flow: hotkey → onCommand → executeScript to read window.getSelection()
+// on the active tab → reuse handleQuoteTextCaptured + dispatchQuoteAdded
+// so the resulting chip and broadcast are identical to the bubble path.
+function extractCurrentSelectionForQuote(): { text: string; sourceUrl: string } | null {
+  const sel = window.getSelection();
+  if (!sel || sel.rangeCount === 0) return null;
+  const text = sel.toString().trim();
+  if (text.length === 0) return null;
+  return { text, sourceUrl: location.href };
+}
+
+chrome.commands.onCommand.addListener((command) => {
+  if (command !== "quote-selection") return;
+  void (async () => {
+    // Open side panel first so the user-gesture window is consumed before
+    // any tabs/scripting await drops it.
+    try {
+      const win = await chrome.windows.getCurrent();
+      if (typeof win.id === "number") {
+        await chrome.sidePanel.open({ windowId: win.id });
+      }
+    } catch (e) {
+      console.warn("[sw] sidePanel.open from shortcut failed:", e);
+    }
+
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (typeof tab?.id !== "number") return;
+
+    let payload: { text: string; sourceUrl: string } | null = null;
+    try {
+      const results = await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        func: extractCurrentSelectionForQuote,
+      });
+      payload = (results[0]?.result as typeof payload) ?? null;
+    } catch (e) {
+      console.warn("[sw] shortcut: selection extraction failed:", e);
+      return;
+    }
+    if (!payload) return;
+
+    const out = await handleQuoteTextCaptured(
+      { tab: { id: tab.id } } as chrome.runtime.MessageSender,
+      payload,
+    );
+    if (!out) return;
+    dispatchQuoteAdded(out);
+  })();
 });
 
 // --- M1-U4: panel-mounted handler ---
