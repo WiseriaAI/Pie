@@ -2,9 +2,12 @@ import { showBubble, hideBubble } from "./floating-bubble";
 
 let attached = false;
 
-function onMouseUp(): void {
+function handleSelection(): void {
   const sel = window.getSelection();
-  if (!sel || sel.rangeCount === 0) return;
+  if (!sel || sel.rangeCount === 0) {
+    hideBubble();
+    return;
+  }
   const text = sel.toString().trim();
   if (text.length === 0) {
     hideBubble();
@@ -24,11 +27,12 @@ function onMouseUp(): void {
   });
 }
 
+function onMouseUp(): void {
+  setTimeout(handleSelection, 0);
+}
+
 function onSelectionChange(): void {
-  const sel = window.getSelection();
-  if (!sel || sel.toString().trim().length === 0) {
-    hideBubble();
-  }
+  handleSelection();
 }
 
 export function attachSelectionListener(): void {

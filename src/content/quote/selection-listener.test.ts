@@ -1,9 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { attachSelectionListener, detachSelectionListener } from "./selection-listener";
+import { hideBubble } from "./floating-bubble";
 
 const sendMessageMock = vi.fn();
 
 beforeEach(() => {
+  vi.useFakeTimers();
   sendMessageMock.mockReset();
   document.body.innerHTML = "<p id='p'>Hello world</p>";
   // @ts-expect-error mock
@@ -13,6 +15,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   detachSelectionListener();
   window.getSelection()?.removeAllRanges();
 });
@@ -32,23 +35,30 @@ function selectRange(start: number, end: number) {
 }
 
 describe("selection listener", () => {
-  it("non-empty selection on mouseup → shows bubble", () => {
+  it("non-empty selection on mouseup → shows bubble after setTimeout", () => {
     attachSelectionListener();
     selectRange(0, 5);
+    // selectionchange fires during selectRange so bubble is already visible;
+    // clear it first (resets module state), then test mouseup path
+    hideBubble();
     window.dispatchEvent(new MouseEvent("mouseup"));
+    // bubble not shown yet (setTimeout not run)
+    expect(document.documentElement.querySelector("[data-pie-quote-bubble]")).toBeNull();
+    vi.runAllTimers();
     expect(document.documentElement.querySelector("[data-pie-quote-bubble]")).not.toBeNull();
   });
 
-  it("empty selection → no bubble", () => {
+  it("empty selection → no bubble (even after timers)", () => {
     attachSelectionListener();
     window.dispatchEvent(new MouseEvent("mouseup"));
+    vi.runAllTimers();
     expect(document.documentElement.querySelector("[data-pie-quote-bubble]")).toBeNull();
   });
 
   it("click bubble → sendMessage with selected text", async () => {
     attachSelectionListener();
     selectRange(0, 5);
-    window.dispatchEvent(new MouseEvent("mouseup"));
+    // selectionchange already triggered by selectRange → bubble should be visible
     const host = document.documentElement.querySelector("[data-pie-quote-bubble]");
     const btn = host!.shadowRoot!.querySelector("button") as HTMLButtonElement;
     btn.click();
@@ -58,10 +68,10 @@ describe("selection listener", () => {
     });
   });
 
-  it("selection cleared via selectionchange → bubble hides", async () => {
+  it("selection cleared via selectionchange → bubble hides", () => {
     attachSelectionListener();
     selectRange(0, 5);
-    window.dispatchEvent(new MouseEvent("mouseup"));
+    // selectionchange fires during selectRange → bubble visible
     expect(document.documentElement.querySelector("[data-pie-quote-bubble]")).not.toBeNull();
     window.getSelection()?.removeAllRanges();
     document.dispatchEvent(new Event("selectionchange"));
@@ -72,7 +82,7 @@ describe("selection listener", () => {
     attachSelectionListener();
     detachSelectionListener();
     selectRange(0, 5);
-    window.dispatchEvent(new MouseEvent("mouseup"));
+    // selectionchange fires during selectRange but listeners are detached
     expect(document.documentElement.querySelector("[data-pie-quote-bubble]")).toBeNull();
   });
 });
