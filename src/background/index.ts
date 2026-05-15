@@ -77,6 +77,12 @@ import {
 import { createKeepAlive, type KeepAlive } from "./keep-alive";
 import { cleanupLegacySkipPermissions } from "./cleanup-migration";
 import { cleanupThinShellSkills } from "@/lib/skills/migration-cleanup-thinshell";
+import {
+  handleQuoteTextCaptured,
+  handleQuoteElementCaptured,
+  broadcastPickerEnter,
+  broadcastPickerExit,
+} from "./quote-bridge";
 
 // Run V1→V2 migration once on SW load (idempotent via schema_version sentinel).
 migrateV1toV2().catch((e) => console.error("migration v2 failed", e));
@@ -442,6 +448,25 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === "extract-page") {
     handleExtractPage().then(sendResponse);
     return true; // async response
+  }
+
+  if (message.type === "quote-text-captured" || message.type === "quote-element-captured") {
+    void (async () => {
+      let out;
+      if (message.type === "quote-text-captured") {
+        out = await handleQuoteTextCaptured(sender, message.payload);
+      } else {
+        out = await handleQuoteElementCaptured(sender, message.payload);
+      }
+      if (!out) return;
+      // 每个 port 绑定一个 sessionId（port name = chat-stream-${sessionId}）。
+      // 派发时为每个 port 注入它自己的 sessionId，panel 的 port handler 才能
+      // 路由到对应 slot。
+      for (const [sessionId, port] of portsBySession.entries()) {
+        try { port.postMessage({ ...out, sessionId }); } catch { /* port closed */ }
+      }
+    })();
+    return;
   }
 });
 
@@ -1087,6 +1112,11 @@ chrome.runtime.onConnect.addListener((port) => {
     return;
   }
 
+  // quote-bridge dispatch (issue #38) needs sessionId→port mapping the moment the
+  // panel connects, not when a recording starts. Without this, quote-added never
+  // reaches the panel because the dispatch loop iterates an empty map.
+  portsBySession.set(portSessionId, port);
+
   // R13(c) evictOnSetActive removed (#30) — multi-session: a new port no
   // longer means the previous active session is exiting. Image-cache 30 MB
   // per-session LRU + R13(a) emitDone + R13(b) SW restart + R13(d) port
@@ -1227,6 +1257,10 @@ chrome.runtime.onConnect.addListener((port) => {
       handleRecordingDiscard(port, message).catch((e) => {
         console.warn(`[sw] recording-discard failed for session=${message.sessionId}:`, e);
       });
+    } else if (message.type === "picker:start") {
+      void broadcastPickerEnter((message as { tabId: number }).tabId);
+    } else if (message.type === "picker:stop") {
+      void broadcastPickerExit((message as { tabId: number }).tabId);
     }
   });
 

@@ -1,7 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ChatMessage } from "@/lib/model-router";
 import type { ImageAttachment } from "@/lib/images";
-import type { DisplayMessage, PortMessageToPanel, PortMessageToWorker } from "@/types";
+import type {
+  DisplayMessage,
+  PortMessageToPanel,
+  PortMessageToWorker,
+  Quote,
+} from "@/types";
 import {
   createSession,
   getSessionMeta,
@@ -125,6 +130,10 @@ interface SendMessageInput {
    *  sent to the SW. NOT persisted to storage (scrubber policy from
    *  ChatMessage R10 storage note applies). */
   attachments?: ImageAttachment[];
+  /** Issue #38 — quote chips that were staged at send time. The LLM-facing
+   *  wrapper text already lives in `expandedForLLM`; this is the structured
+   *  copy for the chat bubble to render without re-parsing. */
+  quotes?: Quote[];
 }
 
 export interface UseSession {
@@ -155,6 +164,8 @@ export interface UseSession {
   /** M2-U2 — transient toast from the SW (e.g. SEC-PLAN-009 flood warn).
    *  Rendered by Chat as a dismissable banner. Not persisted. */
   toast: { level: "warn" | "error" | "info"; text: string } | null;
+  /** Issue #38 v1 — per-session page content reference chips (not persisted). */
+  quotes: ReadonlyArray<Quote>;
   sendMessage: (input: SendMessageInput) => void;
   /** Sends a chat-abort message to the SW. Caller is responsible for
    *  guarding against rapid-fire aborts. */
@@ -195,6 +206,10 @@ export interface UseSession {
    * and removes all pinned tabs. No-op for 'task' mode (loop-managed)
    * or already-auto sessions. */
   clearUserPin: () => Promise<void>;
+  /** Issue #38 v1 — quote chip management methods. */
+  addQuote: (sessionId: string, q: Quote) => void;
+  removeQuote: (sessionId: string, quoteId: string) => void;
+  clearQuotes: (sessionId: string) => void;
   /** Recording v1 — exposes the active per-session port so useRecording can
    *  attach its own onMessage listener. Null until ready=true. */
   port: chrome.runtime.Port | null;
@@ -533,6 +548,7 @@ export function useSession(): UseSession {
         ...(input.attachments?.length
           ? { attachments: input.attachments }
           : {}),
+        ...(input.quotes?.length ? { quotes: input.quotes } : {}),
       };
       const currentMessages = slotsRef.current.get(id)?.messages ?? [];
       const updated = [...currentMessages, userMessage];
@@ -863,6 +879,22 @@ export function useSession(): UseSession {
     setPinnedTabsState(null);
   }, []);
 
+  // Issue #38 v1 — quote chip management
+  const addQuote = useCallback((sessionId: string, q: Quote) => {
+    slotsRef.current = withSlot(slotsRef.current, sessionId, (s) => ({ quotes: [...s.quotes, q] }));
+    setSlots(slotsRef.current);
+  }, []);
+
+  const removeQuote = useCallback((sessionId: string, quoteId: string) => {
+    slotsRef.current = withSlot(slotsRef.current, sessionId, (s) => ({ quotes: s.quotes.filter((q) => q.id !== quoteId) }));
+    setSlots(slotsRef.current);
+  }, []);
+
+  const clearQuotes = useCallback((sessionId: string) => {
+    slotsRef.current = withSlot(slotsRef.current, sessionId, { quotes: [] });
+    setSlots(slotsRef.current);
+  }, []);
+
   return {
     sessionId,
     port: sessionIdRef.current ? (portsRef.current.get(sessionIdRef.current) ?? null) : null,
@@ -875,6 +907,7 @@ export function useSession(): UseSession {
     streamingText: active.streamingText,
     error: active.error,
     toast: active.toast,
+    quotes: active.quotes,
     sendMessage,
     abort,
     resumeTask,
@@ -886,5 +919,8 @@ export function useSession(): UseSession {
     createAndActivate,
     togglePinTab,
     clearUserPin,
+    addQuote,
+    removeQuote,
+    clearQuotes,
   };
 }

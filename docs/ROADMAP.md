@@ -214,7 +214,7 @@ GitHub `state:open` 的 3 条 feat 性 issue（虽未打 label，但标题均为
 |---|---|---|---|
 | **P0** | [#30](https://github.com/WiseriaAI/Pie/issues/30) | feat(session): 并发会话支持 — 当前 task 后台继续 / 新建 session 不影响（M3-U6+） | ✅ **SHIPPED 2026-05-08** — panel state migration to per-session `Map<sessionId, T>` + slots/slotsRef hub + createPortHandlers factory + setActive/createAndActivate simplified + #29 streaming guard removed + SW R13(c) evictOnSetActive removed + SW keep-alive scoped to in-flight tasks. ~14 tasks / cross-layer regression for agent-done-task transit / 700+ tests pass / acceptance AC-1..AC-9 met. Closes §3 / §9 / §10 M3-U6+ anchors. Trace doc → `docs/solutions/2026-05-03-multi-session-invariant-trace.md` §M3-U6 (appended) |
 | **P1** | [#34](https://github.com/WiseriaAI/Pie/issues/34) | feat: agent working 中途可发送新指令，当前单次 loop 完成后参与后续循环 | scope 含糊 — 必须先 brainstorm 收窄 3 处：a) "插入"是覆盖原始 task 还是纯附加 / b) 是否要二次 confirm / c) 同 loop 后多条 pending 是合并提交还是分批。默认建议：纯附加（不动 task） + 不 confirm（输入即排队） + 多条按时序合并到下一轮 user role + 用 `[User Mid-Task Instruction]:` 标签让 LLM 区分。与 #30 互补但**应在 #30 之后启动**：当前单 port + 单 streaming state 的 architecture 下，pending queue 会和 #29 streaming guard 互锁；#30 ship 后 pending queue 自然 per-session 隔离 |
-| **P2** | [#38](https://github.com/WiseriaAI/Pie/issues/38) | feat: 输入时支持引用页内内容（组件元素、文字、图片）及划词显示组件 | 工作量最大、scope 最含糊、prompt-injection 风险最高。issue 含 4 个独立 feature 维度（DOM 元素引用 / 划词组件边界识别 / side panel 引用面板 / SPA+iframe+Canvas+OCR 兼容），任一都够独立 milestone。`src/content/` 当前是 placeholder（DOM 操作走 `executeScript`），引用功能需要常驻 content script 监听 selection / mousemove / click — 需先评估 ship 常驻 content script 的成本（vs 现有 `executeScript` 套路）+ 与 R15 image untrusted boundary 的协作。先 brainstorm 强制 narrow v1 — 推荐 v1 = 纯文字选中 → chat chip 注入 + 选中元素截图复用 Phase 5 image attach pipeline；v2 剥离组件边界 heuristic / iframe / Canvas+OCR。引用内容必须走 `<untrusted_page_content>` wrapper（同 R15 image boundary） |
+| ✅ | [#38](https://github.com/WiseriaAI/Pie/issues/38) | feat: 输入时支持引用页内内容（组件元素、文字、图片）及划词显示组件 | **SHIPPED 2026-05-15 v1** (v0.10.0) — A 文字 + B 元素截图 + D chip 行；首个常驻 content script。划词智能边界 / iframe / Canvas / OCR / 引用快捷键 推 v2。Spec `docs/specs/2026-05-14-issue-38-page-content-reference-design.md`；Plan `docs/plans/2026-05-14-issue-38-page-content-reference.md` |
 
 **Acceptance gate（3 条共用）**：
 - 都未单独 brainstorm 过；P0 的 issue body 最贴近 ready-to-plan，P1/P2 都需先走完整 brainstorm
@@ -274,6 +274,7 @@ GitHub `state:open` 的 3 条 feat 性 issue（虽未打 label，但标题均为
 - ✅ 自定义 OpenAI-compat Provider（§12）— 2026-05-07
 - ✅ 并发会话支持（§12 #30, P0）— 2026-05-08
 - ✅ §13 P1 quick wins（prompt drift + 软换行）— 2026-05-08 (PR #45)
+- ✅ 页内内容引用 v1（§12 #38）— 2026-05-15 (v0.10.0)
 
 ---
 
@@ -387,3 +388,34 @@ GitHub `state:open` 的 3 条 feat 性 issue（虽未打 label，但标题均为
 - **P2 走 brainstorm 流程**：4 项各自需 brainstorm，与 §10/§11 已知 backlog 一同排队；优先级在 §12 #34 (P1) 之后
 - **P3 留给观察期**：先看哪几项的用户报告最多再选着做
 - **P4/P5 + 重复**：close issue 时点明，不入工作排期
+
+---
+
+## 14. Issue #38 v1.1 follow-ups + v2 backlog（页内引用 v1 ship 后已知 deferred）
+
+v1 SHIPPED 2026-05-15 (v0.10.0)。本节按 v1.1 collection / v2 独立 spec / 观察期 backlog 三批整理；来源 spec `docs/specs/2026-05-14-issue-38-page-content-reference-design.md` §9 + 2026-05-15 测试期间新发现。
+
+### v1.1 collection（小动作，单 PR 一周内）
+
+| 项 | 来源 | 备注 |
+|---|---|---|
+| **bubble 边界 right/left overflow fallback** | 测试新发现 | `floating-bubble.ts` 当前只处理 `anchorTop < 0` 时回退到下方，没处理 selection 贴 viewport 右边时 bubble 被裁掉；同样要补左边界 |
+| **stale content script self-heal** | 测试新发现 | 扩展 reload 后已打开的旧 tab content script 死了但 bubble 还能渲染、`chrome.runtime.sendMessage` 静默失败。两条修法：SW startup `chrome.scripting.executeScript` 主动 reinject 到 `chrome.tabs.query({})`；content script 自己 try/catch 包 sendMessage + `console.error` surface "Extension context invalidated"。前者要防重复 listener，后者只 surface 不自愈 |
+| **chip 容量 / BYOK token 收口** | spec §7.2 v1.1 backlog | reactive 上限三轴：chip 数量 / 总字符 / 总 image bytes；超出 → 阻止新增 + toast 提示。阈值待观察期定 |
+| **划词后自动展开 sidepanel** | spec §9 v1 不做（理由：mouseup 非 user gesture） | 复评：bubble click 是 trusted user gesture，`chrome.sidePanel.open({ tabId })` 应可直接调；spec §9 那条理由要更新 |
+| **引用快捷键** | spec §9 v1 不做 | manifest `commands` 字段，划词后按 ⌘⇧Q / Ctrl⇧Q 直接添加文字引用，免点 bubble |
+
+### v2 独立 spec（大工程，各自 brainstorm → plan → PR）
+
+| 项 | 来源 | 备注 |
+|---|---|---|
+| **C 智能组件边界高亮** | spec §9 | heuristic 算法：React fiber root 探测 / 语义化标签 / aria-label boundary。spec §9 明文写"单独 v2 项" |
+| **iframe 内容引用** | spec §9 | `all_frames: true` + 跨域 same-origin policy + nested frames + SW capture 多 frame 协议。content script 注入策略要重写 |
+| **Canvas / OCR 兜底** | spec §9 | tesseract.js（client）vs 服务端 OCR pipeline 选型；与 BYOK 成本模型协同 |
+
+### 观察期 backlog（先看用户实际使用再决策）
+
+| 项 | 来源 | 备注 |
+|---|---|---|
+| **chip 持久化** | spec §9 v1 不做（理由：跟"一次性引用"语义冲突） | 等用户反馈是否真有跨 SW restart / panel 重启保留 staged chip 的需求 |
+| **引用历史** | spec §9 v1 不做 | "看历史引用过什么" UI + storage 模型，需要单独 brainstorm |

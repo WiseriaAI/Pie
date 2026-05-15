@@ -1,6 +1,7 @@
 import type { ChatMessage } from "@/lib/model-router";
 import type { Attachment } from "@/lib/images";
 import type { CapturedActionPayload, RecordedAction } from "@/lib/recording/types";
+import type { Quote, QuoteAddedMessage } from "./quotes";
 
 // --- Page Content ---
 
@@ -109,6 +110,12 @@ export type DisplayMessage =
        *  thumbnail; `image_placeholder` kind renders a '[图已释放]' badge
        *  (bytes stripped by R10 scrub at storage boundary). */
       attachments?: Attachment[];
+      /** Issue #38 — quote chips that were staged at send time. content already
+       *  has the wire-shape `<untrusted_page_*>` wrappers for LLM consumption;
+       *  this field is the structured copy so the panel can render the bubble's
+       *  quote block without re-parsing XML. Bytes-bearing (element imageDataUrl)
+       *  follow the same R10 scrub rules as attachments at storage boundary. */
+      quotes?: Quote[];
     }
   | { role: "assistant"; content: string }
   | {
@@ -416,4 +423,5 @@ export type PortMessageToPanel =
   | RecordingStartedBroadcast        // NEW
   | RecordingActionBroadcast         // NEW
   | RecordingFinishedBroadcast       // NEW
-  | RecordingAbortedBroadcast;       // NEW
+  | RecordingAbortedBroadcast        // NEW
+  | QuoteAddedMessage;               // issue #38
