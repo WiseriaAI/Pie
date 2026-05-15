@@ -76,6 +76,7 @@ import {
 } from "./abort-rotation";
 import { createKeepAlive, type KeepAlive } from "./keep-alive";
 import { cleanupLegacySkipPermissions } from "./cleanup-migration";
+import { reinjectAllTabs } from "./content-reinject";
 import { cleanupThinShellSkills } from "@/lib/skills/migration-cleanup-thinshell";
 import {
   handleQuoteTextCaptured,
@@ -185,6 +186,21 @@ chrome.runtime.onInstalled.addListener((details) => {
   recoveryReady.catch((e) => {
     console.warn("[sw] recovery on onInstalled failed:", e);
   });
+  // ROADMAP §14 v1.1 — re-inject content scripts into already-open tabs so
+  // they get a live runtime after extension reload/update. Without this,
+  // previously-open tabs would orphan and silently fail every sendMessage
+  // until the user manually refreshes the tab. Fire-and-forget; failures
+  // (restricted URLs, tab discarded) are counted in the result and
+  // surfaced via console.
+  reinjectAllTabs()
+    .then((res) => {
+      console.info(
+        `[sw] content reinject: ${res.injected} ok / ${res.skipped} skipped / ${res.failed} failed`,
+      );
+    })
+    .catch((e) => {
+      console.warn("[sw] content reinject failed:", e);
+    });
 });
 
 // M1-U5 — Chrome process startup recovery. NOTE: in MV3 this fires
