@@ -125,6 +125,10 @@ interface SendMessageInput {
    *  sent to the SW. NOT persisted to storage (scrubber policy from
    *  ChatMessage R10 storage note applies). */
   attachments?: ImageAttachment[];
+  /** Issue #38 — quote chips that were staged at send time. The LLM-facing
+   *  wrapper text already lives in `expandedForLLM`; this is the structured
+   *  copy for the chat bubble to render without re-parsing. */
+  quotes?: Quote[];
 }
 
 export interface UseSession {
@@ -485,6 +489,7 @@ export function useSession(): UseSession {
         ...(input.attachments?.length
           ? { attachments: input.attachments }
           : {}),
+        ...(input.quotes?.length ? { quotes: input.quotes } : {}),
       };
       const currentMessages = slotsRef.current.get(id)?.messages ?? [];
       const updated = [...currentMessages, userMessage];
