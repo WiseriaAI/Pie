@@ -896,10 +896,7 @@ After the skill completes, briefly summarize what was created (the user will see
 
       <div className="flex-1 overflow-y-auto">
         {messages.length === 0 && !streaming && !pageChanged ? (
-          <EmptyState
-            skills={enabledSkills.slice(0, 3)}
-            onPickSkill={(slug) => setInput(`/${slug} `)}
-          />
+          <EmptyState />
         ) : (
           <div className="flex flex-col gap-[18px] px-4 py-5">
             {pageChanged && (
@@ -1221,59 +1218,31 @@ After the skill completes, briefly summarize what was created (the user will see
 }
 
 
-function EmptyState({
-  skills,
-  onPickSkill,
-}: {
-  skills: SkillDefinition[];
-  onPickSkill: (slug: string) => void;
-}) {
+function EmptyState() {
   const t = useT();
+  const greeting = useMemo(() => {
+    const keys = [
+      "greeting1",
+      "greeting2",
+      "greeting3",
+      "greeting4",
+      "greeting5",
+      "greeting6",
+      "greeting7",
+    ] as const;
+    const pick = keys[Math.floor(Math.random() * keys.length)];
+    return t(`chat.${pick}` as const);
+  }, [t]);
   return (
-    <div className="flex flex-col gap-8 px-6 pb-6 pt-14">
-      <div className="flex flex-col gap-3">
-        <span className="caps text-fg-3">{t("chat.ready")}</span>
+    <div className="flex min-h-full flex-col items-center justify-center gap-3 px-6 text-center">
+      <div className="flex max-w-[280px] flex-col items-center gap-3">
         <h1 className="text-[24px] font-semibold leading-8 tracking-[-0.015em] text-fg-1">
-          {t("chat.readyHeadline")}
+          {greeting}
         </h1>
         <p className="text-[13px] leading-5 text-fg-2">
           {t("chat.readyDescription")}
         </p>
       </div>
-
-      {skills.length > 0 && (
-        <div className="flex flex-col gap-3">
-          <div className="flex items-baseline justify-between">
-            <span className="caps text-fg-3">{t("chat.suggested")}</span>
-            <span className="font-mono text-[10px] text-fg-3">{t("chat.forAll")}</span>
-          </div>
-          <div className="flex flex-col gap-px overflow-hidden rounded-lg border border-line bg-line">
-            {skills.map((s) => {
-              const slug = normalizeSkillSlashKey(s.name) || s.id;
-              const author = s.builtIn ? t("chat.authorTag.builtIn") : s.author === "agent" ? t("chat.authorTag.agent") : t("chat.authorTag.user");
-              return (
-                <button
-                  key={s.id}
-                  onClick={() => onPickSkill(slug)}
-                  className="flex flex-col gap-1 bg-surface px-4 py-3.5 text-left hover:bg-field"
-                >
-                  <div className="flex items-center gap-2.5">
-                    <code className="font-mono text-[12px] text-accent">/{slug}</code>
-                    <span className="ml-auto font-mono text-[10px] uppercase tracking-[0.08em] text-fg-3">
-                      {author}
-                    </span>
-                  </div>
-                  {s.description && (
-                    <span className="text-[12px] leading-[18px] text-fg-2">
-                      {s.description}
-                    </span>
-                  )}
-                </button>
-              );
-            })}
-          </div>
-        </div>
-      )}
     </div>
   );
 }
