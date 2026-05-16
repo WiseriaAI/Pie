@@ -103,7 +103,7 @@ export default function NewConfigWizard(props: Props) {
 
         {customProviders.length > 0 && (
           <div className="flex flex-col gap-1.5">
-            <span className="caps px-1 text-fg-3">CUSTOM PROVIDERS</span>
+            <span className="caps px-1 text-fg-3">{t("newConfigWizard.customProviders")}</span>
             {customProviders.map((cp) => (
               <button
                 key={cp.id}
@@ -122,7 +122,7 @@ export default function NewConfigWizard(props: Props) {
           onClick={() => setShowCustomForm(true)}
           className="flex items-center gap-2 self-start rounded border border-dashed border-line bg-transparent px-3 py-2 text-[12px] text-accent hover:bg-field"
         >
-          + New custom provider
+          {t("newConfigWizard.newCustomProvider")}
         </button>
 
         <div className="flex pt-1">
@@ -142,7 +142,7 @@ export default function NewConfigWizard(props: Props) {
   return (
     <div className="rounded-lg border border-line bg-canvas">
       <div className="border-b border-line px-3.5 py-2">
-        <div className="font-mono text-[10px] uppercase tracking-[0.12em] text-fg-3">STEP 2 — {metaName}</div>
+        <div className="font-mono text-[10px] uppercase tracking-[0.12em] text-fg-3">{t("newConfigWizard.step2Title", { name: metaName })}</div>
       </div>
       <InstanceForm
         mode="create"
@@ -152,7 +152,7 @@ export default function NewConfigWizard(props: Props) {
         fetchedModels={fetchedModels}
         fetchedAt={fetchedAt}
         isFetching={isFetching}
-        saveLabel="Create"
+        saveLabel={t("newConfigWizard.create")}
         onSave={(p) => props.onCreate(provider, p)}
         onTest={(p) => props.onTest(provider, p)}
         onAddCustomModel={async (id) => {
@@ -201,7 +201,7 @@ export default function NewConfigWizard(props: Props) {
               disabled={!canSave}
               className="rounded border border-line bg-transparent px-3 py-1.5 text-[11px] text-fg-2 hover:border-fg-3 disabled:opacity-30"
             >
-              Test
+              {t("common.test")}
             </button>
             <button
               type="button"

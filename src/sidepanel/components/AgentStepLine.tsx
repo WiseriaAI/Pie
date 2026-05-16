@@ -78,7 +78,7 @@ export default function AgentStepLine({
         <div className="ml-4 flex flex-col gap-1.5 border-l border-line pl-2.5 text-[11px]">
           {resolvedElement && (
             <div className="font-mono leading-4 text-fg-2">
-              <span className="text-fg-3">element </span>
+              <span className="text-fg-3">{t("agentStep.element")}</span>
               &lt;{resolvedElement.tag}&gt;
               {resolvedElement.text && (
                 <span className="text-fg-3">
@@ -93,21 +93,21 @@ export default function AgentStepLine({
             </div>
           )}
           <div>
-            <div className="font-mono text-[10px] uppercase tracking-[0.08em] text-fg-3">
-              args
-            </div>
+              <div className="font-mono text-[10px] uppercase tracking-[0.08em] text-fg-3">
+                {t("agentStep.args")}
+              </div>
             <pre className="mt-1 overflow-x-auto rounded border border-line bg-field p-2 font-mono leading-4 text-fg-2">
-              {safeStringify(args)}
+              {safeStringify(args, t("agentStep.nonSerializable"))}
             </pre>
           </div>
           {image && (
             <div>
               <div className="font-mono text-[10px] uppercase tracking-[0.08em] text-fg-3">
-                screenshot
+                {t("agentStep.screenshot")}
               </div>
               <img
                 src={`data:${image.mediaType};base64,${image.data}`}
-                alt={`screenshot ${image.width}x${image.height}`}
+                alt={t("agentStep.screenshotAlt", { width: image.width, height: image.height })}
                 className="mt-1 max-w-full rounded border border-line"
               />
             </div>
@@ -115,7 +115,7 @@ export default function AgentStepLine({
           {observation && (
             <div>
               <div className="font-mono text-[10px] uppercase tracking-[0.08em] text-fg-3">
-                observation
+                {t("agentStep.observation")}
               </div>
               <div className="mt-1 whitespace-pre-wrap leading-4 text-fg-2">
                 {observation}
@@ -129,10 +129,11 @@ export default function AgentStepLine({
 }
 
 function StatusDot({ status }: { status: "pending" | "ok" | "error" }) {
+  const tLoc = useT();
   if (status === "pending") {
     return (
       <span
-        aria-label="running"
+        aria-label={tLoc("agentStep.running")}
         className="relative flex h-3 w-3 flex-shrink-0 items-center justify-center"
       >
         <span className="absolute inset-0 rounded-full border border-accent-line" />
@@ -143,7 +144,7 @@ function StatusDot({ status }: { status: "pending" | "ok" | "error" }) {
   if (status === "error") {
     return (
       <span
-        aria-label="error"
+        aria-label={tLoc("agentStep.error")}
         className="flex h-3 w-3 flex-shrink-0 items-center justify-center"
       >
         <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
@@ -159,7 +160,7 @@ function StatusDot({ status }: { status: "pending" | "ok" | "error" }) {
   }
   return (
     <span
-      aria-label="ok"
+      aria-label={tLoc("agentStep.ok")}
       className="flex h-3 w-3 flex-shrink-0 items-center justify-center"
     >
       <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
@@ -187,10 +188,10 @@ function firstLine(s: string): string {
   return line.length > 80 ? line.slice(0, 77) + "..." : line;
 }
 
-function safeStringify(v: unknown): string {
+function safeStringify(v: unknown, fallback: string): string {
   try {
     return JSON.stringify(v, null, 2);
   } catch {
-    return "(non-serializable)";
+    return fallback;
   }
 }

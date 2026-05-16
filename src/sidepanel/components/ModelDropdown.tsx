@@ -115,11 +115,11 @@ export default function ModelDropdown(props: Props) {
                   className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-[12px] hover:bg-field ${m.id === props.value ? "bg-field" : ""}`}
                 >
                   <span className="font-mono text-fg-1">{m.id}</span>
-                  {m.meta?.vision && <span className="rounded bg-line px-1 text-[9px] text-fg-3">vision</span>}
-                  {m.meta?.tools && <span className="rounded bg-line px-1 text-[9px] text-fg-3">tools</span>}
+                  {m.meta?.vision && <span className="rounded bg-line px-1 text-[9px] text-fg-3">{t("modelDropdown.vision")}</span>}
+                  {m.meta?.tools && <span className="rounded bg-line px-1 text-[9px] text-fg-3">{t("modelDropdown.tools")}</span>}
                   {m.isCustom && (
                     <>
-                      <span className="rounded bg-line px-1 text-[9px] text-fg-3">custom</span>
+                      <span className="rounded bg-line px-1 text-[9px] text-fg-3">{t("modelDropdown.custom")}</span>
                       {props.onRemoveCustom && (
                         <span
                           onClick={(e) => { e.stopPropagation(); props.onRemoveCustom!(m.id); }}
@@ -151,7 +151,7 @@ export default function ModelDropdown(props: Props) {
                   autoFocus
                   value={draft}
                   onChange={(e) => setDraft(e.target.value)}
-                  placeholder="model id"
+                  placeholder={t("modelDropdown.modelIdPlaceholder")}
                   className="flex-1 rounded border border-line bg-field px-2 py-1 font-mono text-[11px] text-fg-1"
                 />
                 <button

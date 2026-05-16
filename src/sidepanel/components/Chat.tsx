@@ -263,7 +263,7 @@ export default function Chat({
   // we guard against clearing on mount by checking attachments.length.
   useEffect(() => {
     if (!supportsVision && attachments.length > 0) {
-      showLocalToast("Switched to a non-vision provider — pending images cleared.");
+      showLocalToast(t("chat.attachment.visionProviderCleared"));
       setAttachments([]);
     }
   }, [supportsVision]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -532,7 +532,7 @@ export default function Chat({
 
   const addFiles = async (files: File[]) => {
     if (!supportsVision) {
-      showLocalToast("Current provider does not support image input.");
+      showLocalToast(t("chat.attachment.attachImageNoVision"));
       return;
     }
     if (files.length === 0) {
@@ -541,13 +541,13 @@ export default function Chat({
       // clipboard carries text/uri-list / text/html, not a binary File).
       // User has to save the image to disk first and use the file picker.
       showLocalToast(
-        "Couldn't read image from clipboard. Save the image to disk and use the attach button.",
+        t("chat.attachment.clipboardUnsupported"),
       );
       return;
     }
     const room = MAX_IMAGES_PER_TURN - attachments.length;
     if (room <= 0) {
-      showLocalToast(`Max ${MAX_IMAGES_PER_TURN} images per message.`);
+      showLocalToast(t("chat.attachment.maxImagesPerMessage", { max: String(MAX_IMAGES_PER_TURN) }));
       return;
     }
     const slice = files.slice(0, room);
@@ -562,7 +562,7 @@ export default function Chat({
           return next;
         });
         if (!r.ok) {
-          showLocalToast(`Image rejected: ${r.reason}`);
+          showLocalToast(t("chat.attachment.imageRejected", { reason: r.reason }));
           continue;
         }
         const att: ImageAttachment = {
@@ -581,7 +581,7 @@ export default function Chat({
           next.delete(tempId);
           return next;
         });
-        showLocalToast("Image processing failed.");
+        showLocalToast(t("chat.attachment.imageProcessingFailed"));
       }
     }
   };
@@ -790,15 +790,15 @@ After the skill completes, briefly summarize what was created (the user will see
     return (
       <div className="flex h-full flex-col">
         <div className="flex flex-1 flex-col items-center justify-center gap-4 px-6 text-fg-2">
-          <span className="caps text-fg-3">NO API KEY</span>
+          <span className="caps text-fg-3">{t("chat.noApiKey")}</span>
           <p className="text-center text-[13px] leading-5">
-            Add an API key from any supported provider to start using the agent.
+            {t("chat.noApiKeyDescription")}
           </p>
           <button
             onClick={onOpenSettings}
             className="rounded-md bg-fg-1 px-4 py-2 text-[13px] font-medium text-canvas hover:opacity-90"
           >
-            Open Settings
+            {t("chat.openSettings")}
           </button>
         </div>
       </div>
@@ -809,7 +809,7 @@ After the skill completes, briefly summarize what was created (the user will see
     return (
       <div className="flex h-full flex-col">
         <div className="flex flex-1 items-center justify-center text-fg-3">
-          <span className="caps">LOADING</span>
+          <span className="caps">{t("chat.loading")}</span>
         </div>
       </div>
     );
@@ -830,12 +830,12 @@ After the skill completes, briefly summarize what was created (the user will see
               <button
                 type="button"
                 onClick={() => setPinDropdownOpen((v) => !v)}
-                aria-label="Open pinned tab selector"
+                aria-label={t("chat.pinnedTabSelector")}
                 aria-expanded={pinDropdownOpen}
                 className="flex flex-1 items-center gap-2 rounded px-1 py-0.5 text-left hover:bg-field"
               >
                 <span className="caps text-fg-3">
-                  {pinMode === "user" ? "PINNED ★" : isLocked ? "PINNED" : "PIN"}
+                  {pinMode === "user" ? t("chat.pinnedStar") : isLocked ? t("chat.pinned") : t("chat.pin")}
                 </span>
                 <span className="flex-1 truncate font-mono text-[11px] text-fg-2">
                   {displayPinnedOrigin}
@@ -866,7 +866,7 @@ After the skill completes, briefly summarize what was created (the user will see
           {!displayPinnedOrigin && <div className="flex-1" />}
           {streaming && stepCount > 0 && (
             <span className="font-mono text-[10px] uppercase tracking-[0.08em] text-accent tabular">
-              step {String(stepCount).padStart(2, "0")}
+              {t("chat.stepCount.one")} {String(stepCount).padStart(2, "0")}
             </span>
           )}
         </div>
@@ -879,17 +879,17 @@ After the skill completes, briefly summarize what was created (the user will see
       {session.status === "paused" && (
         <div className="flex flex-shrink-0 items-center justify-between gap-3 border-b border-warning-line bg-warning-tint px-4 py-2 text-[12px]">
           <div className="flex flex-col gap-0.5">
-            <span className="caps text-warning">PAUSED</span>
+            <span className="caps text-warning">{t("chat.paused")}</span>
             <span className="text-fg-1">
-              Task interrupted by service worker restart.
+              {t("chat.pausedDescription")}
             </span>
           </div>
           <button
             onClick={() => session.resumeTask()}
             className="rounded border border-warning-line bg-transparent px-3 py-1 font-mono text-[10px] uppercase tracking-[0.08em] text-warning hover:bg-warning-tint/60"
-            aria-label="Resume the paused task"
+            aria-label={t("chat.resumeTaskAria")}
           >
-            RESUME TASK
+            {t("chat.resumeTask")}
           </button>
         </div>
       )}
@@ -988,7 +988,7 @@ After the skill completes, briefly summarize what was created (the user will see
                 <button
                   type="button"
                   onClick={clearToast}
-                  aria-label="Dismiss notification"
+                  aria-label={t("chat.dismissNotification")}
                   style={{
                     background: "none",
                     border: "none",
@@ -1034,7 +1034,7 @@ After the skill completes, briefly summarize what was created (the user will see
           <button
             type="button"
             onClick={() => setAttachLocalToast(null)}
-            aria-label="Dismiss"
+            aria-label={t("common.dismiss")}
             style={{
               background: "none",
               border: "none",
@@ -1053,7 +1053,7 @@ After the skill completes, briefly summarize what was created (the user will see
 
       {/* Issue #38 v1 — quote chips row */}
       {quotes && quotes.length > 0 && (
-        <div aria-label="page content references" className="flex gap-2 px-4 pb-2 flex-wrap">
+        <div aria-label={t("chat.pageContentReferences")} className="flex gap-2 px-4 pb-2 flex-wrap">
           {quotes.map((q) => (
             <QuoteChip
               key={q.id}
@@ -1068,7 +1068,7 @@ After the skill completes, briefly summarize what was created (the user will see
       {(attachments.length > 0 || resizing.size > 0) && (
         <div
           role="list"
-          aria-label="image attachments"
+          aria-label={t("chat.attachment.imageAttachments")}
           className="flex gap-2 px-4 pb-2"
         >
           {[...resizing].map((id) => (
@@ -1087,7 +1087,7 @@ After the skill completes, briefly summarize what was created (the user will see
                 flexShrink: 0,
               }}
             >
-              <span aria-label="processing image" style={{ color: "var(--c-fg-3)", fontSize: 18 }}>
+              <span aria-label={t("chat.attachment.processingImage")} style={{ color: "var(--c-fg-3)", fontSize: 18 }}>
                 …
               </span>
             </div>
@@ -1107,7 +1107,7 @@ After the skill completes, briefly summarize what was created (the user will see
             >
               <img
                 src={`data:${a.mediaType};base64,${a.data}`}
-                alt="uploaded image preview"
+                alt={t("chat.attachment.uploadedImagePreview")}
                 width={64}
                 height={64}
                 style={{
@@ -1121,7 +1121,7 @@ After the skill completes, briefly summarize what was created (the user will see
               />
               <button
                 type="button"
-                aria-label="remove image"
+                aria-label={t("chat.attachment.removeImage")}
                 onClick={() => removeAttachment(a.id)}
                 style={{
                   position: "absolute",
@@ -1162,17 +1162,17 @@ After the skill completes, briefly summarize what was created (the user will see
             aria-hidden="true"
           />
           <span className="font-mono text-[10px] font-semibold tracking-[0.08em] text-pending">
-            REC
+            {t("chat.rec")}
           </span>
           <span className="text-fg-1">
             {pendingRecording.stepCount}
-            <span className="ml-1 text-fg-3">{pendingRecording.stepCount === 1 ? "step" : "steps"}</span>
+            <span className="ml-1 text-fg-3">{pendingRecording.stepCount === 1 ? t("chat.stepCount.one") : t("chat.stepCount.other")}</span>
           </span>
           <span className="text-fg-3">·</span>
           <span className="text-fg-2">{t("chat.recording.composeHint")}</span>
           <button
             type="button"
-            aria-label="discard recording"
+            aria-label={t("chat.recording.discardRecording")}
             data-testid="dismiss-pending-recording"
             onClick={() => onPendingRecordingConsumed?.()}
             className="ml-auto flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-full border border-line bg-canvas text-fg-2 hover:border-fg-3 hover:text-fg-1"
@@ -1228,28 +1228,29 @@ function EmptyState({
   skills: SkillDefinition[];
   onPickSkill: (slug: string) => void;
 }) {
+  const t = useT();
   return (
     <div className="flex flex-col gap-8 px-6 pb-6 pt-14">
       <div className="flex flex-col gap-3">
-        <span className="caps text-fg-3">READY</span>
+        <span className="caps text-fg-3">{t("chat.ready")}</span>
         <h1 className="text-[24px] font-semibold leading-8 tracking-[-0.015em] text-fg-1">
-          What should I do<br />on this page?
+          {t("chat.readyHeadline")}
         </h1>
         <p className="text-[13px] leading-5 text-fg-2">
-          I can read it, click around, fill forms, manage tabs. Anything risky waits for your approval.
+          {t("chat.readyDescription")}
         </p>
       </div>
 
       {skills.length > 0 && (
         <div className="flex flex-col gap-3">
           <div className="flex items-baseline justify-between">
-            <span className="caps text-fg-3">SUGGESTED</span>
-            <span className="font-mono text-[10px] text-fg-3">/ for all</span>
+            <span className="caps text-fg-3">{t("chat.suggested")}</span>
+            <span className="font-mono text-[10px] text-fg-3">{t("chat.forAll")}</span>
           </div>
           <div className="flex flex-col gap-px overflow-hidden rounded-lg border border-line bg-line">
             {skills.map((s) => {
               const slug = normalizeSkillSlashKey(s.name) || s.id;
-              const author = s.builtIn ? "BUILT-IN" : s.author === "agent" ? "AGENT" : "USER";
+              const author = s.builtIn ? t("chat.authorTag.builtIn") : s.author === "agent" ? t("chat.authorTag.agent") : t("chat.authorTag.user");
               return (
                 <button
                   key={s.id}
@@ -1278,14 +1279,15 @@ function EmptyState({
 }
 
 function PageChangedBanner({ onNewTask }: { onNewTask: () => void }) {
+  const t = useT();
   return (
     <div className="flex items-center justify-between rounded-md border border-line bg-surface px-3 py-2 text-[12px] text-fg-2">
-      <span>Page changed. Start fresh?</span>
+      <span>{t("chat.pageChangedBanner")}</span>
       <button
         onClick={onNewTask}
         className="rounded border border-line bg-field px-2 py-1 text-fg-1 hover:bg-line"
       >
-        New task
+        {t("chat.newTask")}
       </button>
     </div>
   );
@@ -1354,7 +1356,7 @@ function MessageBubble({
               <img
                 key={a.id}
                 src={`data:${a.mediaType};base64,${a.data}`}
-                alt="image attachment"
+                alt={t("chat.attachment.imageAttachment")}
                 width={Math.min(160, a.width)}
                 className="block rounded"
               />
@@ -1379,7 +1381,7 @@ function MessageBubble({
     <div className="flex flex-col gap-1.5">
       <div className="flex items-center gap-2">
         <div className="h-1 w-1 rounded-full bg-accent" />
-        <span className="caps text-fg-2">AGENT</span>
+        <span className="caps text-fg-2">{t("chat.agent")}</span>
       </div>
       <div className="text-[13px] leading-5 text-fg-1">
         <MarkdownContent content={message.content} />
@@ -1389,18 +1391,19 @@ function MessageBubble({
 }
 
 function WorkingIndicator() {
+  const t = useT();
   return (
     <div
       role="status"
       aria-live="polite"
-      aria-label="Agent is working"
+      aria-label={t("chat.agentWorking")}
       className="flex items-center gap-2 px-1 py-0.5"
     >
       <span className="relative flex h-2 w-2 items-center justify-center">
         <span className="absolute inset-0 animate-ping rounded-full bg-accent opacity-50" />
         <span className="relative h-1.5 w-1.5 rounded-full bg-accent" />
       </span>
-      <span className="caps text-fg-3">WORKING</span>
+      <span className="caps text-fg-3">{t("chat.working")}</span>
     </div>
   );
 }
@@ -1482,7 +1485,7 @@ function Composer({
             value={input}
             onChange={(e) => onChange(e.target.value)}
             onKeyDown={onKeyDown}
-            placeholder="Tell the agent what to do, or type / for skills…"
+            placeholder={t("chat.composerPlaceholder")}
             rows={3}
             disabled={streaming}
             className="min-h-[60px] resize-none bg-transparent text-[13px] leading-5 text-fg-1 placeholder:text-fg-3 disabled:opacity-50"
@@ -1561,16 +1564,16 @@ function Composer({
             {!streaming && (
               <button
                 type="button"
-                aria-label="attach image"
+                aria-label={t("chat.attachment.attachImage")}
                 disabled={!supportsVision || attachmentCount >= MAX_IMAGES_PER_TURN}
                 onClick={onAttachClick}
                 className="rounded border border-line px-1.5 py-1 text-fg-3 hover:border-fg-3 hover:text-fg-2 disabled:cursor-not-allowed disabled:opacity-40"
                 title={
                   !supportsVision
-                    ? "Current provider does not support image input"
+                    ? t("chat.attachment.attachImageNoVision")
                     : attachmentCount >= MAX_IMAGES_PER_TURN
-                      ? `Max ${MAX_IMAGES_PER_TURN} images per message`
-                      : "Attach image (or paste/drop)"
+                      ? t("chat.attachment.maxImagesPerMessage", { max: String(MAX_IMAGES_PER_TURN) })
+                      : t("chat.attachment.attachImageTitle")
                 }
               >
                 {/* Paperclip icon — Heroicons outline style */}
@@ -1593,10 +1596,10 @@ function Composer({
               <button
                 onClick={onStop}
                 className="rounded border border-warning-line bg-transparent px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.08em] text-warning hover:bg-warning-tint"
-                title="Cancel running task"
+                title={t("chat.cancelRunningTask")}
               >
                 <span className="mr-1 inline-block h-[5px] w-[5px] rounded-full bg-warning align-middle" />
-                STOP
+                {t("common.stop")}
               </button>
             ) : (
               <>
@@ -1608,12 +1611,12 @@ function Composer({
                     type="button"
                     onClick={onStartRecording}
                     disabled={recordingDisabled}
-                    title="Record DOM actions on this tab"
-                    aria-label="Start recording"
+                    title={t("chat.recordTitle")}
+                    aria-label={t("chat.startRecording")}
                     className="flex items-center gap-1.5 rounded border border-line px-2 py-1 font-mono text-[10px] tracking-[0.08em] text-fg-2 hover:border-fg-3 hover:text-fg-1 disabled:cursor-not-allowed disabled:opacity-40"
                   >
                     <span className="inline-block h-[5px] w-[5px] rounded-full bg-fg-3" />
-                    <span>REC</span>
+                    <span>{t("chat.rec")}</span>
                   </button>
                 )}
                 <button
@@ -1621,7 +1624,7 @@ function Composer({
                   disabled={!input.trim()}
                   className="flex items-center gap-1.5 rounded border border-line px-2.5 py-1 text-[11px] text-fg-2 hover:border-fg-3 hover:text-fg-1 disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  <span>Send</span>
+                  <span>{t("common.send")}</span>
                   <span className="font-mono text-[10px] text-fg-3">↵</span>
                 </button>
               </>
@@ -1631,8 +1634,8 @@ function Composer({
       </div>
       {/* Hint row OUTSIDE the box — no chip */}
       <div className="flex items-center gap-4 px-0.5 font-mono text-[10px] tracking-[0.08em] text-fg-3">
-        <span>/ skills</span>
-        <span>SHIFT ↵ NEWLINE</span>
+        <span>{t("chat.skillsHint")}</span>
+        <span>{t("chat.shiftNewline")}</span>
       </div>
     </div>
   );
