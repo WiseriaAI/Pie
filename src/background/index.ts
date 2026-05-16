@@ -8,7 +8,6 @@ import type {
   SessionConfirmRequestMessage,
   AgentDoneTaskMessage,
   DisplayMessage,
-  QuoteAddedMessage,
 } from "@/types";
 import type {
   AgentMessage,
@@ -78,6 +77,7 @@ import {
 import { createKeepAlive, type KeepAlive } from "./keep-alive";
 import { cleanupLegacySkipPermissions } from "./cleanup-migration";
 import { reinjectAllTabs } from "./content-reinject";
+import { dispatchQuoteAdded, drainPendingQuotesToPort } from "./quote-dispatch";
 import { cleanupThinShellSkills } from "@/lib/skills/migration-cleanup-thinshell";
 import {
   handleQuoteTextCaptured,
@@ -99,12 +99,6 @@ cleanupThinShellSkills().catch((e) =>
 // handler (capture inject sends sendMessage with no port reference) to find a port
 // for broadcasting recording-action-broadcast back to the panel.
 const portsBySession = new Map<string, chrome.runtime.Port>();
-
-function dispatchQuoteAdded(out: Omit<QuoteAddedMessage, "sessionId">): void {
-  for (const [sessionId, port] of portsBySession.entries()) {
-    try { port.postMessage({ ...out, sessionId }); } catch { /* port closed */ }
-  }
-}
 
 function findRecordingSessionByTabId(tabId: number | undefined): RecordingSession | null {
   if (tabId === undefined) return null;
@@ -495,8 +489,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       if (!out) return;
       // 每个 port 绑定一个 sessionId（port name = chat-stream-${sessionId}）。
       // 派发时为每个 port 注入它自己的 sessionId，panel 的 port handler 才能
-      // 路由到对应 slot。
-      dispatchQuoteAdded(out);
+      // 路由到对应 slot。如果 ports 为空（bubble click 触发 sidePanel.open
+      // 但 panel 还在 mount），dispatchQuoteAdded 会 stash，onConnect 时 drain。
+      dispatchQuoteAdded(out, portsBySession);
     })();
     return;
   }
@@ -553,7 +548,7 @@ chrome.commands.onCommand.addListener((command) => {
       payload,
     );
     if (!out) return;
-    dispatchQuoteAdded(out);
+    dispatchQuoteAdded(out, portsBySession);
   })();
 });
 
@@ -1203,6 +1198,12 @@ chrome.runtime.onConnect.addListener((port) => {
   // panel connects, not when a recording starts. Without this, quote-added never
   // reaches the panel because the dispatch loop iterates an empty map.
   portsBySession.set(portSessionId, port);
+
+  // v1.1 — drain any quote-added stashed while panel was booting (bubble click
+  // triggers sidePanel.open + dispatchQuoteAdded back-to-back; the dispatch
+  // happens before the panel's port connects). The new port's sessionId is the
+  // session the panel landed in, which is exactly where the chip belongs.
+  drainPendingQuotesToPort(portSessionId, port);
 
   // R13(c) evictOnSetActive removed (#30) — multi-session: a new port no
   // longer means the previous active session is exiting. Image-cache 30 MB
