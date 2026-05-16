@@ -32,6 +32,11 @@ export const zhCNDict = {
     },
   },
   chat: {
+    elementPicker: {
+      idle: "拾取页面元素",
+      active: "拾取中…（Esc 取消）",
+      activeAriaLabel: "拾取中（Esc 取消）",
+    },
     recording: {
       createSkillFromRecording: "📼 从录制创建 skill：{input}",
       createSkillFromRecordingWithStep: "📼 从录制创建 skill（{stepCount} 步）",

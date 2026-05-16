@@ -1462,6 +1462,7 @@ function Composer({
   onInstanceChange: (id: string) => void;
   onManageInstances: () => void;
 }) {
+  const t = useT();
   return (
     <div className="flex flex-shrink-0 flex-col gap-2 border-t border-line bg-canvas px-4 pb-4 pt-4">
       <div className="relative">
@@ -1535,14 +1536,14 @@ function Composer({
             {!streaming && onPickElement && (
               <button
                 type="button"
-                aria-label={pickerActive ? "拾取中（Esc 取消）" : "拾取页面元素"}
+                aria-label={pickerActive ? t("chat.elementPicker.activeAriaLabel") : t("chat.elementPicker.idle")}
                 onClick={onPickElement}
                 className={
                   pickerActive
                     ? "rounded border border-accent px-1.5 py-1 text-accent"
                     : "rounded border border-line px-1.5 py-1 text-fg-3 hover:border-fg-3 hover:text-fg-2"
                 }
-                title={pickerActive ? "拾取中：点击页面元素引用（Esc 取消）" : "拾取页面元素"}
+                title={pickerActive ? t("chat.elementPicker.active") : t("chat.elementPicker.idle")}
               >
                 {/* Hand silhouette (filled palm) — user-supplied icon */}
                 <svg

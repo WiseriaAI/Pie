@@ -29,6 +29,11 @@ export const enDict = {
     },
   },
   chat: {
+    elementPicker: {
+      idle: "Pick page element",
+      active: "Picking… (Esc to cancel)",
+      activeAriaLabel: "Picking (Esc to cancel)",
+    },
     recording: {
       createSkillFromRecording: "📼 Create skill from recording: {input}",
       createSkillFromRecordingWithStep: "📼 Create skill from recording ({stepCount} steps)",
