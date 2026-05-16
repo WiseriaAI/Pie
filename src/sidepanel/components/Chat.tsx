@@ -1220,7 +1220,7 @@ After the skill completes, briefly summarize what was created (the user will see
 
 function EmptyState() {
   const t = useT();
-  const greeting = useMemo(() => {
+  const greetingKey = useMemo(() => {
     const keys = [
       "greeting1",
       "greeting2",
@@ -1230,9 +1230,9 @@ function EmptyState() {
       "greeting6",
       "greeting7",
     ] as const;
-    const pick = keys[Math.floor(Math.random() * keys.length)];
-    return t(`chat.${pick}` as const);
-  }, [t]);
+    return keys[Math.floor(Math.random() * keys.length)];
+  }, []);
+  const greeting = t(`chat.${greetingKey}`);
   return (
     <div className="flex min-h-full flex-col items-center justify-center gap-3 px-6 text-center">
       <div className="flex max-w-[280px] flex-col items-center gap-3">
