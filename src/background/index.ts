@@ -8,6 +8,7 @@ import type {
   SessionConfirmRequestMessage,
   AgentDoneTaskMessage,
   DisplayMessage,
+  QuoteAddedMessage,
 } from "@/types";
 import type {
   AgentMessage,
@@ -99,7 +100,7 @@ cleanupThinShellSkills().catch((e) =>
 // for broadcasting recording-action-broadcast back to the panel.
 const portsBySession = new Map<string, chrome.runtime.Port>();
 
-function dispatchQuoteAdded(out: { type: "quote-added"; quote: import("@/types").Quote }): void {
+function dispatchQuoteAdded(out: Omit<QuoteAddedMessage, "sessionId">): void {
   for (const [sessionId, port] of portsBySession.entries()) {
     try { port.postMessage({ ...out, sessionId }); } catch { /* port closed */ }
   }
@@ -507,6 +508,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 // Flow: hotkey → onCommand → executeScript to read window.getSelection()
 // on the active tab → reuse handleQuoteTextCaptured + dispatchQuoteAdded
 // so the resulting chip and broadcast are identical to the bubble path.
+// Self-contained function injected via chrome.scripting.executeScript.
+// MUST NOT reference outer-scope identifiers (closures don't survive serialization).
 function extractCurrentSelectionForQuote(): { text: string; sourceUrl: string } | null {
   const sel = window.getSelection();
   if (!sel || sel.rangeCount === 0) return null;
