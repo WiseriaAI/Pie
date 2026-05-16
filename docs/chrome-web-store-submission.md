@@ -77,6 +77,20 @@ Copy-paste source for the CWS Developer Dashboard submission of `pie-0.5.0.zip`.
 
 ---
 
+## Permission: `webNavigation`
+
+> Pie uses `chrome.webNavigation` only inside user-invoked agent tasks and an opt-in recording feature — **never** as a background observer of browsing history. Three call sites:
+>
+> 1. **`getAllFrames` for cross-`iframe` DOM actions.** When a user-invoked agent tool needs to interact with a page that contains `iframe`s, Pie calls `chrome.webNavigation.getAllFrames({tabId})` once to enumerate the frame tree, then injects the DOM action via `chrome.scripting.executeScript` per frame. One-shot read at tool execution time — no listener, no polling. The target is always the active task's user-pinned tab.
+>
+> 2. **`onCommitted` / `onHistoryStateUpdated` for in-loop navigation-settle.** After running a tool that may cause navigation (a click, an Enter key, a programmatic navigate), the agent must wait for the navigation to commit before reading the next page's DOM, otherwise it reasons over stale or torn-down content. Each wait registers **one** listener pair scoped to the pinned `tabId`, and removes them in a `finally` block. No global navigation logging.
+>
+> 3. **`onCommitted` / `onHistoryStateUpdated` for opt-in skill recording.** When the user explicitly enables a recording session ("record what I'm doing so this can be replayed as a skill"), navigation events on the recorded tab are captured to materialize a replay-able skill. The handler short-circuits and drops the event if the originating `tabId` is not part of an active recording session — events on unrelated tabs are not processed, stored, or transmitted. Recording is opt-in, scoped to a user-chosen tab, and visibly indicated in the side panel.
+>
+> Pie does **not** use `webRequest`, does **not** register `onBeforeNavigate` or any cross-origin pre-navigation listener, does **not** poll navigation events in the background, and does **not** transmit navigation events to any server (Pie has no backend).
+
+---
+
 ## Host permissions (`<all_urls>` + 6 LLM provider endpoints)
 
 > **`<all_urls>`** — Pie's side panel is a persistent UI. The user can ask "summarize this page" or "do X on this page" while looking at any website they have chosen to visit. Pie cannot enumerate ahead of time which sites the user will want to use it on.

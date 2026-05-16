@@ -1,10 +1,10 @@
 {
   "extension_name": {
-    "message": "Pie",
+    "message": "Pie · Open-Source AI Agent for Browser & Tabs",
     "description": "Extension name shown in Chrome and the Web Store."
   },
   "extension_description": {
-    "message": "BYOK Chrome Extension Agent — bring your own API key for AI-powered browser actions.",
+    "message": "Open-source AI browser agent. Bring your own Claude / ChatGPT / Gemini key — no backend, no telemetry, no proxy. 8 providers.",
     "description": "Short description shown in the Web Store and chrome://extensions."
   }
 }
