@@ -1541,7 +1541,7 @@ function Composer({
                 }
                 title={pickerActive ? "拾取中：点击页面元素引用（Esc 取消）" : "拾取页面元素"}
               >
-                {/* Hand pointer (index finger up) — outline, matches paperclip stroke style */}
+                {/* Lucide "pointer" — hand pointer cursor (index finger up, 4 fingers + palm arc) */}
                 <svg
                   width="14"
                   height="14"
@@ -1553,9 +1553,11 @@ function Composer({
                   strokeLinejoin="round"
                   aria-hidden="true"
                 >
-                  <path d="M9 11V5.5a1.5 1.5 0 1 1 3 0V11" />
-                  <path d="M12 9.5a1.5 1.5 0 1 1 3 0V13" />
-                  <path d="M15 11.5a1.5 1.5 0 1 1 3 0V16a6 6 0 0 1-6 6h-2a6 6 0 0 1-4.24-1.76L3.34 18.83a1.5 1.5 0 0 1 2.12-2.12L9 19" />
+                  <path d="M22 14a8 8 0 0 1-8 8" />
+                  <path d="M18 11v-1a2 2 0 0 0-2-2a2 2 0 0 0-2 2" />
+                  <path d="M14 10V9a2 2 0 0 0-2-2a2 2 0 0 0-2 2v1" />
+                  <path d="M10 9.5V4a2 2 0 0 0-2-2a2 2 0 0 0-2 2v10" />
+                  <path d="M18 11a2 2 0 1 1 4 0v3a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15" />
                 </svg>
               </button>
             )}
