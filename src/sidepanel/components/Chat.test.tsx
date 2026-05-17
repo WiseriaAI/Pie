@@ -13,7 +13,7 @@
  * patched on the global chrome mock.
  */
 
-import { render, screen, fireEvent, cleanup, act } from "@testing-library/react";
+import { render, screen, fireEvent, cleanup, act, waitFor } from "@testing-library/react";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { chromeMock } from "@/test/setup";
 import Chat from "./Chat";
@@ -830,5 +830,40 @@ describe("Chat — InstanceSelector chip fallback (new session no pin)", () => {
     // The chip label includes nickname · model
     expect(await screen.findByText(/My Work Key/)).toBeTruthy();
     expect(screen.queryByText(/\(none\)/)).toBeNull();
+  });
+});
+
+describe("EmptyState centered greeting", () => {
+  it("renders one of the 7 greetings (en locale, no I18nProvider wrap needed)", async () => {
+    // Chat tests render without I18nProvider wrapper — useT() falls back to English.
+    // The zh-CN locale path is covered by src/lib/i18n/__tests__/use-t.test.tsx.
+    const session = makeSession();
+    render(<Chat session={session} onOpenSettings={() => {}} />);
+
+    const greetings = [
+      "Hey, what are we looking at today?",
+      "So, what's the plan?",
+      "I'm here — what's up?",
+      "What can I do for you today?",
+      "Hey there — where to?",
+      "Got something on your mind?",
+      "Anything fun on this page?",
+    ];
+    await waitFor(() => {
+      const found = greetings.some((g) => screen.queryByText(g) !== null);
+      expect(found).toBe(true);
+    });
+  });
+
+  it("does NOT render 'READY' caps label or SUGGESTED skill section", async () => {
+    const session = makeSession();
+    render(<Chat session={session} onOpenSettings={() => {}} />);
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    expect(screen.queryByText("READY")).toBeNull();
+    expect(screen.queryByText("就绪")).toBeNull();
+    expect(screen.queryByText("SUGGESTED")).toBeNull();
+    expect(screen.queryByText("推荐")).toBeNull();
   });
 });
